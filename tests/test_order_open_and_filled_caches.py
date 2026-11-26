@@ -929,7 +929,7 @@ def test_ws_outbound_account_position_updates_balance_cache_and_stale_lock_guard
     assert prod_mgr.get_balance("ADA")["free"] == pytest.approx(6680.0909)
     assert prod_mgr.get_balance("USDC")["locked"] == pytest.approx(899.9744)
     assert prod_mgr.get_balance("ARB")["free"] == pytest.approx(2677.64511)
-    assert prod_mgr.verified_ts == pytest.approx(t_fill)
+    assert prod_mgr.verified_ts == pytest.approx(t_fill, abs=1e-3)
 
     # Stale out-of-order WS event older than t_fill must NOT regress ADA back to 226.49
     stale_ws_event = {
@@ -967,4 +967,108 @@ def test_ws_outbound_account_position_updates_balance_cache_and_stale_lock_guard
     assert _venue_balance_cache_has_stale_order_lock(
         "binance", t0, obs_stale_sell, {}, {"binance": t_fill}, {}
     ) is True
+
+
+def test_cross_venue_event_refresh_balance_update_ws_fetchtime_and_immediate_fill_guard(tmp_path, monkeypatch):
+    """Verify cross-venue symmetry (Binance, Kraken, Hyperliquid, T212):
+    1. request_venue_account_refresh is producer-only, debounced, refreshes balances + open_orders on non-primary venues and balances-only on Binance.
+    2. Binance balanceUpdate WS event triggers BinanceBalance.request_ws_balance_refresh().
+    3. Immediate fill (reflected_locked=0) in cache_order_filled_<venue>.json invalidates older cache_balance_<venue>.json via _read_latest_filled_ts_by_venue.
+    4. Binance WS open-order removal advances open_latest_ts_by_venue (fetchtime) so stale-lock guard fires before the next REST open-order poll.
+    """
+    import account_cache_health
+    import cacheaccount
+    from binance_api import bapi_ws_bridge
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _read_cached_open_orders_by_venue_sym,
+        _read_latest_filled_ts_by_venue,
+        _venue_balance_cache_has_stale_order_lock,
+    )
+    from providers.portfolio_valuation import BalanceObservation
+
+    # 1. Producer-only event-driven refresh across Kraken/Hyperliquid/T212/Binance + debounce
+    calls: list[tuple[str, str]] = []
+
+    class _FakeBalBridge:
+        def sync_venue_once(self, v_key: str, *, now_s=None) -> bool:
+            calls.append(("bal", v_key))
+            return True
+
+    class _FakeOpenBridge:
+        def sync_venue_once(self, v_key: str, *, now_ms=None) -> bool:
+            calls.append(("open", v_key))
+            return True
+
+    monkeypatch.setattr(cacheaccount, "_venue_balances_bridge", _FakeBalBridge())
+    monkeypatch.setattr(cacheaccount, "_venue_open_orders_bridge", _FakeOpenBridge())
+    monkeypatch.setattr(cacheaccount, "_venue_refresh_last_ts", {})
+    monkeypatch.setattr(account_cache_health, "is_writer_enabled", lambda: False)
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, blocking=True) is False
+    assert calls == []
+
+    monkeypatch.setattr(account_cache_health, "is_writer_enabled", lambda: True)
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, blocking=True) is True
+    assert calls == [("bal", "hyperliquid"), ("open", "hyperliquid")]
+    # Second call within 1s debounce window is suppressed
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, blocking=True) is False
+    # Binance refresh triggers balances only (open orders already real-time via WS executionReport)
+    assert cacheaccount.request_venue_account_refresh("binance", include_open_orders=True, blocking=True) is True
+    assert ("bal", "binance") in calls and ("open", "binance") not in calls
+
+    # 2. Binance balanceUpdate WS event routes to BinanceBalance.request_ws_balance_refresh()
+    bal_path = tmp_path / "cache_balance_binance.json"
+    bal_mgr = cacheaccount.CacheBalanceManager(60, None, str(bal_path), read_only=False, venue="binance")
+    monkeypatch.setattr(cacheaccount, "_venue_refresh_last_ts", {})
+    persisted_bu: list[str] = []
+    bapi_ws_bridge.handle_binance_ws_event(
+        {"e": "balanceUpdate", "E": 1795717000000, "a": "BNB", "d": "0.1"},
+        cache_getter=lambda name: bal_mgr if name == "BinanceBalance" else None,
+        log_enabled=False,
+        persist_fn=persisted_bu.append,
+    )
+    assert persisted_bu == ["balanceUpdate"]
+
+    # 3. Immediate fill (no resting lock ever seen) detected by _read_latest_filled_ts_by_venue on Hyperliquid/Kraken/Binance/T212
+    t0 = 1_795_717_000.0
+    t_fill = t0 + 12.0
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir()
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(orders_dir / "cache_order_filled_hyperliquid.json"),
+        {"HYPEUSDC": [{"orderId": "hl-99", "side": "BUY", "price": 60.5, "qty": 10.0, "time": int(t_fill * 1000), "status": "FILLED"}]},
+        venue="hyperliquid",
+        now_ms=int(t_fill * 1000),
+    )
+    latest_fills = _read_latest_filled_ts_by_venue(str(tmp_path))
+    assert latest_fills["hyperliquid"] == pytest.approx(t_fill, abs=1e-3)
+    assert latest_fills["hyperliquid"] > t0 + 0.5
+
+    # 4. Binance WS open-order removal updates fetchtime (without verified_ts) -> open_latest_ts_by_venue triggers stale-lock check
+    open_bn = orders_dir / "cache_order_open_binance.json"
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(open_bn),
+        {"ADAUSDC": [{"orderId": "1706227251", "side": "BUY", "price": 0.1497, "origQty": 6680.0, "status": "NEW", "timestamp": int((t0 - 10) * 1000)}]},
+        now_ms=int(t0 * 1000),
+        verified_ts=t0,
+    )
+    oo_mgr = cacheaccount.CacheOrderOpenManager(
+        15,
+        ["ADAUSDC"],
+        str(open_bn),
+        read_only=False,
+        venue="binance",
+        data_sync_mode=cacheaccount.CacheManagerInterface.MODE_PRODUCER,
+    )
+    assert oo_mgr.apply_ws_order_update("ADAUSDC", "remove", {"orderId": "1706227251"}, now_ms=int(t_fill * 1000)) is True
+    oo_mgr.save_state_to_file_if_enabled()
+
+    latest_open_ts: dict[str, float] = {}
+    by_vs, ver_v, sym_ver = _read_cached_open_orders_by_venue_sym(str(tmp_path), out_latest_ts=latest_open_ts)
+    assert ver_v.get("binance", 0.0) == pytest.approx(t0, abs=1e-3)  # verified_ts did NOT advance on WS delta
+    assert latest_open_ts["binance"] == pytest.approx(t_fill, abs=1e-3)  # fetchtime DID advance!
+    obs_stale_ws = {("binance", "USDC"): BalanceObservation(free=7361.97, ts=t0, priority=2, reflected_locked=1000.0)}
+    assert _venue_balance_cache_has_stale_order_lock(
+        "binance", t0, obs_stale_ws, by_vs, ver_v, sym_ver, cached_open_latest_ts=latest_open_ts
+    ) is True
+
 

@@ -3663,6 +3663,7 @@ class UnifiedOrderBookEvidence:
     terminal_order_keys: set[tuple[str, str, str]]
     ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]]
     open_items_by_venue: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
+    open_latest_ts_by_venue: dict[str, float] = field(default_factory=dict)
 
     @staticmethod
     def proves_symbol_absent(
@@ -3774,6 +3775,7 @@ def load_unified_order_book_evidence(
     ambiguous_filled_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
     filled_open_by_venue: dict[str, list[dict[str, Any]]] = {}
     open_items_by_venue: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    open_latest_ts_by_venue: dict[str, float] = {}
 
     # 1. Read open-order snapshots FIRST so fill classification knows resting presence & origQty.
     for venue_key, open_fname in CacheOrderOpenManager.VENUE_FILENAMES.items():
@@ -3785,12 +3787,21 @@ def load_unified_order_book_evidence(
             continue
         open_covered_venues.add(venue_key)
         open_items_by_venue[venue_key] = items
+        latest_v_ts = ver_ts if ver_ts > 0.0 else 0.0
         if ver_ts > 0.0:
             verified_by_venue[venue_key] = ver_ts
         for sym_k, s_ts in sym_ver.items():
             sym_lc = _norm_sym(sym_k)
             if sym_lc and s_ts > 0.0:
                 symbol_verified_ts[(venue_key, sym_lc)] = max(symbol_verified_ts.get((venue_key, sym_lc), 0.0), s_ts)
+                if s_ts > latest_v_ts:
+                    latest_v_ts = s_ts
+        for ft_val in (ft or {}).values():
+            ft_s = normalize_epoch_sec(ft_val, default=0.0) or 0.0
+            if ft_s > latest_v_ts:
+                latest_v_ts = ft_s
+        if latest_v_ts > 0.0:
+            open_latest_ts_by_venue[venue_key] = latest_v_ts
         for k_sym, rows in items.items():
             for oo in rows:
                 if not isinstance(oo, dict):
@@ -3874,6 +3885,7 @@ def load_unified_order_book_evidence(
         terminal_order_keys=terminal_order_keys,
         ambiguous_filled_by_key=ambiguous_filled_by_key,
         open_items_by_venue=open_items_by_venue,
+        open_latest_ts_by_venue=open_latest_ts_by_venue,
     )
 
 
@@ -4063,6 +4075,13 @@ class CacheBalanceManager(CacheAccountManagerBase):
         if ach.is_writer_enabled():
             _record_venue_health_sync(self.venue, "balances", now_ms=math.trunc(eff_ts * 1000))
         return True
+
+    def request_ws_balance_refresh(self) -> bool:
+        """Schedule an off-thread balance cache resync for ``self.venue`` (e.g. Binance ``balanceUpdate``)."""
+        ach = _cm_override("account_cache_health", account_cache_health)
+        if self.read_only and not ach.is_writer_enabled():
+            return False
+        return request_venue_account_refresh(self.venue, include_open_orders=False)
 
     @classmethod
     def replace_venue_balances_snapshot(
@@ -4661,6 +4680,8 @@ class _HyperliquidAccountTradeBridge:
         _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
         if is_snapshot:
             ws_stream._fills_ws_seeded = True
+        elif any(fills_by_symbol.values()):
+            request_venue_account_refresh("hyperliquid", include_open_orders=True)
         ws_stream._last_fills_touch_ms = ts_ms
 
     def touch_fills_cache_if_needed(self, ts_ms: int) -> None:
@@ -5036,6 +5057,8 @@ def run_kraken_trade_ws_loop(
             except Exception:
                 pass
             _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
+            if any(fills_by_sym.values()):
+                request_venue_account_refresh("kraken", include_open_orders=True)
             last_flush_ms[0] = now_ms
             should_hb = True
         if should_hb and callable(heartbeat_fn):
@@ -5146,6 +5169,8 @@ def run_t212_trade_poll_loop(
     if (t212_prov_cls := MarketDataProvider.resolve_venue_provider_class("t212")) is None:
         raise RuntimeError("T212 provider class is not registered")
 
+    prev_total_fills = [-1]
+
     def _sync_once() -> dict:
         by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
             client, symbols=symbols, publish_shared_cache=True
@@ -5178,6 +5203,10 @@ def run_t212_trade_poll_loop(
         except Exception:
             pass
         _record_venue_health_sync("t212", "trades", now_ms=eff_ms)
+        cur_total = sum(len(v) for v in (merged.get("items") or {}).values() if isinstance(v, list))
+        if prev_total_fills[0] >= 0 and cur_total > prev_total_fills[0]:
+            request_venue_account_refresh("t212", include_open_orders=True)
+        prev_total_fills[0] = cur_total
         return merged
 
     _run_account_trade_poll_loop(
@@ -5234,6 +5263,44 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
     LOG_TAG = "open_orders_cache"
     THREAD_NAME = "VenueOpenOrdersBridge"
 
+    def sync_venue_once(self, v_key: str, *, now_ms: Optional[int] = None) -> bool:
+        """Fetch one venue's open orders in batch and persist ``cache_order_open_<venue>.json``."""
+        eff_ms = resolve_now_ms(now_ms)
+        eff_s = eff_ms / 1000.0
+        v_syms = list(sym.symbols_for(v_key))
+        if not v_syms:
+            return False
+        prov_cls = MarketDataProvider.resolve_venue_provider_class(v_key)
+        if prov_cls is None:
+            return False
+        prov = prov_cls()
+        open_by_sym: dict[str, list[dict[str, Any]]] = {}
+        all_ok = True
+        try:
+            batch = prov.open_orders_by_symbol(v_syms)
+            if isinstance(batch, dict):
+                for s_item in v_syms:
+                    raw_open = batch.get(s_item)
+                    if isinstance(raw_open, list):
+                        open_by_sym[s_item] = raw_open
+                    else:
+                        all_ok = False
+            else:
+                all_ok = False
+        except Exception:
+            all_ok = False
+        if open_by_sym:
+            CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+                cache_path(CacheOrderOpenManager.disk_filename(v_key)),
+                open_by_sym,
+                now_ms=eff_ms,
+                verified_ts=eff_s if all_ok else None,
+            )
+            if all_ok:
+                _record_venue_health_sync(v_key, "open_orders", now_ms=eff_ms)
+            return True
+        return False
+
     def start(self) -> bool:
         venues = [
             v for v in CacheOrderOpenManager.VENUE_FILENAMES
@@ -5245,42 +5312,11 @@ class _VenueOpenOrdersBridge(_AccountTradeBridgeBase):
         def _runner() -> None:
             while not self._stop_event.is_set():
                 now_ms = resolve_now_ms()
-                now_s = now_ms / 1000.0
                 for v_key in venues:
                     if self._stop_event.is_set():
                         break
                     try:
-                        v_syms = list(sym.symbols_for(v_key))
-                        if not v_syms:
-                            continue
-                        prov_cls = MarketDataProvider.resolve_venue_provider_class(v_key)
-                        if prov_cls is None:
-                            continue
-                        prov = prov_cls()
-                        open_by_sym: dict[str, list[dict[str, Any]]] = {}
-                        all_ok = True
-                        try:
-                            batch = prov.open_orders_by_symbol(v_syms)
-                            if isinstance(batch, dict):
-                                for s_item in v_syms:
-                                    raw_open = batch.get(s_item)
-                                    if isinstance(raw_open, list):
-                                        open_by_sym[s_item] = raw_open
-                                    else:
-                                        all_ok = False
-                            else:
-                                all_ok = False
-                        except Exception:
-                            all_ok = False
-                        if open_by_sym:
-                            CacheOrderOpenManager.replace_venue_open_orders_snapshot(
-                                cache_path(CacheOrderOpenManager.disk_filename(v_key)),
-                                open_by_sym,
-                                now_ms=now_ms,
-                                verified_ts=now_s if all_ok else None,
-                            )
-                            if all_ok:
-                                _record_venue_health_sync(v_key, "open_orders", now_ms=now_ms)
+                        self.sync_venue_once(v_key, now_ms=now_ms)
                     except Exception as exc:
                         log(f"[{self.LOG_TAG}] {v_key} sync failed: {exc}")
                 if _wait_or_sleep(self._stop_event, OPEN_ORDER_SYNC_INTERVAL_SEC):
@@ -5383,6 +5419,55 @@ _venue_open_orders_bridge: Optional[_VenueOpenOrdersBridge] = None
 _venue_open_orders_bridge_lock = threading.Lock()
 _venue_balances_bridge: Optional[_VenueBalancesBridge] = None
 _venue_balances_bridge_lock = threading.Lock()
+_venue_refresh_lock = threading.Lock()
+_venue_refresh_last_ts: dict[str, float] = {}
+_VENUE_EVENT_REFRESH_MIN_GAP_SEC = 1.0
+
+
+def request_venue_account_refresh(
+    venue_key: str,
+    *,
+    include_open_orders: bool = False,
+    blocking: bool = False,
+) -> bool:
+    """Trigger a debounced off-thread producer refresh of venue balances (and optional open orders) right after a live fill/transfer."""
+    v_norm = normalize_venue_name(venue_key)
+    if not v_norm:
+        return False
+    ach = _cm_override("account_cache_health", account_cache_health)
+    if not ach.is_writer_enabled():
+        return False
+    with _venue_balances_bridge_lock:
+        bal_bridge = _venue_balances_bridge
+    with _venue_open_orders_bridge_lock:
+        oo_bridge = _venue_open_orders_bridge
+    want_oo = bool(include_open_orders and not is_primary_stream_venue(v_norm) and oo_bridge is not None)
+    if bal_bridge is None and not want_oo:
+        return False
+    now_mono = _monotonic_time()
+    with _venue_refresh_lock:
+        last_t = _venue_refresh_last_ts.get(v_norm, 0.0)
+        if last_t > 0.0 and (now_mono - last_t) < _VENUE_EVENT_REFRESH_MIN_GAP_SEC:
+            return False
+        _venue_refresh_last_ts[v_norm] = now_mono
+
+    def _run_refresh() -> None:
+        if bal_bridge is not None:
+            try:
+                bal_bridge.sync_venue_once(v_norm)
+            except Exception as exc:
+                log(f"[balances_cache] event-driven {v_norm} refresh failed: {exc}")
+        if want_oo and oo_bridge is not None:
+            try:
+                oo_bridge.sync_venue_once(v_norm)
+            except Exception as exc:
+                log(f"[open_orders_cache] event-driven {v_norm} refresh failed: {exc}")
+
+    if blocking:
+        _run_refresh()
+        return True
+    threading.Thread(target=_run_refresh, name=f"venue-acct-refresh-{v_norm}", daemon=True).start()
+    return True
 
 
 def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:

@@ -229,6 +229,8 @@ def _read_venue_filled_orders_doc(
 def _read_cached_open_orders_by_venue_sym(
     cache_dir: Optional[str],
     read_json_fn: Any = None,
+    *,
+    out_latest_ts: Optional[Dict[str, float]] = None,
 ) -> Tuple[Dict[Tuple[str, str], List[Dict[str, Any]]], Dict[str, float], Dict[Tuple[str, str], float]]:
     """Passively read open orders from ``cache_order_open_<venue>.json`` via ``UnifiedOrderBookEvidence`` SSOT."""
     if not cache_dir:
@@ -246,6 +248,8 @@ def _read_cached_open_orders_by_venue_sym(
             symbol_normalizer=lambda raw_s: str(raw_s or "").strip().lower(),
             include_filled=False,
         )
+        if isinstance(out_latest_ts, dict):
+            out_latest_ts.update(getattr(ev, "open_latest_ts_by_venue", None) or {})
         return (
             ev.open_orders_by_venue_sym(),
             dict(ev.verified_by_venue),
@@ -256,12 +260,21 @@ def _read_cached_open_orders_by_venue_sym(
     verified_by_vs: Dict[Tuple[str, str], float] = {}
     for venue_key, fname in open_cls.VENUE_FILENAMES.items():
         cand_path = os.path.join(cache_dir, fname)
-        items, _, ver_ts, sym_ver = open_cls.read_venue_open_orders_snapshot_detailed(cand_path, read_json_fn=_rj)
+        items, ft, ver_ts, sym_ver = open_cls.read_venue_open_orders_snapshot_detailed(cand_path, read_json_fn=_rj)
+        latest_v = ver_ts if ver_ts > 0.0 else 0.0
         if ver_ts > 0.0:
             verified_by_venue[venue_key] = ver_ts
         for sym_k, s_ts in sym_ver.items():
             if s_ts > 0.0:
                 verified_by_vs[(venue_key, str(sym_k).strip().upper())] = s_ts
+                if s_ts > latest_v:
+                    latest_v = s_ts
+        for ft_v in (ft or {}).values():
+            ft_s = normalize_epoch_sec(ft_v, default=0.0) or 0.0
+            if ft_s > latest_v:
+                latest_v = ft_s
+        if isinstance(out_latest_ts, dict) and latest_v > 0.0:
+            out_latest_ts[venue_key] = latest_v
         for sym_k, rows in items.items():
             if not isinstance(rows, list):
                 continue
@@ -565,6 +578,40 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
 _QUOTE_CASH_LOCK_ASSETS: frozenset[str] = frozenset({"USD", "USDC", "USDT", "USDG", "EUR"})
 
 
+def _read_latest_filled_ts_by_venue(
+    cache_dir: Optional[str],
+    read_json_fn: Any = None,
+) -> Dict[str, float]:
+    """Passively resolve the newest recorded fill timestamp (epoch seconds) per venue from ``cache_order_filled_<venue>.json``."""
+    if not cache_dir:
+        return {}
+    ensure_cacheprice_classes_bound()
+    filled_cls = _mc.CacheOrderFilledManager
+    if filled_cls is None:
+        return {}
+    _rj = _resolve_read_json_cached(read_json_fn) if read_json_fn is not None else None
+    out: Dict[str, float] = {}
+    for v_key, fname in filled_cls.VENUE_FILENAMES.items():
+        cand_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, fname)))
+        try:
+            items, _ = filled_cls.read_venue_filled_orders_snapshot(cand_path, venue=v_key, read_json_fn=_rj)
+        except Exception:
+            continue
+        latest_s = 0.0
+        for sym_rows in (items or {}).values():
+            if not isinstance(sym_rows, list):
+                continue
+            for row in sym_rows:
+                if not isinstance(row, dict):
+                    continue
+                r_ts = extract_timestamp_s(row) or 0.0
+                if r_ts > latest_s:
+                    latest_s = r_ts
+        if latest_s > 0.0:
+            out[v_key] = latest_s
+    return out
+
+
 def _venue_balance_cache_has_stale_order_lock(
     venue_norm: str,
     bal_verified_ts: float,
@@ -572,9 +619,14 @@ def _venue_balance_cache_has_stale_order_lock(
     cached_open_by_vs: Dict[Tuple[str, str], List[Dict[str, Any]]],
     cached_open_verified_ts: Dict[str, float],
     cached_open_sym_verified_ts: Dict[Tuple[str, str], float],
+    *,
+    cached_open_latest_ts: Optional[Dict[str, float]] = None,
 ) -> bool:
     """Return True when ``open_orders`` is strictly newer than ``bal_verified_ts`` and shows fewer locked funds/coins than ``cache_balance_<venue>``."""
-    open_ver_ts = safe_pos_float(cached_open_verified_ts.get(venue_norm), default=0.0) or 0.0
+    open_ver_ts = max(
+        safe_pos_float(cached_open_verified_ts.get(venue_norm), default=0.0) or 0.0,
+        safe_pos_float((cached_open_latest_ts or {}).get(venue_norm), default=0.0) or 0.0,
+    )
     for (ov, _), sts in cached_open_sym_verified_ts.items():
         if ov == venue_norm and (sf := safe_pos_float(sts, default=0.0) or 0.0) > open_ver_ts:
             open_ver_ts = sf
@@ -2457,9 +2509,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         balance_memo: Dict[tuple[str, str], Optional[float]] = {}
         _rj_bals = _resolve_read_json_cached()
         bcache_path, cached_bals, _ = load_venue_balances_state(cache_dir, _rj_bals)
+        cached_open_latest_ts: Dict[str, float] = {}
         cached_open_by_vs, cached_open_verified_ts, cached_open_sym_verified_ts = _read_cached_open_orders_by_venue_sym(
-            cache_dir, read_json_fn=_rj_bals
+            cache_dir, read_json_fn=_rj_bals, out_latest_ts=cached_open_latest_ts
         )
+        latest_fill_ts_by_venue = _read_latest_filled_ts_by_venue(cache_dir, read_json_fn=_rj_bals) if allow_network else {}
         updated_bals: Dict[str, Any] = {}
         updated_open_by_venue: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
         live_open_ok_venues: set[str] = set()
@@ -2486,13 +2540,17 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     and isinstance(_doc.get("items"), dict)
                     and _doc.get("items")
                 ):
-                    if allow_network and _venue_balance_cache_has_stale_order_lock(
-                        _v_n,
-                        _v_ts,
-                        _all_c_obs,
-                        cached_open_by_vs,
-                        cached_open_verified_ts,
-                        cached_open_sym_verified_ts,
+                    if allow_network and (
+                        latest_fill_ts_by_venue.get(_v_n, 0.0) > _v_ts + 0.5
+                        or _venue_balance_cache_has_stale_order_lock(
+                            _v_n,
+                            _v_ts,
+                            _all_c_obs,
+                            cached_open_by_vs,
+                            cached_open_verified_ts,
+                            cached_open_sym_verified_ts,
+                            cached_open_latest_ts=cached_open_latest_ts,
+                        )
                     ):
                         continue
                     fresh_bal_cache_venues.add(_v_n)

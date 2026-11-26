@@ -240,6 +240,7 @@ def handle_binance_ws_event(
     append_trade_fn: Callable[[dict[str, Any]], Any] | None = None,
     apply_open_order_fn: Callable[[dict[str, Any]], Any] | None = None,
     apply_balance_fn: Callable[[dict[str, Any]], Any] | None = None,
+    refresh_balance_fn: Callable[[dict[str, Any]], Any] | None = None,
     persist_fn: Callable[[str], Any] | None = None,
 ) -> None:
     """Dispatch one Binance user-data WebSocket event into the account caches."""
@@ -320,6 +321,19 @@ def handle_binance_ws_event(
     if event_type == "balanceUpdate":
         if should_log:
             print(f"[cacheManager][WS] {event_type} event received")
+        ref_res = False
+        if refresh_balance_fn is not None:
+            ref_res = bool(refresh_balance_fn(event))
+        else:
+            try:
+                cache = getter("BinanceBalance")
+                req_fn = getattr(cache, "request_ws_balance_refresh", None)
+                if callable(req_fn):
+                    ref_res = bool(req_fn())
+            except Exception as exc:
+                builtins.print(f"[cacheManager][WS] balance refresh request failed: {exc}")
+        if ref_res and persist_fn is not None:
+            persist_fn(event_type)
         return
 
 
