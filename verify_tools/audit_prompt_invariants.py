@@ -79,6 +79,14 @@ _VENUE_SPEC_ROW_RE = re.compile(
     r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|$",
     re.MULTILINE,
 )
+_OPEN_ORDER_ROW_RE = re.compile(
+    r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|\s*(BUY|SELL)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([^|]+?)\s*\|"
+    r"[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|(?:\s*([^|]+?)\s*\|)?\s*([^|]+?)\s*\|$",
+    re.MULTILINE,
+)
+_FILLED_REM_RE = re.compile(r"^([0-9.]+)\(rem=([0-9.]+)\)$")
+_PLAN_RR_RE = re.compile(r"([0-9.]+)(?:\([^)]*\))?/([0-9.]+)(?:\([^)]*\))?\s+RR=([0-9.]+)x")
+_FRONT_RUN_RR_RE = re.compile(r"front_run=([0-9.]+)\(RR=([0-9.]+)x\)")
 _VENUE_CASH_BD_RE = re.compile(r"\b([a-z0-9_]+)\s+([A-Z]+)=\$([0-9,]+\.?\d*)\s*\(([^)]+)\)")
 _COMPACT_USD_MULT: dict[str, float] = {"K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}
 _OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
@@ -621,6 +629,58 @@ def audit_rendered_prompt_text(
                             f"reported {k_lim}={got_v:g} != static venue precision {exp_v:g}",
                         )
                     )
+
+    for m_oo in _OPEN_ORDER_ROW_RE.finditer(prompt_text):
+        ven_o, sym_o, side_o = m_oo.group(1), m_oo.group(2), m_oo.group(3)
+        px_o = safe_pos_float(m_oo.group(4), default=None)
+        qty_o = safe_pos_float(m_oo.group(5), default=None)
+        filled_cell = (m_oo.group(6) or "").strip()
+        plan_cell = (m_oo.group(7) or "").strip()
+        note_cell = (m_oo.group(8) or "").strip()
+        if qty_o is not None and (m_rem := _FILLED_REM_RE.match(filled_cell)) is not None:
+            f_v = safe_nonneg_float(m_rem.group(1), default=None)
+            r_v = safe_nonneg_float(m_rem.group(2), default=None)
+            if f_v is not None and r_v is not None and abs((f_v + r_v) - qty_o) > max(1e-6, qty_o * 1e-4):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_OPEN_ORDER_REM_MATH",
+                        f"{ven_o}:{sym_o}",
+                        f"filled({f_v:g})+rem({r_v:g}) != qty({qty_o:g})",
+                    )
+                )
+        if px_o is not None and (m_prr := _PLAN_RR_RE.search(plan_cell)) is not None:
+            t_v = safe_pos_float(m_prr.group(1), default=None)
+            i_v = safe_pos_float(m_prr.group(2), default=None)
+            rep_rr = safe_nonneg_float(m_prr.group(3), default=None)
+            if t_v is not None and i_v is not None and rep_rr is not None:
+                rew = (t_v - px_o) if side_o == "BUY" else (px_o - t_v)
+                rsk = (px_o - i_v) if side_o == "BUY" else (i_v - px_o)
+                if rsk > 0.0:
+                    exp_rr = max(0.0, rew / rsk)
+                    if abs(rep_rr - exp_rr) > 0.02:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_OPEN_ORDER_RR_MATH",
+                                f"{ven_o}:{sym_o}",
+                                f"plan RR={rep_rr:.2f}x != expected {exp_rr:.2f}x (px={px_o}, tgt={t_v}, inv={i_v})",
+                            )
+                        )
+                if (m_fr := _FRONT_RUN_RR_RE.search(note_cell)) is not None:
+                    fr_px = safe_pos_float(m_fr.group(1), default=None)
+                    rep_fr_rr = safe_nonneg_float(m_fr.group(2), default=None)
+                    if fr_px is not None and rep_fr_rr is not None:
+                        rew_fr = (t_v - fr_px) if side_o == "BUY" else (fr_px - t_v)
+                        rsk_fr = (fr_px - i_v) if side_o == "BUY" else (i_v - fr_px)
+                        if rsk_fr > 0.0:
+                            exp_fr_rr = max(0.0, rew_fr / rsk_fr)
+                            if abs(rep_fr_rr - exp_fr_rr) > 0.02:
+                                violations.append(
+                                    InvariantViolation(
+                                        "PROMPT_OPEN_ORDER_RR_MATH",
+                                        f"{ven_o}:{sym_o}:front_run",
+                                        f"front_run RR={rep_fr_rr:.2f}x != expected {exp_fr_rr:.2f}x (fr={fr_px}, tgt={t_v}, inv={i_v})",
+                                    )
+                                )
 
     for ln_cash in prompt_text.splitlines():
         if "Available Free Quote Cash per Venue:" not in ln_cash:

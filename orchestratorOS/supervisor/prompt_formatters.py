@@ -119,19 +119,40 @@ def _build_section0_trigger_context(
                 qty_s = f"/{qty_v:g}" if qty_v is not None else ""
                 parts.append(f"{sym} partial_fill {filled_v:g}{qty_s}{rem_s}")
                 trigger_syms.add(sym)
-            if "open_order_wall_trapped" in wake_lc and safe_pos_float(oo.get("recommended_front_run_px"), default=None) is not None:
+            if "open_order_wall_trapped" in wake_lc and (fr_v := safe_pos_float(oo.get("recommended_front_run_px"), default=None)) is not None:
+                parts.append(f"{sym} wall_trapped(front_run={fr_v:g})")
                 trigger_syms.add(sym)
             if "open_order_stale_or_far" in wake_lc:
                 dist_v = safe_float(oo.get("dist_from_spot_pct"), None)
                 fp_v = safe_float(oo.get("fill_prob_1h_pct"), None)
                 if (fp_v is not None and fp_v <= 5.0) or (dist_v is not None and abs(dist_v) > 4.0):
+                    parts.append(f"{sym} stale_or_far")
                     trigger_syms.add(sym)
 
-    if "invalidat" in wake_lc and isinstance(portfolio_summary, dict):
+    if "new_fill" in wake_lc and isinstance(portfolio_summary, dict):
+        raw_lces = portfolio_summary.get("last_cycle_execution_status")
+        lces_items = raw_lces if isinstance(raw_lces, list) else ([raw_lces] if isinstance(raw_lces, dict) else [])
+        for item in lces_items:
+            if not isinstance(item, dict):
+                continue
+            st_l = str(item.get("status") or item.get("venue_status") or "").strip().upper()
+            age_m = safe_float(item.get("age_min"), None)
+            if st_l in ("FILLED", "PARTIALLY_FILLED") and (age_m is None or age_m <= 20.0):
+                if f_sym := str(item.get("symbol") or "").strip():
+                    f_side = str(item.get("side") or item.get("decision") or "").strip().upper()
+                    f_px = item.get("fill_px") or item.get("limit_px") or item.get("limit_price")
+                    px_s = f"@{f_px}" if f_px is not None else ""
+                    parts.append(f"{f_sym} {f_side} {st_l}{px_s}".strip())
+                    trigger_syms.add(f_sym)
+
+    if ("invalidat" in wake_lc or "target_hit" in wake_lc) and isinstance(portfolio_summary, dict):
         raw_plans = portfolio_summary.get("active_ai_trade_plans")
         if isinstance(raw_plans, list):
             for pl in raw_plans:
-                if isinstance(pl, dict) and str(pl.get("status") or "").strip().upper() == "INVALIDATED":
+                if not isinstance(pl, dict):
+                    continue
+                pl_st = str(pl.get("status") or "").strip().upper()
+                if (pl_st == "INVALIDATED" and "invalidat" in wake_lc) or (pl_st == "TARGET_HIT" and "target_hit" in wake_lc):
                     if p_sym := str(pl.get("symbol") or "").strip():
                         trigger_syms.add(p_sym)
 

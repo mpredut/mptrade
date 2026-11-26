@@ -82,8 +82,20 @@ def deep_audit(workspace_dir: str = ".") -> None:
             print(line[:160] + ("..." if len(line) > 160 else ""))
 
     print("\n=== SAMPLE UNIFIED TRADABLE CARDS (Section 3: BTC, HYPE, ARB, SPCX) ===")
+    in_s3 = False
+    show_card = False
     for line in prompt.splitlines():
-        if any(line.strip().startswith(f"* {sym}") for sym in ["BTCUSDC", "HYPEUSDC", "ARBUSDC", "SPCXxUSD"]):
+        if line.startswith("### 3."):
+            in_s3 = True
+            continue
+        if line.startswith("### 4.") or line.startswith("### 5."):
+            in_s3 = False
+            continue
+        if not in_s3:
+            continue
+        if line.startswith("  * "):
+            show_card = any(line.startswith(f"  * {sym}") for sym in ["BTCUSDC", "HYPEUSDC", "ARBUSDC", "SPCXxUSD"])
+        if show_card:
             print(line[:160] + ("..." if len(line) > 160 else ""))
 
     print("\n=== MARKET BELLWETHERS (Section 4) ===")

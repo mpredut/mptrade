@@ -1678,8 +1678,18 @@ def _format_unified_markets_and_bellwethers_sections(
             prio_u.add(str(s).strip().upper())
             if sk_p := clean_symbol_key(s):
                 prio_u.add(sk_p)
-    held_u = {str(s).strip().upper() for s in (held_symbols or ()) if s}
-    open_u = {str(s).strip().upper() for s in (open_order_symbols or ()) if s}
+    held_u: set[str] = set()
+    for s in (held_symbols or ()):
+        if s:
+            held_u.add(str(s).strip().upper())
+            if sk_h := clean_symbol_key(s):
+                held_u.add(sk_h)
+    open_u: set[str] = set()
+    for s in (open_order_symbols or ()):
+        if s:
+            open_u.add(str(s).strip().upper())
+            if sk_o := clean_symbol_key(s):
+                open_u.add(sk_o)
 
     p_records: Dict[str, Dict[str, Any]] = {}
     if prices_and_trends:
@@ -1720,16 +1730,31 @@ def _format_unified_markets_and_bellwethers_sections(
         else:
             tradable_syms.append(sym)
 
+    def _sym_matches_group(s: str, grp: set[str]) -> bool:
+        if not grp:
+            return False
+        su_m = s.strip().upper()
+        sk_m = clean_symbol_key(s) or su_m
+        if su_m in grp or sk_m in grp:
+            return True
+        prec_m = p_records.get(s)
+        if prec_m:
+            for sib in (prec_m.get("sib_syms") or ()):
+                sib_u = str(sib).strip().upper()
+                sib_k = clean_symbol_key(sib) or sib_u
+                if sib_u in grp or sib_k in grp:
+                    return True
+        return False
+
     def _tradable_sort_key(s: str) -> tuple[int, str]:
         su = s.strip().upper()
-        sk = clean_symbol_key(s) or su
-        if su in prio_u or sk in prio_u:
+        if _sym_matches_group(s, prio_u):
             return (0, su)
         if not scope_spec.is_equities and not is_equity_or_tokenized_symbol(s) and canonical_base_asset(s) == "BTC":
             return (1, su)
-        if su in held_u or sk in held_u:
+        if _sym_matches_group(s, held_u):
             return (2, su)
-        if su in open_u or sk in open_u:
+        if _sym_matches_group(s, open_u):
             return (3, su)
         return (4, su)
 
@@ -2041,8 +2066,11 @@ def _format_open_limit_orders_table(
         filled_v = safe_float(o.get("filled_qty"), 0.0) or 0.0
         if filled_v > 0.0:
             if qty_v is not None and qty_v > filled_v:
-                rem_v = max(0.0, qty_v - filled_v)
-                filled = f"{_fmt_plain_float(filled_v)}(rem={_fmt_plain_float(rem_v)})"
+                rem_v = round(max(0.0, qty_v - filled_v), 8)
+                rem_s = _fmt_plain_float(rem_v)
+                if rem_s.endswith(".0"):
+                    rem_s = rem_s[:-2]
+                filled = f"{_fmt_plain_float(filled_v)}(rem={rem_s})"
             else:
                 filled = _fmt_plain_float(filled_v)
         else:
@@ -2492,6 +2520,9 @@ def _format_portfolio_section(
                 id_v = pl.get("invalidation_dist_pct")
                 id_s = f" ({fmt_signed(id_v)}% {anc_lbl})" if id_v is not None else ""
                 p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
+            anc_px = pl.get("entry_px") if is_lim_anc else pl.get("spot_px")
+            if (rr_u := _compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
+                p_parts.append(f"RR={rr_u:.2f}x")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
             meta_p = [ord_st]
             if not is_lim_anc and pl.get("spot_px") is not None:

@@ -785,4 +785,44 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     assert "Scorecard(1/3)" in warm_txt and "Scorecard(1/3)[src_age=" not in warm_txt
     assert audit_rendered_prompt_text(warm_txt) == []
 
+    # Invariant verifier catches corrupted R:R and corrupted rem= math inside open_limit_orders table
+    bad_rr = txt.replace("RR=1.46x [ACTIVE]", "RR=2.99x [ACTIVE]")
+    assert bad_rr != txt
+    assert any(v.code == "PROMPT_OPEN_ORDER_RR_MATH" for v in audit_rendered_prompt_text(bad_rr))
+    bad_fr_rr = txt.replace("front_run=60.0(RR=0.78x)", "front_run=60.0(RR=1.90x)")
+    assert bad_fr_rr != txt
+    assert any(v.code == "PROMPT_OPEN_ORDER_RR_MATH" for v in audit_rendered_prompt_text(bad_fr_rr))
+    bad_rem = txt.replace("| 6.8(rem=10) |", "| 6.8(rem=5) |")
+    assert bad_rem != txt
+    assert any(v.code == "PROMPT_OPEN_ORDER_REM_MATH" for v in audit_rendered_prompt_text(bad_rem))
+
+    # Sibling trigger promotion (HYPEUSD -> HYPEUSDC card promoted ahead of BTCUSDC) + new_fill extraction + unlinked FILLED plan R:R
+    sensors_sib = _make_rich_sensors(t0)
+    sensors_sib.prices_and_trends["HYPEUSD"] = {"price": 41.25, "chg_24h_pct": 1.8}
+    sensors_sib.portfolio_summary["open_limit_orders"] = []
+    sensors_sib.portfolio_summary["last_cycle_execution_status"] = [
+        {"venue": "kraken", "symbol": "HYPEUSD", "side": "BUY", "status": "FILLED", "fill_px": 41.0, "age_min": 3.0}
+    ]
+    sensors_sib.portfolio_summary["active_ai_trade_plans"] = [
+        {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "side": "BUY",
+            "order_state": "FILLED",
+            "entry_px": 41.0,
+            "spot_px": 41.2,
+            "target_px": 43.2,
+            "target_dist_pct": 4.85,
+            "invalidation_px": 40.2,
+            "invalidation_dist_pct": -2.43,
+            "status": "ACTIVE",
+        }
+    ]
+    txt_sib = build_supervisor_prompt(sensors_sib, logs, compact_rules=False, wake_reason="new_fill")
+    assert "- Trigger: new_fill | HYPEUSD BUY FILLED@41.0" in txt_sib
+    assert "RR=2.00x [ACTIVE]" in txt_sib
+    s3_sib = txt_sib[txt_sib.index("### 3. TRADABLE MARKETS"):]
+    assert s3_sib.index("  * HYPEUSDC") < s3_sib.index("  * BTCUSDC:")
+    assert audit_rendered_prompt_text(txt_sib) == []
+
 
