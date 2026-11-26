@@ -1874,6 +1874,100 @@ def test_cycle16_extended_mathematical_invariants() -> None:
     }.issubset(bad_codes)
 
 
+def test_symmetric_sell_locked_base_and_replace_cap_invariants() -> None:
+    """Validate locked_base_qty*px, replace_max_sell cap, open SELL vs locked_base_qty, and total-value position sort."""
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    clean_prompt = (
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$5,000.00, invested=$1,055.79, free_cash=$3,944.21 (78.9%), "
+        "venues(binance=$2,000.00, hyperliquid=$3,000.00)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$1,965.05, hyperliquid USDC=$1,979.16\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [hyperliquid] HYPEUSDC: free_HYPE=0.000095 ($0.01 USD), locked_base_qty=16.8 ($1020.84 USD), "
+        "px=60.764, limits(max_buy=$1979.16, max_sell=$0.0, replace_max_sell=$1020.84)\n"
+        "    - [binance] BTCUSDC: free_BTC=0.00058 ($34.95 USD), px=60258.62, limits(max_buy=$1965.05, max_sell=$34.95)\n"
+        "  * Active Open Orders on Exchange (Locking Liquidity) -- open_limit_orders:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | SELL | 60.98 | 16.8 | 0 | 617354053121 | AI | 2m | +0.36% | 55% | - |\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt, gateway_min_usd=10.0) == []
+
+    # 1. Corrupted locked_base_usd valuation
+    bad_lb = clean_prompt.replace("locked_base_qty=16.8 ($1020.84 USD)", "locked_base_qty=16.8 ($500.00 USD)")
+    assert any(
+        v.code == "PROMPT_POSITION_MATH" and "locked_base_usd" in v.subject
+        for v in audit_rendered_prompt_text(bad_lb)
+    )
+
+    # 2. Corrupted replace_max_sell exceeding total free + locked position value
+    bad_rep = clean_prompt.replace("replace_max_sell=$1020.84", "replace_max_sell=$1500.00")
+    assert any(
+        v.code == "PROMPT_POSITION_ANCHORS_AND_CYCLE_MATH" and "replace_max_sell" in v.subject
+        for v in audit_rendered_prompt_text(bad_rep)
+    )
+
+    # 3. Corrupted open SELL rem_qty exceeding locked_base_qty
+    bad_sell_qty = clean_prompt.replace("| SELL | 60.98 | 16.8 |", "| SELL | 60.98 | 24.5 |")
+    assert any(
+        v.code == "PROMPT_SECTION1_SUM_CONSERVATION" and "OpenSellVsLockedBase" in v.subject
+        for v in audit_rendered_prompt_text(bad_sell_qty)
+    )
+
+    # 4. Snapshot-level locked_base_qty * px == locked_base_usd invariant
+    bad_snap = {
+        "portfolio_summary": {
+            "tradable_positions": [
+                {
+                    "venue": "hyperliquid",
+                    "symbol": "HYPEUSDC",
+                    "free_base": 0.000095,
+                    "value_usd": 0.01,
+                    "locked_base_qty": 16.8,
+                    "locked_base_usd": 400.0,
+                    "price": 60.764,
+                }
+            ]
+        }
+    }
+    assert any(
+        v.code == "POSITION_VALUE_AND_ANCHOR_MATH" and "locked_base_usd" in v.subject
+        for v in audit_snapshot_invariants(bad_snap)
+    )
+
+    # 5. Live Tradable Spot Instruments sorts by total position value (value_usd + locked_base_usd)
+    ps_sort = {
+        "tradable_positions": [
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "base": "BTC",
+                "quote": "USDC",
+                "free_base": 0.00058,
+                "value_usd": 34.95,
+                "free_quote": 1000.0,
+                "price": 60258.62,
+            },
+            {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "base": "HYPE",
+                "quote": "USDC",
+                "free_base": 0.000095,
+                "value_usd": 0.01,
+                "locked_base_qty": 16.8,
+                "locked_base_usd": 1020.84,
+                "free_quote": 1000.0,
+                "price": 60.764,
+            },
+        ]
+    }
+    sec1_text = "\n".join(_format_portfolio_section(ps_sort, asset_scope="crypto", min_usd=10.0, max_usd=2000.0))
+    assert sec1_text.index("[hyperliquid] HYPEUSDC:") < sec1_text.index("[binance] BTCUSDC:")
+
+
+
 
 
 

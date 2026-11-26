@@ -847,3 +847,92 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     assert audit_rendered_prompt_text(txt_sib) == []
 
 
+def test_warm_delta_ignores_macro_countdowns_and_cycle_xstock_price_ticks() -> None:
+    """Warm turns must not cache-bust Calendar/macro, Cycle_Anchors, xStocks, or Venue_Specs on routine ticks."""
+    t0 = datetime(2026, 11, 26, 18, 10, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    s0 = _make_rich_sensors(t0)
+    s0.macro_calendar = {
+        "session_label": "European Evening Close & Profit-Taking (18:00-20:30 EET)",
+        "next_high_impact_event": "European London 4PM Fix & Intraday Profit-Taking at 18:00 EET (10m ago \u2014 ACTIVE VOLATILITY WINDOW)",
+        "pre_event_risk_window": False,
+        "us_market_holiday": "Thanksgiving Day",
+    }
+    s0.portfolio_summary["hyperliquid_cycles"] = {
+        "HYPEUSDC": {
+            "_spot_px": 60.50,
+            "avg_cost_px": 59.50,
+            "cost_usd": 999.60,
+            "qty": 16.8,
+            "dca_buys": 0,
+            "pos_peak": 61.20,
+            "dd_from_peak_pct": -1.14,
+            "realized_pnl_usd": 0.0,
+        }
+    }
+    s0.portfolio_summary["kraken_xstocks"] = {
+        "listed_pair": "SPCXxUSD",
+        "alloc_price": 134.844,
+        "live_price": 129.50,
+        "pnl_vs_alloc_pct": -3.96,
+        "underlying": "SPCX",
+        "underlying_live_price": 128.95,
+        "underlying_session": "EXT_CLOSE",
+        "xstock_vs_underlying_pct": 0.43,
+        "holdings": {"SPCXx": 12.135889},
+        "t212_sibling": "SPCX_US_EQ",
+        "t212_sibling_cycle": {
+            "qty": 2.222965,
+            "cost_usd": 318.18,
+            "avg_cost_px": 143.1331,
+            "dd_from_peak_pct": -21.68,
+            "pos_peak": 164.64,
+        },
+    }
+    p0 = evaluate_prompt_delta_plan(s0, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="cid-tick")
+
+    # Turn 2 (+3m): countdown ticks 10m->13m, _spot_px/live_price/dd_from_peak/xstock_vs_underlying tick, positions reorder
+    t1 = t0 + 180.0
+    s1 = copy.deepcopy(s0)
+    s1.evaluated_at_ts = t1
+    s1.macro_calendar["next_high_impact_event"] = (
+        "European London 4PM Fix & Intraday Profit-Taking at 18:00 EET (13m ago \u2014 ACTIVE VOLATILITY WINDOW)"
+    )
+    s1.portfolio_summary["hyperliquid_cycles"]["HYPEUSDC"]["_spot_px"] = 60.85
+    s1.portfolio_summary["hyperliquid_cycles"]["HYPEUSDC"]["dd_from_peak_pct"] = -0.57
+    s1.portfolio_summary["kraken_xstocks"]["live_price"] = 129.92
+    s1.portfolio_summary["kraken_xstocks"]["pnl_vs_alloc_pct"] = -3.65
+    s1.portfolio_summary["kraken_xstocks"]["underlying_live_price"] = 129.10
+    s1.portfolio_summary["kraken_xstocks"]["xstock_vs_underlying_pct"] = 0.64
+    s1.portfolio_summary["kraken_xstocks"]["t212_sibling_cycle"]["dd_from_peak_pct"] = -21.59
+    s1.portfolio_summary["tradable_positions"].reverse()
+
+    p1 = evaluate_prompt_delta_plan(
+        s1, asset_scope="crypto", now_ts=t1, is_warm_resume=True, prev_state=p0.next_state, conversation_id="cid-tick"
+    )
+    assert p1.mode == "WARM_DELTA"
+    assert p1.action_for("macro_calendar") == "OMIT"
+    assert p1.action_for("fear_greed") == "OMIT"
+    assert p1.action_for("etf_flows") == "OMIT"
+    assert p1.action_for("geopolitical_summary") == "OMIT"
+    assert p1.action_for("venue_cycles") == "OMIT"
+    assert p1.action_for("kraken_xstocks") == "OMIT"
+    assert p1.action_for("venue_specs") == "OMIT"
+
+    # Turn 3 (+6m): real structural changes (exiting active release window, new DCA fill, holdings change) trigger SHOW_NEW
+    t2 = t1 + 180.0
+    s2 = copy.deepcopy(s1)
+    s2.evaluated_at_ts = t2
+    s2.macro_calendar["next_high_impact_event"] = "European Frankfurt/London Institutional Open at Fri 08:00 EET in 13h44m"
+    s2.portfolio_summary["hyperliquid_cycles"]["HYPEUSDC"]["dca_buys"] = 1
+    s2.portfolio_summary["kraken_xstocks"]["holdings"]["SPCXx"] = 14.0
+    p2 = evaluate_prompt_delta_plan(
+        s2, asset_scope="crypto", now_ts=t2, is_warm_resume=True, prev_state=p1.next_state, conversation_id="cid-tick"
+    )
+    assert p2.action_for("macro_calendar") == "SHOW_NEW"
+    assert p2.action_for("fear_greed") == "SHOW_NEW"
+    assert p2.action_for("venue_cycles") == "SHOW_NEW"
+    assert p2.action_for("kraken_xstocks") == "SHOW_NEW"
+    assert p2.action_for("venue_specs") == "OMIT"
+
+
+

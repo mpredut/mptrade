@@ -2555,7 +2555,10 @@ def _format_portfolio_section(
                     or (safe_float(it[1].get("locked_base_qty"), 0.0) or 0.0) > 0.0
                 )
                 else (1 if (safe_float(it[1].get("locked_quote_usd"), 0.0) or 0.0) > 0.0 else 2),
-                -(safe_float(it[1].get("value_usd"), 0.0) or 0.0),
+                -(
+                    (safe_float(it[1].get("value_usd"), 0.0) or 0.0)
+                    + (safe_float(it[1].get("locked_base_usd"), 0.0) or 0.0)
+                ),
                 it[0],
             ),
         )

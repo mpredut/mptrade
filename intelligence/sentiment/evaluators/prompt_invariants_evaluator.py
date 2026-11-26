@@ -101,10 +101,10 @@ _BID_WALL_RE = re.compile(r"(?:bid_wall|est_bid_zone)=([0-9.]+)\s*\(")
 _ASK_WALL_RE = re.compile(r"(?:ask_wall|est_ask_zone)=([0-9.]+)\s*\(")
 _LIMITS_RE = re.compile(r"limits\(([^)]+)\)")
 _LIMIT_NUM_RE = re.compile(r"\b(min_qty|step|tick)=([0-9.eE+-]+)")
-_LIMIT_CAP_RE = re.compile(r"\b(max_buy|max_sell)=\$([0-9,.]+)")
+_LIMIT_CAP_RE = re.compile(r"\b(max_buy|max_sell|replace_max_sell)=\$([0-9,.]+)")
 _PX_FIELD_RE = re.compile(r"\bpx=([0-9.]+)")
 _FREE_BASE_VAL_RE = re.compile(r"\bfree_[A-Za-z0-9_]+=([0-9.]+)\s*\(\$([0-9,.]+)\s*USD\)")
-_LOCKED_BASE_USD_RE = re.compile(r"\blocked_base_qty=[0-9.]+\s*\(\$([0-9,.]+)\s*USD\)")
+_LOCKED_BASE_QTY_USD_RE = re.compile(r"\blocked_base_qty=([0-9.]+)\s*\(\$([0-9,.]+)\s*USD\)")
 _AVG_COST_PNL_RE = re.compile(r"\bavg_cost=([0-9.]+)\s*\(pnl_vs_cost=([+-]?[0-9.]+)%\)")
 _PEAK_DD_RE = re.compile(r"\bpeak_px=([0-9.]+)\s*\(dd_from_peak=([+-]?[0-9.]+)%\)")
 _CYCLE_ANCHOR_LINE_RE = re.compile(
@@ -587,6 +587,16 @@ def _audit_snapshot_positions_and_cycles(
                         f"free_base({fb:g})*px({px:g})={fb * px:.2f} != value_usd={val:.2f}",
                     )
                 )
+            lb_q_s = safe_nonneg_float(pos.get("locked_base_qty"), default=None)
+            lb_u_s = safe_nonneg_float(pos.get("locked_base_usd"), default=None)
+            if lb_q_s is not None and lb_u_s is not None and abs(lb_q_s * px - lb_u_s) > max(0.05, lb_u_s * 0.005):
+                violations.append(
+                    InvariantViolation(
+                        "POSITION_VALUE_AND_ANCHOR_MATH",
+                        f"{ven}:{sym}:locked_base_usd",
+                        f"locked_base_qty({lb_q_s:g})*px({px:g})={lb_q_s * px:.2f} != locked_base_usd={lb_u_s:.2f}",
+                    )
+                )
             avg_b = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
             if avg_b is not None:
                 pos_avg_by_vs[(ven, sym.upper())] = avg_b
@@ -1024,6 +1034,7 @@ def audit_rendered_prompt_text(
     # 2 & 3. Section 1 live tradable instruments: ghost check + breakdown sum + precision/caps + position math
     px_by_vs: dict[tuple[str, str], float] = {}
     avg_by_vs: dict[tuple[str, str], float] = {}
+    locked_base_by_vs: dict[tuple[str, str], float] = {}
     sum_pos_invested = 0.0
     pos_count = 0
     for m_inst in _SEC3C_INST_RE.finditer(prompt_text):
@@ -1034,6 +1045,7 @@ def audit_rendered_prompt_text(
         m_px_row = _PX_FIELD_RE.search(rest)
         px_r = safe_pos_float(m_px_row.group(1), default=None) if m_px_row else None
         val_u: Optional[float] = None
+        lb_u_row: Optional[float] = None
         if (m_fbv := _FREE_BASE_VAL_RE.search(rest)) is not None:
             fb_q = safe_nonneg_float(m_fbv.group(1), default=None)
             val_u = _parse_money(m_fbv.group(2))
@@ -1047,9 +1059,21 @@ def audit_rendered_prompt_text(
                         f"free_base({fb_q:g})*px({px_r:g})={fb_q * px_r:.2f} != reported ${val_u:.2f}",
                     )
                 )
-        if (m_lbu := _LOCKED_BASE_USD_RE.search(rest)) is not None:
-            if (lb_u := _parse_money(m_lbu.group(1))) is not None:
-                sum_pos_invested += lb_u
+        if (m_lbu := _LOCKED_BASE_QTY_USD_RE.search(rest)) is not None:
+            lb_q_r = safe_nonneg_float(m_lbu.group(1), default=None)
+            lb_u_row = _parse_money(m_lbu.group(2))
+            if lb_q_r is not None:
+                locked_base_by_vs[(ven.lower(), sym.upper())] = lb_q_r
+            if lb_u_row is not None:
+                sum_pos_invested += lb_u_row
+            if px_r is not None and lb_q_r is not None and lb_u_row is not None and abs(lb_q_r * px_r - lb_u_row) > max(0.05, lb_u_row * 0.005):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_POSITION_MATH",
+                        f"{ven}:{sym}:locked_base_usd",
+                        f"locked_base_qty({lb_q_r:g})*px({px_r:g})={lb_q_r * px_r:.2f} != reported ${lb_u_row:.2f}",
+                    )
+                )
         if px_r is not None:
             px_by_vs[(ven.lower(), sym.upper())] = px_r
             if (m_avg := _AVG_COST_PNL_RE.search(rest)) is not None:
@@ -1206,6 +1230,16 @@ def audit_rendered_prompt_text(
                             f"limits max_sell=${cap_v:.2f} exceeds free value_usd=${val_u:.2f}",
                         )
                     )
+                if cap_k == "replace_max_sell" and cap_v is not None and val_u is not None:
+                    tot_pos_u = val_u + (lb_u_row or 0.0)
+                    if cap_v > tot_pos_u + max(0.05, tot_pos_u * 0.005):
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_POSITION_ANCHORS_AND_CYCLE_MATH",
+                                f"{ven}:{sym}:replace_max_sell",
+                                f"limits replace_max_sell=${cap_v:.2f} exceeds total position value=${tot_pos_u:.2f}",
+                            )
+                        )
 
     if pos_count > 0 and nav_invested is not None and sum_pos_invested > nav_invested + max(0.25, nav_invested * 0.005):
         violations.append(
@@ -1294,6 +1328,7 @@ def audit_rendered_prompt_text(
     open_order_rows: list[tuple[str, str, str, float, Optional[float], str]] = []
     open_order_ids: dict[str, str] = {}
     buy_open_notional = 0.0
+    sell_open_qty_by_vs: dict[tuple[str, str], float] = {}
     for m_oo in _OPEN_ORDER_ROW_RE.finditer(prompt_text):
         ven_o, sym_o, side_o = m_oo.group(1), m_oo.group(2), m_oo.group(3)
         px_o = safe_pos_float(m_oo.group(4), default=None)
@@ -1321,6 +1356,9 @@ def audit_rendered_prompt_text(
                 )
         if side_o == "BUY" and px_o is not None and rem_qty_o is not None:
             buy_open_notional += px_o * rem_qty_o
+        elif side_o == "SELL" and rem_qty_o is not None:
+            sk_vs = (ven_o.lower(), sym_o.upper())
+            sell_open_qty_by_vs[sk_vs] = sell_open_qty_by_vs.get(sk_vs, 0.0) + rem_qty_o
         dist_v: Optional[float] = None
         if px_o is not None:
             if (m_dc := _DIST_PCT_CELL_RE.match(dist_cell)) is not None:
@@ -1381,6 +1419,17 @@ def audit_rendered_prompt_text(
                 f"sum(open BUY notional)={buy_open_notional:.2f} exceeds locked_quote={nav_locked_quote:.2f}",
             )
         )
+    for (s_ven, s_sym), sell_rem_q in sell_open_qty_by_vs.items():
+        if (s_ven, s_sym) in locked_base_by_vs:
+            lb_ref = locked_base_by_vs[(s_ven, s_sym)]
+            if sell_rem_q > lb_ref * 1.02 + 1e-6:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION1_SUM_CONSERVATION",
+                        f"Section1.OpenSellVsLockedBase:{s_ven}:{s_sym}",
+                        f"sum(open SELL rem_qty)={sell_rem_q:g} exceeds locked_base_qty={lb_ref:g}",
+                    )
+                )
 
     for m_ap in _ACTIVE_PLAN_LINE_RE.finditer(prompt_text):
         ven_p, sym_p, side_p = m_ap.group(1), m_ap.group(2), m_ap.group(3)

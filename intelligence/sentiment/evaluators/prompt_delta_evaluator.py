@@ -48,10 +48,14 @@ _XSTOCK_NEWS_RE = re.compile(
     r"\b(?:spacex|starlink|spcx|xstock|xstocks|anthropic|antx)\b",
     re.IGNORECASE,
 )
+_MACRO_AGO_RE = re.compile(r"\b\d+m\s+ago\b", re.IGNORECASE)
+_MACRO_IN_RE = re.compile(r"\bin\s+(?:\d+d\s*)?(?:\d+h\s*)?\d+m\b|\bin\s+\d+h\b", re.IGNORECASE)
 _XSTOCK_VOLATILE_KEYS: frozenset[str] = frozenset({
-    "price", "px", "spot_px", "live_px", "value_usd",
+    "price", "px", "spot_px", "_spot_px", "live_px", "live_price", "underlying_live_price", "value_usd",
     "chg_1m_pct", "chg_5m_pct", "chg_15m_pct", "chg_1h_pct", "chg_24h_pct", "chg_7d_pct",
-    "pnl_pct", "pnl_vs_avg_pct", "dd_pct", "dist_pct", "age_min", "age_s", "ts", "timestamp",
+    "pnl_pct", "pnl_vs_avg_pct", "pnl_vs_alloc_pct", "pnl_vs_cost_pct", "pnl_vs_lifo_pct",
+    "dd_pct", "dd_from_peak_pct", "dist_pct", "xstock_vs_underlying_pct",
+    "age_min", "age_s", "ts", "timestamp",
 })
 
 PROMPT_DELTA_GROUP_CADENCES: Dict[str, int] = {
@@ -188,6 +192,13 @@ def _strip_volatile_keys(obj: Any) -> Any:
     return obj
 
 
+def _normalize_macro_event_fingerprint(val: Any) -> Any:
+    """Strip minute-ticking countdown/elapsed suffixes while preserving event identity and active-window state."""
+    if not isinstance(val, str):
+        return val
+    return _MACRO_IN_RE.sub("<in>", _MACRO_AGO_RE.sub("<ago>", val))
+
+
 def _resolve_macro_map(sensors: Any, attr: str, *, fallback_key: Optional[str] = None) -> Dict[str, Any]:
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
     ps = getattr(sensors, "portfolio_summary", None) or {}
@@ -302,11 +313,11 @@ def _extract_block_fingerprints(
     if isinstance(mc, Mapping) and mc.get("next_high_impact_event"):
         block_hashes["macro_calendar"] = _hash_payload({
             "session": mc.get("session_label"),
-            "next_ev": mc.get("next_high_impact_event"),
+            "next_ev": _normalize_macro_event_fingerprint(mc.get("next_high_impact_event")),
             "holiday": mc.get("us_market_holiday"),
             "early": mc.get("us_market_early_close"),
             "pre_risk": macro_pre_event,
-            "pre_rsn": mc.get("pre_event_risk_reason"),
+            "pre_rsn": _normalize_macro_event_fingerprint(mc.get("pre_event_risk_reason")),
             "confirmed": mc.get("confirmed_events_today"),
             "earnings": mc.get("earnings_today"),
             "prints": mc.get("live_macro_prints"),
@@ -343,7 +354,9 @@ def _extract_block_fingerprints(
                 if isinstance(pv, Mapping)
             ]
             if spec_rows:
-                block_hashes["venue_specs"] = _hash_payload(spec_rows)
+                block_hashes["venue_specs"] = _hash_payload(
+                    sorted(spec_rows, key=lambda r: (str(r[0] or ""), str(r[1] or "")))
+                )
         if sc_line := format_ai_decision_scorecard_line(pview.get("ai_decision_scorecard")):
             block_hashes["scorecard"] = _hash_payload(sc_line)
         if cal_line := format_ai_calibration_feedback_line(pview.get("ai_calibration_feedback")):
