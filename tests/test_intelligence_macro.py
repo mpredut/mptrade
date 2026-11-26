@@ -3116,6 +3116,106 @@ def test_pass3_crypto_scope_xstock_news_and_local_real_spot_cvd_sync(tmp_path):
     assert btc_cross_abs["cvd_regime"] == "spot_absorbing"
     assert btc_cross_abs["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
 
+
+def test_pass7_us_holiday_session_coherence_and_since_close_prompt(tmp_path) -> None:
+    """Verify US holiday/early-close session labels never hallucinate US pre-market/open and upstream prompts anchor since_close."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from intelligence.macro.calendar_ssot import resolve_global_trading_session
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+
+    eet = ZoneInfo("Europe/Bucharest")
+
+    # 1. Thanksgiving Day (2026-11-26) replaces US Pre-Market / Wall Street Open / Close labels & guidance
+    ctx_tg_mid = resolve_global_trading_session(datetime(2026, 11, 26, 11, 15, tzinfo=eet).timestamp())
+    assert ctx_tg_mid.session_key == "EU_MIDDAY_CONTINUATION"
+    assert "Thanksgiving Day" in ctx_tg_mid.session_label
+    assert "US Pre-Market" not in ctx_tg_mid.session_label
+    assert "closed" in ctx_tg_mid.llm_session_guidance.lower()
+
+    ctx_tg_aft = resolve_global_trading_session(datetime(2026, 11, 26, 16, 0, tzinfo=eet).timestamp())
+    assert ctx_tg_aft.session_key == "US_OPEN_OVERLAP"
+    assert ctx_tg_aft.is_peak_transition_window is False
+    assert "Wall Street Open" not in ctx_tg_aft.session_label
+    assert "Thanksgiving Day" in ctx_tg_aft.session_label
+
+    ctx_tg_eve = resolve_global_trading_session(datetime(2026, 11, 26, 21, 0, tzinfo=eet).timestamp())
+    assert ctx_tg_eve.session_key == "US_AFTERNOON_CLOSE"
+    assert ctx_tg_eve.is_active_western_session is False
+    assert "Wall Street Close" not in ctx_tg_eve.session_label
+
+    ctx_tg_morn = resolve_global_trading_session(datetime(2026, 11, 26, 9, 30, tzinfo=eet).timestamp())
+    assert ctx_tg_morn.session_key == "EU_OPEN_ACCUMULATION"
+    assert "Thanksgiving Day" in ctx_tg_morn.llm_session_guidance
+
+    # Black Friday (2026-11-27) NYSE 13:00 ET early close updates 20:30-23:15 EET window
+    ctx_bf_eve = resolve_global_trading_session(datetime(2026, 11, 27, 21, 0, tzinfo=eet).timestamp())
+    assert ctx_bf_eve.session_key == "US_AFTERNOON_CLOSE"
+    assert ctx_bf_eve.is_active_western_session is False
+    assert "Day After Thanksgiving" in ctx_bf_eve.session_label
+
+    # Normal Wednesday preserves standard US Pre-Market / Wall Street Open session labels
+    ctx_reg_mid = resolve_global_trading_session(datetime(2026, 11, 18, 12, 0, tzinfo=eet).timestamp())
+    assert ctx_reg_mid.session_label == "European Midday & US Pre-Market (11:00-15:30 EET)"
+    ctx_reg_open = resolve_global_trading_session(datetime(2026, 11, 18, 16, 0, tzinfo=eet).timestamp())
+    assert ctx_reg_open.is_peak_transition_window is True
+
+    # 2. SentimentAdvisor & GeopoliticalThreatAnalyzer prompts include since_close calibration and holiday session context
+    class _Cap:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+            self.last_prompt = ""
+
+        def query_json(self, prompt: str, **kwargs):
+            self.last_prompt = prompt
+            return self.payload
+
+    tg_ts = datetime(2026, 11, 26, 11, 15, tzinfo=eet).timestamp()
+    sa_cap = _Cap(
+        {
+            "market_bias": "NEUTRAL",
+            "risk_level": "MODERATE",
+            "confidence": 0.7,
+            "summary": "Balanced.",
+            "key_risks": [],
+            "recommended_action": "HOLD",
+        }
+    )
+    SentimentAdvisor(
+        gemini_client=sa_cap,
+        cache_file=str(tmp_path / "macro" / "sentiment_eval.json"),
+        start_sync=False,
+    ).review(now_ts=tg_ts, force_refresh=True, allow_llm=True)
+    assert "prioritize since_close over 24h CME settlement delta" in sa_cap.last_prompt
+    assert "Thanksgiving Day" in sa_cap.last_prompt
+    assert "US Pre-Market" not in sa_cap.last_prompt
+
+    geo_cap = _Cap(
+        {
+            "threat_level": "NORMAL",
+            "risk_score": 0.2,
+            "summary": "Calm.",
+            "recommended_brake": "NONE",
+        }
+    )
+    GeopoliticalThreatAnalyzer(
+        gemini_client=geo_cap,
+        state_file=str(tmp_path / "macro" / "geopolitical_eval.json"),
+        start_sync=False,
+    ).assess(
+        NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR),
+        force_refresh=True,
+        now_ts=tg_ts,
+        allow_llm=True,
+    )
+    assert "prioritize since_close over 24h CME settlement delta" in geo_cap.last_prompt
+    assert "Thanksgiving Day" in geo_cap.last_prompt
+
+
+
+
 def test_pass4_polymarket_bettor_clickbait_filter_and_90m_corporate_risk_decay(tmp_path):
     """Pass 4 live crypto prompt audit regressions:
     1. Polymarket prediction-market clickbait ('Crypto Bettors Think/Bet/Expect...') is filtered out while

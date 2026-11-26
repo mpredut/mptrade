@@ -161,9 +161,59 @@ def resolve_global_trading_session(now_ts: Optional[float] = None) -> GlobalSess
             "Weekend session: institutional desks in Europe and US are closed. Avoid chasing low-volume breakouts; require stronger confirmation for BULLISH/ACCUMULATE unless a genuine washout bounce occurs.",
         )
 
+    us_hol = us_market_holiday_name(dt_ny.date())
+    us_early = None if us_hol else us_market_early_close_name(dt_ny.date())
     minutes_eet = dt_eet.hour * 60 + dt_eet.minute
     for start_m, end_m, key, label, is_west, is_peak, flow, guidance in _WEEKDAY_SESSION_WINDOWS_EET:
         if start_m <= minutes_eet < end_m:
+            if us_hol:
+                if key == "EU_MIDDAY_CONTINUATION":
+                    label = f"European Midday (11:00-15:30 EET; US closed - {us_hol})"
+                    flow = (
+                        f"European midday trading with US equity/bond markets and 08:30 EST macro releases closed for {us_hol}; "
+                        "expect thinner afternoon crypto liquidity."
+                    )
+                    guidance = (
+                        f"European Midday ({us_hol} US market holiday, 11:00-15:30 EET): US equities, Treasuries, and 08:30 EST "
+                        "macro prints are closed today; rely on European spot/orderbook flows and thin-liquidity discipline "
+                        "rather than expecting Wall Street pre-market catalysts."
+                    )
+                elif key == "US_OPEN_OVERLAP":
+                    label = f"European Afternoon (15:30-18:00 EET; US closed - {us_hol})"
+                    is_peak = False
+                    flow = (
+                        f"European afternoon trading without Wall Street open (US markets closed for {us_hol}); "
+                        "lower global liquidity and higher slippage risk on thin books."
+                    )
+                    guidance = (
+                        f"European Afternoon ({us_hol} US market holiday, 15:30-18:00 EET): Wall Street cash open is closed today; "
+                        "avoid expecting normal US overlap volume bursts and guard against thin-book stop hunts."
+                    )
+                elif key == "US_AFTERNOON_CLOSE":
+                    label = f"Post-EU Quiet & US Holiday Thin Liquidity (20:30-23:15 EET; {us_hol})"
+                    is_west = False
+                    flow = (
+                        f"European desks closed and US markets closed for {us_hol}; "
+                        "thin holiday crypto-only liquidity ahead of Asian handoff."
+                    )
+                    guidance = (
+                        f"US Holiday Evening ({us_hol}, 20:30-23:15 EET): Both European and US institutional desks are closed; "
+                        "avoid chasing low-volume holiday moves before Asian handoff."
+                    )
+                else:
+                    flow = f"{flow} US markets closed for {us_hol}; expect thinner crypto liquidity."
+                    guidance = f"{guidance} Note: US markets and 08:30 EST macro releases are closed today for {us_hol}."
+            elif us_early and key == "US_AFTERNOON_CLOSE":
+                label = f"Post-US Early Close Quiet (20:30-23:15 EET; {us_early})"
+                is_west = False
+                flow = (
+                    f"Wall Street closed early at 13:00 ET for {us_early} and European desks are closed; "
+                    "thin holiday-shortened crypto liquidity ahead of Asian handoff."
+                )
+                guidance = (
+                    f"Post-US Early Close ({us_early}, 20:30-23:15 EET): US equities closed early at 13:00 ET and European "
+                    "desks are closed; avoid chasing thin post-holiday moves before Asian handoff."
+                )
             return GlobalSessionContext(key, label, eet_str, ny_str, utc_str, False, is_west, is_peak, flow, guidance)
 
     return GlobalSessionContext(
