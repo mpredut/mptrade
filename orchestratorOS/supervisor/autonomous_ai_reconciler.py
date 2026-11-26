@@ -289,6 +289,7 @@ class AutonomousAIReconciler:
         prev_prompt_delta_state: Optional[Dict[str, Any]] = None,
         ui_turn_pending: bool = False,
         prev_eval_was_actionable: bool = False,
+        wake_reason: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -364,6 +365,7 @@ class AutonomousAIReconciler:
             min_conf=min_conf,
             compact_rules=False,
             delta_plan=full_delta_plan,
+            wake_reason=wake_reason,
         )
         resume_prompt: Optional[str] = None
         if spec.can_trade and not spec.can_self_heal:
@@ -378,6 +380,7 @@ class AutonomousAIReconciler:
                 min_conf=min_conf,
                 compact_rules=True,
                 delta_plan=warm_delta_plan,
+                wake_reason=wake_reason,
             )
 
         model_override: Optional[str] = None
@@ -634,6 +637,7 @@ class AutonomousAIReconciler:
         escalate_high_effort = False
         urgent_escalation = False
         extreme_escalation = False
+        gate_reason = ""
         delta_gate_meta: Dict[str, Any] = {}
         ui_turn_pending = False
         prev_eval: Dict[str, Any] = {}
@@ -729,6 +733,7 @@ class AutonomousAIReconciler:
             prev_prompt_delta_state=prev_prompt_delta_state,
             ui_turn_pending=ui_turn_pending,
             prev_eval_was_actionable=prev_eval_was_actionable,
+            wake_reason=gate_reason or None,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")

@@ -1666,11 +1666,18 @@ def _format_unified_markets_and_bellwethers_sections(
     active_symbols: Optional[set[str]] = None,
     held_symbols: Optional[set[str]] = None,
     open_order_symbols: Optional[set[str]] = None,
+    priority_symbols: Optional[set[str]] = None,
 ) -> List[str]:
     """Format Section 3 (Per-Symbol Unified Price/Book/Flow Cards) and Section 4 (Observe-Only Bellwether Table)."""
     scope_spec = resolve_scope_presentation(asset_scope)
     obs_syms = observe_only_registry_symbols()
     obs_syms_3b = obs_syms if compact_observe_only else set()
+    prio_u: set[str] = set()
+    for s in (priority_symbols or ()):
+        if s:
+            prio_u.add(str(s).strip().upper())
+            if sk_p := clean_symbol_key(s):
+                prio_u.add(sk_p)
     held_u = {str(s).strip().upper() for s in (held_symbols or ()) if s}
     open_u = {str(s).strip().upper() for s in (open_order_symbols or ()) if s}
 
@@ -1716,13 +1723,15 @@ def _format_unified_markets_and_bellwethers_sections(
     def _tradable_sort_key(s: str) -> tuple[int, str]:
         su = s.strip().upper()
         sk = clean_symbol_key(s) or su
-        if not scope_spec.is_equities and not is_equity_or_tokenized_symbol(s) and canonical_base_asset(s) == "BTC":
+        if su in prio_u or sk in prio_u:
             return (0, su)
-        if su in held_u or sk in held_u:
+        if not scope_spec.is_equities and not is_equity_or_tokenized_symbol(s) and canonical_base_asset(s) == "BTC":
             return (1, su)
-        if su in open_u or sk in open_u:
+        if su in held_u or sk in held_u:
             return (2, su)
-        return (3, su)
+        if su in open_u or sk in open_u:
+            return (3, su)
+        return (4, su)
 
     tradable_syms.sort(key=_tradable_sort_key)
 
@@ -1917,6 +1926,34 @@ def _format_venue_specs_table(
     return out
 
 
+def _compute_order_plan_rr(
+    entry_px: Any,
+    side: Any,
+    target_px: Any,
+    invalidation_px: Any,
+) -> Optional[float]:
+    """Compute gross reward-to-risk ratio from entry_px to target_px vs invalidation_px symmetrically."""
+    e_px = safe_pos_float(entry_px, default=None)
+    t_px = safe_pos_float(target_px, default=None)
+    i_px = safe_pos_float(invalidation_px, default=None)
+    if e_px is None or t_px is None or i_px is None:
+        return None
+    side_u = str(side or "").strip().upper()
+    if side_u == "BUY":
+        reward = t_px - e_px
+        risk = e_px - i_px
+    elif side_u == "SELL":
+        reward = e_px - t_px
+        risk = i_px - e_px
+    else:
+        return None
+    if risk <= 0.0:
+        return None
+    if reward <= 0.0:
+        return 0.0
+    return reward / risk
+
+
 def _format_open_limit_orders_table(
     clean_open_orders: List[Any],
     *,
@@ -1932,6 +1969,7 @@ def _format_open_limit_orders_table(
         return (res_lines, set()) if return_linked else res_lines
 
     plan_by_order_idx: Dict[int, str] = {}
+    linked_plan_by_order_idx: Dict[int, Dict[str, Any]] = {}
     linked_plan_indices: set[int] = set()
     if active_plans:
         for o_idx, o in enumerate(dict_orders):
@@ -1960,6 +1998,7 @@ def _format_open_limit_orders_table(
             if best_p_idx is not None and best_diff <= 0.05:
                 linked_plan_indices.add(best_p_idx)
                 pl = active_plans[best_p_idx]
+                linked_plan_by_order_idx[o_idx] = pl
                 t_s = (
                     f"{pl['target_px']}({fmt_signed(pl.get('target_dist_pct'))}%)"
                     if pl.get("target_px") is not None and pl.get("target_dist_pct") is not None
@@ -1970,8 +2009,10 @@ def _format_open_limit_orders_table(
                     if pl.get("invalidation_px") is not None and pl.get("invalidation_dist_pct") is not None
                     else (str(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
                 )
+                rr_cur = _compute_order_plan_rr(o_px, o_side, pl.get("target_px"), pl.get("invalidation_px"))
+                rr_sfx = f" RR={rr_cur:.2f}x" if rr_cur is not None else ""
                 st_lbl = str(pl.get("status") or "ACTIVE")
-                plan_by_order_idx[o_idx] = f"{t_s}/{i_s} [{st_lbl}]"
+                plan_by_order_idx[o_idx] = f"{t_s}/{i_s}{rr_sfx} [{st_lbl}]"
 
     has_linked = bool(plan_by_order_idx)
     hdr_lbl = (
@@ -1995,9 +2036,17 @@ def _format_open_limit_orders_table(
         sym = str(o.get("symbol") or "-")
         side = str(o.get("side") or "-")
         px = str(o.get("price") if o.get("price") is not None else "-")
+        qty_v = safe_pos_float(o.get("qty"), default=None)
         qty = _fmt_plain_float(o.get("qty")) if o.get("qty") is not None else "-"
         filled_v = safe_float(o.get("filled_qty"), 0.0) or 0.0
-        filled = _fmt_plain_float(filled_v) if filled_v > 0.0 else "0"
+        if filled_v > 0.0:
+            if qty_v is not None and qty_v > filled_v:
+                rem_v = max(0.0, qty_v - filled_v)
+                filled = f"{_fmt_plain_float(filled_v)}(rem={_fmt_plain_float(rem_v)})"
+            else:
+                filled = _fmt_plain_float(filled_v)
+        else:
+            filled = "0"
         oid = str(o.get("order_id") or o.get("orderId") or "-")
         actor = str(o.get("actor") or "-")
         age = str(o.get("age") or "-")
@@ -2013,7 +2062,14 @@ def _format_open_limit_orders_table(
             ob_age = safe_float(o.get("ob_age_s"), None)
             notes.append(f"{o['ob_flag']} {format_age_sec_compact(ob_age)}" if ob_age is not None else str(o["ob_flag"]))
         if o.get("recommended_front_run_px") is not None:
-            notes.append(f"front_run={o['recommended_front_run_px']}")
+            fr_px = o["recommended_front_run_px"]
+            linked_pl = linked_plan_by_order_idx.get(o_idx)
+            rr_fr = (
+                _compute_order_plan_rr(fr_px, side, linked_pl.get("target_px"), linked_pl.get("invalidation_px"))
+                if linked_pl is not None
+                else None
+            )
+            notes.append(f"front_run={fr_px}(RR={rr_fr:.2f}x)" if rr_fr is not None else f"front_run={fr_px}")
         note_s = "; ".join(notes) if notes else "-"
         plan_col = f" {plan_by_order_idx.get(o_idx, '-')} |" if has_linked else ""
         out.append(
@@ -2390,7 +2446,10 @@ def _format_portfolio_section(
             ),
         )
         ordered_positions = [pv for _, pv in sorted_positions]
-        lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
+        lines.append(
+            f"  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL) "
+            f"[per-order max_buy <= ${max_usd:g}; simultaneous BUYs share venue free cash above]:"
+        )
         for pos_view in ordered_positions:
             lines.append(
                 _format_tradable_position_line(

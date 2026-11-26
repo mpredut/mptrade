@@ -8,6 +8,7 @@ Section-level and line-level formatters live in `orchestratorOS.supervisor.promp
 
 from datetime import datetime
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -16,6 +17,7 @@ from botcore import (
     is_us_rth_open,
     load_key_value_conf,
     parse_symbol_list,
+    safe_float,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -72,6 +74,70 @@ _LIVE_DOMAIN_AGE_KEYS = frozenset({
     "short_trends",
     "venue_balances",
 })
+_TRIGGER_SYM_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{2,18}\b")
+
+
+def _build_section0_trigger_context(
+    wake_reason: Optional[str],
+    focus_symbols: Optional[List[str]],
+    portfolio_summary: Dict[str, Any],
+    known_symbols: set[str],
+) -> Tuple[Optional[str], set[str]]:
+    """Build Section 0 Trigger line and extract symbols that should be promoted to top of Section 3."""
+    parts: List[str] = []
+    trigger_syms: set[str] = set()
+    known_upper = {str(s).strip().upper(): str(s).strip() for s in known_symbols if s}
+
+    clean_wake = str(wake_reason or "").strip()
+    wake_lc = clean_wake.lower()
+    if clean_wake:
+        parts.append(clean_wake)
+        for tok in _TRIGGER_SYM_TOKEN_RE.findall(clean_wake):
+            tu = tok.upper()
+            if tu in known_upper:
+                trigger_syms.add(known_upper[tu])
+
+    clean_focus = parse_symbol_list(focus_symbols) if focus_symbols else []
+    if clean_focus:
+        trigger_syms.update(clean_focus)
+        if not clean_wake or "focus_symbols(" not in wake_lc:
+            parts.append(f"focus={','.join(clean_focus)}")
+
+    raw_open = portfolio_summary.get("open_limit_orders") if isinstance(portfolio_summary, dict) else None
+    if isinstance(raw_open, list):
+        for oo in raw_open:
+            if not isinstance(oo, dict):
+                continue
+            sym = str(oo.get("symbol") or "").strip()
+            if not sym:
+                continue
+            qty_v = safe_pos_float(oo.get("qty"), default=None)
+            filled_v = safe_float(oo.get("filled_qty"), 0.0) or 0.0
+            st_u = str(oo.get("status") or "").strip().upper()
+            if filled_v > 0.0 or st_u == "PARTIALLY_FILLED":
+                rem_s = f"(rem={max(0.0, qty_v - filled_v):g})" if (qty_v is not None and qty_v > filled_v) else ""
+                qty_s = f"/{qty_v:g}" if qty_v is not None else ""
+                parts.append(f"{sym} partial_fill {filled_v:g}{qty_s}{rem_s}")
+                trigger_syms.add(sym)
+            if "open_order_wall_trapped" in wake_lc and safe_pos_float(oo.get("recommended_front_run_px"), default=None) is not None:
+                trigger_syms.add(sym)
+            if "open_order_stale_or_far" in wake_lc:
+                dist_v = safe_float(oo.get("dist_from_spot_pct"), None)
+                fp_v = safe_float(oo.get("fill_prob_1h_pct"), None)
+                if (fp_v is not None and fp_v <= 5.0) or (dist_v is not None and abs(dist_v) > 4.0):
+                    trigger_syms.add(sym)
+
+    if "invalidat" in wake_lc and isinstance(portfolio_summary, dict):
+        raw_plans = portfolio_summary.get("active_ai_trade_plans")
+        if isinstance(raw_plans, list):
+            for pl in raw_plans:
+                if isinstance(pl, dict) and str(pl.get("status") or "").strip().upper() == "INVALIDATED":
+                    if p_sym := str(pl.get("symbol") or "").strip():
+                        trigger_syms.add(p_sym)
+
+    if not parts:
+        return None, trigger_syms
+    return f"- Trigger: {' | '.join(parts)}", trigger_syms
 
 
 def _resolve_gateway_survival_prompt_thresholds(
@@ -197,6 +263,7 @@ def build_supervisor_prompt(
     min_confidence: Optional[float] = None,
     compact_rules: bool = False,
     delta_plan: Optional[Any] = None,
+    wake_reason: Optional[str] = None,
     **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
@@ -218,6 +285,20 @@ def build_supervisor_prompt(
     context_items: List[str] = [
         f"### 0. CLOCK & SNAPSHOT: {now_ts_str}\n"
     ]
+    prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
+    microstructure = getattr(sensors, "microstructure", None) or {}
+    portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
+    trigger_syms: set[str] = set()
+    if not is_pure_sre:
+        known_syms = set(prices_and_trends.keys()) | set(microstructure.keys())
+        trigger_line, trigger_syms = _build_section0_trigger_context(
+            wake_reason,
+            focus_symbols,
+            portfolio_summary,
+            known_syms,
+        )
+        if trigger_line:
+            context_items.append(trigger_line)
     domain_ages = getattr(sensors, "source_ages_sec", None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
@@ -259,9 +340,6 @@ def build_supervisor_prompt(
         context_items.extend(delta_plan.format_section0_lines())
     if spec.can_self_heal:
         context_items.extend(_format_sre_and_fleet_section(sensors, logs, lookback_hours))
-    prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
-    microstructure = getattr(sensors, "microstructure", None) or {}
-    portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
     scope_spec = resolve_scope_presentation(spec_scope_norm)
     is_equities = scope_spec.is_equities
     active_obs_syms = (
@@ -318,6 +396,7 @@ def build_supervisor_prompt(
                 active_symbols=active_obs_syms,
                 held_symbols=held_syms,
                 open_order_symbols=open_ord_syms,
+                priority_symbols=trigger_syms,
             )
         )
     if not is_pure_sre and focus_symbols:

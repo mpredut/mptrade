@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
+    normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
     safe_nonneg_int,
@@ -28,6 +29,7 @@ from botcore import (
 from cachepaths import clean_symbol_key
 from instrument_registry import observe_only_registry_symbols
 from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+from intelligence.macro_sentiment_ssot import format_age_sec_compact
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_etf_flows_summary_line,
 )
@@ -139,7 +141,8 @@ class PromptDeltaPlan:
             return [f"- Snapshot Mode: FULL_KEYFRAME (reason={self.reason})"]
         lines = [
             f"- Snapshot Mode: WARM_DELTA (cadence: G1={PROMPT_DELTA_GROUP_CADENCES['G1']}t, "
-            f"G2={PROMPT_DELTA_GROUP_CADENCES['G2']}t, G3=event_only; tags: [NEW]=changed, [REFRESH]=cadence_keyframe)"
+            f"G2={PROMPT_DELTA_GROUP_CADENCES['G2']}t, G3=event_only; "
+            "tags: [NEW]=changed, [REFRESH]=cadence_keyframe, [src_age=]=feed_not_refreshed_else_verified)"
         ]
         if self.omitted_summary_tokens:
             lines.append(
@@ -193,6 +196,22 @@ def _resolve_macro_map(sensors: Any, attr: str, *, fallback_key: Optional[str] =
     return dict(val) if isinstance(val, Mapping) else {}
 
 
+def _resolve_block_age_sec(
+    domain_ages: Mapping[str, Any],
+    domain_key: str,
+    payload: Mapping[str, Any],
+    now_ts: float,
+) -> Optional[float]:
+    """Return upstream source age in seconds for a delta-managed block when deterministically known."""
+    if (d_age := safe_pos_float(domain_ages.get(domain_key), default=None)) is not None:
+        return d_age
+    raw_ts = payload.get("ts") if payload.get("ts") is not None else payload.get("timestamp")
+    ts_s = normalize_epoch_sec(raw_ts, default=0.0, allow_iso=True) or 0.0
+    if ts_s > 0.0 and now_ts >= ts_s:
+        return now_ts - ts_s
+    return None
+
+
 def _extract_block_fingerprints(
     sensors: Any,
     *,
@@ -200,17 +219,20 @@ def _extract_block_fingerprints(
     now_ts: float,
     min_usd: float,
     max_usd: float,
-) -> Tuple[Dict[str, str], Dict[str, str], List[str], bool]:
-    """Compute content-only fingerprints for every delta-managed block on ``sensors``.
+) -> Tuple[Dict[str, str], Dict[str, str], List[str], bool, Dict[str, float]]:
+    """Compute content-only fingerprints and source ages for every delta-managed block on ``sensors``.
 
-    Returns ``(block_hashes, recent_order_hashes, news_titles, macro_pre_event_active)``.
+    Returns ``(block_hashes, recent_order_hashes, news_titles, macro_pre_event_active, block_src_ages_sec)``.
     """
     is_equities = asset_scope in ("equities", "equity")
     macro = getattr(sensors, "macro_and_sentiment", None) or {}
     ps = getattr(sensors, "portfolio_summary", None) or {}
+    raw_dom_ages = getattr(sensors, "source_ages_sec", None)
+    dom_ages: Mapping[str, Any] = raw_dom_ages if isinstance(raw_dom_ages, Mapping) else {}
     breaking_news = getattr(sensors, "breaking_news", None) or (macro.get("recent_news") if isinstance(macro, Mapping) else None) or []
 
     block_hashes: Dict[str, str] = {}
+    block_src_ages: Dict[str, float] = {}
     if not is_equities:
         fg = _resolve_macro_map(sensors, "fear_greed")
         if fg:
@@ -221,11 +243,15 @@ def _extract_block_fingerprints(
                 "chg": fg.get("trend_7d_change"),
                 "hist": fg_hist,
             })
+            if (age_v := _resolve_block_age_sec(dom_ages, "fear_greed", fg, now_ts)) is not None:
+                block_src_ages["fear_greed"] = age_v
         etf = _resolve_macro_map(sensors, "etf_flows")
         if etf:
             etf_s = format_etf_flows_summary_line(etf) or str(etf.get("summary_line") or "").strip()
             if etf_s:
                 block_hashes["etf_flows"] = _hash_payload(etf_s)
+                if (age_v := _resolve_block_age_sec(dom_ages, "etf_flows", etf, now_ts)) is not None:
+                    block_src_ages["etf_flows"] = age_v
         sa = _resolve_macro_map(sensors, "sentiment_advisor")
         if sa and str(sa.get("summary") or "").strip():
             block_hashes["sentiment_advisor_summary"] = _hash_payload({
@@ -233,6 +259,8 @@ def _extract_block_fingerprints(
                 "conf": sa.get("confidence"),
                 "summary": str(sa.get("summary") or "").strip(),
             })
+            if (age_v := _resolve_block_age_sec(dom_ages, "sentiment_advisor", sa, now_ts)) is not None:
+                block_src_ages["sentiment_advisor_summary"] = age_v
 
     gt = _resolve_macro_map(sensors, "geopolitical_threat", fallback_key="geopolitical")
     if gt and str(gt.get("summary") or "").strip():
@@ -243,6 +271,8 @@ def _extract_block_fingerprints(
             "deesc": gt.get("live_deescalation_note"),
             "unass": gt.get("live_unassessed_high_sev_note"),
         })
+        if (age_v := _resolve_block_age_sec(dom_ages, "geopolitical_threat", gt, now_ts)) is not None:
+            block_src_ages["geopolitical_summary"] = age_v
 
     mc = _resolve_macro_map(sensors, "macro_calendar") or resolve_macro_economic_calendar(
         now_ts=now_ts,
@@ -303,6 +333,7 @@ def _extract_block_fingerprints(
         if eq_bw := pview.get("equity_bellwethers"):
             if isinstance(eq_bw, Mapping):
                 quant_eq: Dict[str, Any] = {}
+                max_eq_age_m: Optional[float] = None
                 for sk, sv in sorted(eq_bw.items()):
                     if isinstance(sv, Mapping):
                         px_v = safe_pos_float(sv.get("price"), default=None)
@@ -312,9 +343,14 @@ def _extract_block_fingerprints(
                             "src": sv.get("quote_source"),
                             "st": sv.get("market_state"),
                         }
+                        if (q_age_m := safe_pos_float(sv.get("quote_age_min"), default=None)) is not None:
+                            if max_eq_age_m is None or q_age_m > max_eq_age_m:
+                                max_eq_age_m = q_age_m
                     else:
                         quant_eq[str(sk)] = sv
                 block_hashes["equity_bellwethers"] = _hash_payload(quant_eq)
+                if max_eq_age_m is not None:
+                    block_src_ages["equity_bellwethers"] = max_eq_age_m * 60.0
             else:
                 block_hashes["equity_bellwethers"] = _hash_payload(eq_bw)
         if isinstance(hl_ro := ps.get("hyperliquid_readonly"), Mapping) and hl_ro:
@@ -374,7 +410,7 @@ def _extract_block_fingerprints(
         if recent_order_hashes:
             block_hashes["recent_orders"] = _hash_payload(recent_order_hashes)
 
-    return block_hashes, recent_order_hashes, news_titles, macro_pre_event
+    return block_hashes, recent_order_hashes, news_titles, macro_pre_event, block_src_ages
 
 
 class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
@@ -409,7 +445,7 @@ class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
         cid_clean = clean_scalar_str(conversation_id) or ""
         comp_step = safe_nonneg_int(compacted_at_step, default=0)
 
-        block_hashes, ro_hashes, news_titles, macro_pre_event = _extract_block_fingerprints(
+        block_hashes, ro_hashes, news_titles, macro_pre_event, block_src_ages = _extract_block_fingerprints(
             sensors,
             asset_scope=scope_norm,
             now_ts=eff_now,
@@ -557,7 +593,9 @@ class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
                 block_actions[b_key] = "OMIT"
                 next_blocks_state[b_key] = {"hash": b_hash, "turns_omitted": new_omitted}
                 cnt_sfx = f"({new_omitted}/{k_turns})" if k_turns > 0 else "(unchanged)"
-                omitted_tokens.append(f"{spec.label}{cnt_sfx}")
+                src_age_s = block_src_ages.get(b_key)
+                age_sfx = f"[src_age={format_age_sec_compact(src_age_s)}]" if (src_age_s is not None and src_age_s >= 120.0) else ""
+                omitted_tokens.append(f"{spec.label}{cnt_sfx}{age_sfx}")
 
         # Per-symbol recent_orders delta evaluation (G1 cadence)
         ro_spec = PROMPT_DELTA_SPECS_BY_KEY["recent_orders"]

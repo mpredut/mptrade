@@ -705,3 +705,84 @@ def test_wave1_tables_units_and_venue_specs_g2_elision() -> None:
     assert bad_ob != full_txt
     assert any(v.code == "PROMPT_OB_IMBALANCE_MATH" for v in audit_rendered_prompt_text(bad_ob))
 
+
+def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
+    """Verify Trigger line + Section 3 symbol promotion, inline plan R:R & front_run R:R, partial-fill rem, shared cash note, and WARM_DELTA src_age."""
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    sensors = _make_rich_sensors(t0)
+    sensors.source_ages_sec["fear_greed"] = 1680.0
+    sensors.portfolio_summary["open_limit_orders"] = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "side": "BUY",
+            "order_type": "LIMIT",
+            "order_id": "617202101915",
+            "actor": "AI",
+            "price": 59.5,
+            "qty": 16.8,
+            "filled_qty": 6.8,
+            "status": "PARTIALLY_FILLED",
+            "age": "1.9h",
+            "dist_from_spot_pct": -1.5,
+            "fill_prob_1h_pct": 40,
+            "recommended_front_run_px": 60.0,
+        }
+    ]
+    sensors.portfolio_summary["active_ai_trade_plans"] = [
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "side": "BUY",
+            "order_state": "RESTING",
+            "entry_px": 59.5,
+            "target_px": 61.4,
+            "target_dist_pct": 3.19,
+            "invalidation_px": 58.2,
+            "invalidation_dist_pct": -2.18,
+            "status": "ACTIVE",
+        }
+    ]
+    sensors.portfolio_summary["cross_market_context"]["equity_bellwethers"]["NVDA_US_EQ"]["quote_age_min"] = 706.0
+    logs = LogEventSummary(total_scanned_files=0, error_count=0, warning_count=0)
+
+    p1 = evaluate_prompt_delta_plan(
+        sensors, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="trig-cid"
+    )
+    txt = build_supervisor_prompt(
+        sensors,
+        logs,
+        compact_rules=False,
+        delta_plan=p1,
+        wake_reason="open_order_partial_fill",
+    )
+    assert "- Trigger: open_order_partial_fill | HYPEUSDC partial_fill 6.8/16.8(rem=10)" in txt
+    assert "6.8(rem=10)" in txt
+    assert "RR=1.46x [ACTIVE]" in txt
+    assert "front_run=60.0(RR=0.78x)" in txt
+    assert "[per-order max_buy <= $2000; simultaneous BUYs share venue free cash above]" in txt
+    # HYPEUSDC promoted ahead of BTCUSDC in Section 3 because of partial fill trigger
+    s3_body = txt[txt.index("### 3. TRADABLE MARKETS"):]
+    assert s3_body.index("  * HYPEUSDC:") < s3_body.index("  * BTCUSDC:")
+    assert audit_rendered_prompt_text(txt) == []
+
+    # Warm turn shows [src_age=...] for unrefreshed external feeds while live-verified blocks stay untagged
+    t2 = t0 + 360.0
+    sensors_t2 = _make_rich_sensors(t2, anchor_ts=t0)
+    sensors_t2.source_ages_sec["fear_greed"] = 2040.0
+    sensors_t2.portfolio_summary["cross_market_context"]["equity_bellwethers"]["NVDA_US_EQ"]["quote_age_min"] = 712.0
+    p2 = evaluate_prompt_delta_plan(
+        sensors_t2,
+        asset_scope="crypto",
+        now_ts=t2,
+        is_warm_resume=True,
+        prev_state=p1.next_state,
+        conversation_id="trig-cid",
+    )
+    warm_txt = build_supervisor_prompt(sensors_t2, logs, compact_rules=True, delta_plan=p2)
+    assert "Fear&Greed(1/5)[src_age=34.0m]" in warm_txt
+    assert "US_Equities(1/3)[src_age=712.0m]" in warm_txt
+    assert "Scorecard(1/3)" in warm_txt and "Scorecard(1/3)[src_age=" not in warm_txt
+    assert audit_rendered_prompt_text(warm_txt) == []
+
+
