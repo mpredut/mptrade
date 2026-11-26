@@ -8284,7 +8284,15 @@ def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_
     pos_saved = json.loads(pos_path.read_text(encoding="utf-8"))
     assert list(pos_saved.keys()) == ["pos:binance:BTCUSDC"]
 
-    # 3. Advance past freshness limits (>90s balance, >30s open orders) -> live REST fallback + Layer 3 refresh
+    # 3. Advance past formulaic L3 freshness limits (balance + open orders) -> live REST fallback + Layer 3 refresh
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        resolve_fresh_balance_cache_max_age_sec,
+        resolve_fresh_open_orders_cache_max_age_sec,
+    )
+    stale_offset_sec = max(
+        resolve_fresh_balance_cache_max_age_sec(),
+        resolve_fresh_open_orders_cache_max_age_sec(),
+    ) + 30.0
     tpos2, oorders2, vcash2, _ = TradablePositionsAndOrdersCollector(start_sync=False).collect(
         str(cdb),
         inst_map={"BIN_BTC": fake_inst},
@@ -8292,7 +8300,7 @@ def test_pure_portfolio_valuation_split_and_cache_first_portfolio_collector(tmp_
         allow_network=True,
         persist=True,
         force_persist=True,
-        now_ts=now_s + 120.0,
+        now_ts=now_s + stale_offset_sec,
     )
     assert rest_calls["balance"] == 2
     assert rest_calls["open_orders"] == 1
