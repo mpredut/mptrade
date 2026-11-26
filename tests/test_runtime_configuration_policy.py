@@ -1042,7 +1042,7 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     """Verify verify_tools.pre_commit_gate orchestrates every deterministic gate cleanly on staged files."""
     from verify_tools import pre_commit_gate as gate
 
-    assert len(DETERMINISTIC_GATES) >= 15
+    assert len(DETERMINISTIC_GATES) >= 20
     assert gate.cmd_list(SimpleNamespace()) == 0
 
     # Seed one violation for each non-trivial deterministic gate in tmp_path.
@@ -1051,7 +1051,10 @@ def test_pre_commit_gate_runs_all_deterministic_checks_and_blocks_violations(tmp
     (tmp_path / "bad.toml").write_text("[section\nx = 1\n", encoding="utf-8")
     (tmp_path / "config.env").write_text("X=$UNBOUND_VAR\n", encoding="utf-8")
     (tmp_path / "instruments.conf").write_text("[BAD_INST]\nprovider=binance\n", encoding="utf-8")
-    (tmp_path / "cachepaths.py").write_text("import providers\nX = providers\n", encoding="utf-8")
+    (tmp_path / "cachepaths.py").write_text(
+        "import providers\nX = providers\ndef symbol_quote_asset(sym: str) -> str:\n    return 'USDC'\n",
+        encoding="utf-8",
+    )
     (tmp_path / "cyc_a.py").write_text("import cyc_b\nX = cyc_b\n", encoding="utf-8")
     (tmp_path / "cyc_b.py").write_text("import cyc_a\nY = cyc_a\n", encoding="utf-8")
     (tmp_path / "intelligence" / "sentiment" / "evaluators").mkdir(parents=True, exist_ok=True)

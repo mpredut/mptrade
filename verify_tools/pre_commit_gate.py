@@ -33,6 +33,10 @@ from verify_tools.direct_order_api_inventory import audit_direct_order_boundarie
 from verify_tools.ssot_ast_audit import (
     ParsedCache,
     audit_bespoke_atomic_writers,
+    audit_cachedb_path_and_jsonl_purity_ast,
+    audit_cross_module_calls_and_imports_ast,
+    audit_dataclass_slots_assignments_ast,
+    audit_durability_tier_and_cachedb_dirname_ast,
     audit_equity_quote_provenance_ast,
     audit_equity_suffix_endswith_ast,
     audit_evaluator_clock_purity_ast,
@@ -405,6 +409,34 @@ DETERMINISTIC_GATES: tuple[DeterministicGate, ...] = (
         "state_file_owners_ast",
         "Enforce 1:1 state_stores/<file_stem>.py symmetry and exclusive read/write ownership of critical state files",
         lambda ctx: audit_state_file_owners_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "cross_module_calls_and_imports_ast",
+        "Verify local from-import symbol existence and direct top-level call signatures across prod modules",
+        lambda ctx: audit_cross_module_calls_and_imports_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "cachedb_path_and_jsonl_purity_ast",
+        "Enforce resolved cachedb subdomain checks and prevent JSON dict readers on JSONL cache files",
+        lambda ctx: audit_cachedb_path_and_jsonl_purity_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "durability_tier_and_cachedb_dirname_ast",
+        "Block fsync=False on FINANCIAL_CRITICAL state paths and os.path.dirname(state_path) as a cachedb root",
+        lambda ctx: audit_durability_tier_and_cachedb_dirname_ast(
+            ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
+        ),
+    ),
+    DeterministicGate(
+        "dataclass_slots_assignments_ast",
+        "Verify every attribute write to a @dataclass(slots=True) targets a declared slot field",
+        lambda ctx: audit_dataclass_slots_assignments_ast(
             ctx.root, rel_paths=ctx.python_rels, _parsed_cache=ctx.parsed_cache
         ),
     ),
