@@ -400,3 +400,60 @@ class TestPruneCliThreads:
         assert removed == 1
         assert _remaining_cids(odb) == {"run-no-db", "lock-no-db"}
 
+    def test_conservative_fail_safe_pruning_unknown_dt_active_wal_orphan_6h_and_topic_max_cap(self, tmp_path):
+        """Fail-safe guarantees: unproven NULL dt (without file), active .db-wal, <6h orphans, and topic-titled threads <cutoff survive."""
+        now = datetime.now(timezone.utc)
+        ts_old = (now - timedelta(days=5)).isoformat()
+        ts_recent = (now - timedelta(hours=2)).isoformat()
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("unknown-dt-no-file", "[auto_cryptotrade_executor]", "run", None, AUTONOMOUS_PROJECT_UUID),
+                ("active-wal-thread", "Automated reasoning", "run", ts_old, AUTONOMOUS_PROJECT_UUID),
+                ("recent-topic-1", "[auto_cryptotrade_executor]", "run", ts_recent, AUTONOMOUS_PROJECT_UUID),
+                ("recent-oneoff-1", "ntfy-guard", "Automated reasoning", (now - timedelta(hours=4)).isoformat(), AUTONOMOUS_PROJECT_UUID),
+                ("recent-oneoff-2", "ntfy-guard", "Automated reasoning", (now - timedelta(hours=1)).isoformat(), AUTONOMOUS_PROJECT_UUID),
+            ],
+            create_files=False,
+        )
+        # Active SQLite WAL file (32+ byte header with SQLite WAL magic) protects active-wal-thread even if summary ts is old
+        with open(os.path.join(cli_base, "conversations", "active-wal-thread.db"), "wb") as fh:
+            fh.write(b"SQLite format 3\x00" + b"\x00" * 32)
+        with open(os.path.join(cli_base, "conversations", "active-wal-thread.db-wal"), "wb") as fh:
+            fh.write(b"\x37\x7f\x06\x82" + b"\x00" * 32)
+        # Orphan .db only 2h old (< 6h grace) must survive; orphan .db 8h old (> 6h) with retention_days=0.25 would be eligible
+        orphan_recent = os.path.join(cli_base, "conversations", "orphan-2h-old.db")
+        with open(orphan_recent, "w", encoding="utf-8") as fh:
+            fh.write("db")
+        ts_2h = (now - timedelta(hours=2)).timestamp()
+        os.utime(orphan_recent, (ts_2h, ts_2h))
+
+        pruned, _ = prune_old_cli_threads(
+            cli_base=cli_base,
+            retention_days=3.0,
+            max_threads=1,
+            dry_run=False,
+        )
+        # Only recent-oneoff-1 is evicted by max_threads=1; unknown-dt-no-file, active-wal-thread, recent-topic-1, recent-oneoff-2, and orphan-2h-old ALL survive!
+        assert pruned == 1
+        assert _remaining_cids(db_path) == {
+            "unknown-dt-no-file",
+            "active-wal-thread",
+            "recent-topic-1",
+            "recent-oneoff-2",
+        }
+        assert os.path.exists(orphan_recent)
+
+    def test_macro_analyzer_rare_24h_prune_persists_across_restarts(self, tmp_path):
+        """MacroAnalyzer defaults to >=24h prune cadence and persists last_thread_prune_ts across restarts (zero prune on hot-reload)."""
+        from intelligence.macro_analyzer import MacroAnalyzer
+
+        ma1 = MacroAnalyzer(cache_dir=str(tmp_path))
+        assert ma1.thread_prune_interval_sec >= 86400.0
+        assert ma1._last_thread_prune_ts > 0.0
+        saved_ts = ma1._last_thread_prune_ts
+        ma1.write_heartbeat({"ts": saved_ts})
+
+        ma2 = MacroAnalyzer(cache_dir=str(tmp_path))
+        assert abs(ma2._last_thread_prune_ts - saved_ts) < 1.0
+

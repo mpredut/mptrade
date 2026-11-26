@@ -45,6 +45,7 @@ from orchestratorOS.agy.summary_store import (  # noqa: E402
     summaries_db,
 )
 from orchestratorOS.agy.topics import get_active_topic_cids, sync_all_topic_titles  # noqa: E402
+from state_io import open_binary_read_file  # noqa: E402
 
 logger = logging.getLogger("prune_llm_threads")
 
@@ -108,12 +109,52 @@ AUTONOMOUS_PROMPT_PATTERNS = [
 ]
 
 
+_TOPIC_TITLE_MARKERS: Tuple[str, ...] = tuple(
+    dict.fromkeys(
+        [
+            *[spec.title.lower() for spec in TOPIC_SPECS.values()],
+            *[f"[{key.lower()}]" for key in TOPIC_SPECS],
+        ]
+    )
+)
+_SQLITE_WAL_MAGIC = (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83")
+_SQLITE_WAL_HEADER_BYTES = 32
+_ACTIVE_WAL_GRACE_SEC = 3600.0
+
+
 def is_automated_thread(title: str, preview: str) -> bool:
     """Check if thread content matches automated LLM reasoning tasks."""
     t_str = title if isinstance(title, str) else ""
     p_str = preview if isinstance(preview, str) else ""
     combined = f"{t_str} {p_str}".lower()
     return any(pattern in combined for pattern in AUTONOMOUS_PROMPT_PATTERNS)
+
+
+def _is_topic_titled_thread(title: str, preview: str) -> bool:
+    """Return True when title/preview matches a permanent autonomous topic marker."""
+    t_str = title if isinstance(title, str) else ""
+    p_str = preview if isinstance(preview, str) else ""
+    combined = f"{t_str} {p_str}".lower()
+    return any(marker in combined for marker in _TOPIC_TITLE_MARKERS)
+
+
+def _has_active_wal_or_lock(cli_base: Optional[str], cid: str, now_ts: float) -> bool:
+    """Return True when a conversation holds a live presence lock or an actively written SQLite WAL."""
+    if not cli_base or not cid:
+        return False
+    if os.path.exists(os.path.join(cli_base, "presence", f"{cid}.lock")):
+        return True
+    wal_path = os.path.join(cli_base, "conversations", f"{cid}.db-wal")
+    try:
+        if os.path.exists(wal_path):
+            st = os.stat(wal_path)
+            if st.st_size >= _SQLITE_WAL_HEADER_BYTES and (now_ts - st.st_mtime) < _ACTIVE_WAL_GRACE_SEC:
+                with open_binary_read_file(wal_path) as fh:
+                    if fh.read(4) in _SQLITE_WAL_MAGIC:
+                        return True
+    except OSError:
+        return True
+    return False
 
 
 def _partition_prune_candidates(
@@ -125,7 +166,10 @@ def _partition_prune_candidates(
     cutoff: datetime,
     require_match: bool = True,
     cli_base: Optional[str] = None,
+    allow_unknown_dt: bool = False,
+    now_ts: Optional[float] = None,
 ) -> Tuple[Set[str], List[Tuple[datetime, str]]]:
+    eff_now_ts = now_ts if now_ts is not None else datetime.now(timezone.utc).timestamp()
     candidates: Set[str] = set()
     kept: List[Tuple[datetime, str]] = []
     for row in rows:
@@ -135,9 +179,8 @@ def _partition_prune_candidates(
             continue
         status_s = str(row["status"] or "").strip().upper() if "status" in row_keys else ""
         not_idle = bool(row["not_fully_idle"]) if "not_fully_idle" in row_keys else False
-        has_lock = bool(cli_base and os.path.exists(os.path.join(cli_base, "presence", f"{cid}.lock")))
-        if status_s == "CASCADE_RUN_STATUS_RUNNING" or not_idle or has_lock:
-            continue  # actively running / in-flight conversation: never unlink mid-turn
+        if status_s == "CASCADE_RUN_STATUS_RUNNING" or not_idle or _has_active_wal_or_lock(cli_base, cid, eff_now_ts):
+            continue  # actively running / writing conversation: never unlink mid-turn
         steps = safe_nonneg_int(row["step_count"] if "step_count" in row_keys else 0, default=0)
         title_str = (row["title"] if "title" in row_keys else None) or ""
         preview_str = (row["preview"] if "preview" in row_keys else None) or ""
@@ -157,9 +200,15 @@ def _partition_prune_candidates(
                     dt = datetime.fromtimestamp(os.path.getmtime(db_file), tz=timezone.utc)
             except OSError:
                 pass
-        if dt is None or dt < cutoff:
+        if dt is None:
+            # Fail-safe: never delete a thread whose age cannot be proven unless retention_days == 0
+            if allow_unknown_dt:
+                candidates.add(cid)
+            continue
+        if dt < cutoff:
             candidates.add(cid)
-        else:
+        elif not _is_topic_titled_thread(title_str, preview_str):
+            # Topic-titled threads are never evicted early by max_threads before retention_days elapses
             kept.append((dt, cid))
     return candidates, kept
 
@@ -235,6 +284,8 @@ def prune_old_cli_threads(
         retention_days = DEFAULT_RETENTION_DAYS
 
     now_utc = datetime.now(timezone.utc)
+    now_ts = now_utc.timestamp()
+    allow_unknown_dt = retention_days <= 0.0
     try:
         cutoff = now_utc - timedelta(days=retention_days)
     except OverflowError:
@@ -247,11 +298,14 @@ def prune_old_cli_threads(
         cutoff=cutoff,
         require_match=True,
         cli_base=base,
+        allow_unknown_dt=allow_unknown_dt,
+        now_ts=now_ts,
     )
 
     if norm_project_id is None:
         conv_dir = os.path.join(base, "conversations")
-        orphan_cutoff = min(cutoff, now_utc - timedelta(minutes=10))
+        orphan_grace = timedelta(minutes=10) if allow_unknown_dt else timedelta(hours=6)
+        orphan_cutoff = min(cutoff, now_utc - orphan_grace)
         if os.path.isdir(conv_dir):
             for fname in os.listdir(conv_dir):
                 if not fname.endswith(".db"):
@@ -259,7 +313,7 @@ def prune_old_cli_threads(
                 fcid = fname[:-3].strip()
                 if not fcid or fcid in protected or fcid in all_summary_cids:
                     continue
-                if os.path.exists(os.path.join(base, "presence", f"{fcid}.lock")):
+                if _has_active_wal_or_lock(base, fcid, now_ts):
                     continue
                 try:
                     mtime_dt = datetime.fromtimestamp(os.path.getmtime(os.path.join(conv_dir, fname)), tz=timezone.utc)
@@ -299,8 +353,10 @@ def prune_old_cli_threads(
                     autonomous_projects=autonomous_projects,
                     all_threads_in_project=False,
                     cutoff=cutoff,
-                    require_match=False,
+                    require_match=True,
                     cli_base=ui_base,
+                    allow_unknown_dt=allow_unknown_dt,
+                    now_ts=now_ts,
                 )
                 if max_threads_i is not None and 0 <= max_threads_i < len(ui_kept):
                     ui_kept.sort(reverse=True)
@@ -310,16 +366,17 @@ def prune_old_cli_threads(
 
     if candidates or ui_candidates:
         fresh_protected = protected | get_active_topic_cids()
+        fresh_now_ts = datetime.now(timezone.utc).timestamp()
         candidates = {
             c
             for c in candidates
-            if c not in fresh_protected and not os.path.exists(os.path.join(base, "presence", f"{c}.lock"))
+            if c not in fresh_protected and not _has_active_wal_or_lock(base, c, fresh_now_ts)
         }
         if ui_candidates and ui_base:
             ui_candidates = {
                 c
                 for c in ui_candidates
-                if c not in fresh_protected and not os.path.exists(os.path.join(ui_base, "presence", f"{c}.lock"))
+                if c not in fresh_protected and not _has_active_wal_or_lock(ui_base, c, fresh_now_ts)
             }
 
     if not candidates and not ui_candidates:
@@ -333,9 +390,10 @@ def prune_old_cli_threads(
         )
         count += u_cnt
         freed += u_freed
-    logger.info("%s %d automated threads (cutoff %s UTC, max_threads=%s), %.2f MB.",
+    pruned_preview = sorted(c[:12] for c in (candidates | ui_candidates))[:10]
+    logger.info("%s %d automated threads (cutoff %s UTC, max_threads=%s, cids=%s), %.2f MB.",
                 "[DRY RUN] Would prune" if dry_run else "Pruned", count,
-                cutoff.strftime("%Y-%m-%d %H:%M:%S"), max_threads, freed / (1024 * 1024))
+                cutoff.strftime("%Y-%m-%d %H:%M:%S"), max_threads, pruned_preview, freed / (1024 * 1024))
     return (count, freed)
 
 

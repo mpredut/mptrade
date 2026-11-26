@@ -615,6 +615,25 @@ def run_daemon_cli_once_or_start(
         instance.start()
 
 
+def resolve_thread_prune_interval_sec() -> float:
+    """Derive conservative automated LLM thread prune cadence from CLI_THREAD_RETENTION_DAYS (>= 24h)."""
+    retention_d = safe_pos_float(required_float_env("CLI_THREAD_RETENTION_DAYS"), default=3.0) or 3.0
+    return max(86400.0, round(retention_d * 86400.0 / 3.0, 1))
+
+
+def load_last_thread_prune_ts(heartbeat_path: str) -> float:
+    """Reload persisted ``last_thread_prune_ts`` from a daemon heartbeat file so restarts do not re-prune."""
+    if not heartbeat_path:
+        return 0.0
+    try:
+        hb_doc = read_json_dict(str(resolve_cachedb_filepath(heartbeat_path)), default={})
+        if isinstance(hb_doc, dict):
+            return safe_nonneg_ts(hb_doc.get("last_thread_prune_ts"), 0.0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def prune_automated_cli_threads(logger_inst: Optional[logging.Logger] = None) -> int:
     """Prune automated CLI threads older than configured retention limit."""
     log = logger_inst or logger
@@ -1119,9 +1138,11 @@ __all__ = [
     "configure_daemon_cli_logging",
     "detect_active_binance_symbols",
     "inspect_daemon_heartbeat",
+    "load_last_thread_prune_ts",
     "normalize_cycle_args",
     "parse_and_configure_daemon_cli",
     "prune_automated_cli_threads",
+    "resolve_thread_prune_interval_sec",
     "run_daemon_cli_once_or_start",
     "run_daemon_loop",
     "run_scheduled_step",

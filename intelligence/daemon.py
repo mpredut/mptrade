@@ -28,7 +28,9 @@ from botcore import (
     obj_float,
     parse_symbol_list,
     required_float_env,
+    resolve_now_ts,
     safe_nonneg_int,
+    safe_nonneg_ts,
     safe_pos_float,
 )
 from intelligence.macro.daemon_ssot import (
@@ -36,9 +38,11 @@ from intelligence.macro.daemon_ssot import (
     add_external_telemetry_cli_args,
     detect_active_binance_symbols,
     finalize_daemon_cycle,
+    load_last_thread_prune_ts,
     normalize_cycle_args,
     parse_and_configure_daemon_cli,
     prune_automated_cli_threads,
+    resolve_thread_prune_interval_sec,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
     run_scheduled_step,
@@ -64,7 +68,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         whale_interval_sec: float = 60.0,
         macro_interval_sec: Optional[float] = None,
         macro_llm_interval_sec: Optional[float] = None,
-        thread_prune_interval_sec: float = 10800.0,
+        thread_prune_interval_sec: Optional[float] = None,
         skip_macro: bool = False,
         skip_external: bool = False,
     ) -> None:
@@ -74,7 +78,9 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
         self.whale_interval_sec = safe_pos_float(whale_interval_sec, 60.0)
         self.macro_interval_sec = safe_pos_float(macro_interval_sec, required_float_env("MACRO_NEWS_INTERVAL_SEC"))
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, required_float_env("MACRO_LLM_INTERVAL_SEC"))
-        self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, 10800.0)
+        self.thread_prune_interval_sec = safe_pos_float(
+            thread_prune_interval_sec, resolve_thread_prune_interval_sec()
+        )
         self.skip_macro = _parse_bool_flag(skip_macro, False)
         self.symbols = parse_symbol_list(symbols) or detect_active_binance_symbols(self.cache_dir, include_kraken_cache=False)
 
@@ -88,9 +94,9 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
             state_file=os.path.join(self.cache_dir, "geopolitical_eval.json"),
         )
 
-        self._last_macro_ts: float = 0.0
-        self._last_thread_prune_ts: float = 0.0
         self.heartbeat_path = os.path.join(self.cache_dir, "intelligence_daemon.heartbeat")
+        self._last_macro_ts: float = 0.0
+        self._last_thread_prune_ts: float = load_last_thread_prune_ts(self.heartbeat_path) or resolve_now_ts(None)
 
     def update_macro(self, force: bool = False, now: Optional[float] = None) -> bool:
         """Fetch breaking macro news and update geopolitical threat assessment."""
@@ -132,7 +138,7 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
                 result_key="macro_updated",
             )
 
-        if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=force):
+        if is_interval_due(current_ts, self._last_thread_prune_ts, self.thread_prune_interval_sec, force=False):
             prune_automated_cli_threads(logger)
             self._last_thread_prune_ts = current_ts
 
@@ -158,7 +164,9 @@ class IntelligenceTelemetryDaemon(ExternalTelemetryMixin):
                 "whale": self.whale_interval_sec,
                 "macro": self.macro_interval_sec,
                 "macro_llm": self.macro_llm_interval_sec,
+                "thread_prune": self.thread_prune_interval_sec,
             },
+            extra={"last_thread_prune_ts": round(safe_nonneg_ts(getattr(self, "_last_thread_prune_ts", 0.0), 0.0), 3)},
             use_save_json_state=True,
             logger_inst=logger,
         )

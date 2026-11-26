@@ -49,9 +49,11 @@ from intelligence.macro.daemon_ssot import (
     add_macro_analyzer_cli_args,
     compute_step_retry_ts,
     finalize_daemon_cycle,
+    load_last_thread_prune_ts,
     normalize_cycle_args,
     parse_and_configure_daemon_cli,
     prune_automated_cli_threads,
+    resolve_thread_prune_interval_sec,
     run_daemon_cli_once_or_start,
     run_daemon_loop,
     write_daemon_heartbeat,
@@ -86,7 +88,7 @@ class MacroAnalyzer:
         cache_dir: str = "cachedb",
         macro_llm_interval_sec: Optional[float] = None,
         advisor_interval_sec: Optional[float] = None,
-        thread_prune_interval_sec: float = 10800.0,
+        thread_prune_interval_sec: Optional[float] = None,
         symbols: Optional[List[str]] = None,
     ) -> None:
         self.cache_dir = cache_dir
@@ -109,7 +111,9 @@ class MacroAnalyzer:
         self.macro_llm_interval_sec = safe_pos_float(macro_llm_interval_sec, default_macro_itv)
         self.advisor_interval_sec = safe_pos_float(advisor_interval_sec, default_adv_itv)
         self.shadow_notify = _parse_bool_flag(conf_margins.get("shadow_notify", True), False)
-        self.thread_prune_interval_sec = safe_pos_float(thread_prune_interval_sec, derived["default_sentiment_interval_sec"])
+        self.thread_prune_interval_sec = safe_pos_float(
+            thread_prune_interval_sec, resolve_thread_prune_interval_sec()
+        )
         self.symbols = parse_symbol_list(symbols) or ["BTCUSDC"]
         self.running = False
 
@@ -148,7 +152,9 @@ class MacroAnalyzer:
             if cached_adv_obj is not None and cached_adv_ts > 0.0
             else ""
         )
-        self._last_thread_prune_ts = self._last_stdout_hb_ts = 0.0
+        self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
+        self._last_thread_prune_ts = load_last_thread_prune_ts(self.heartbeat_path) or resolve_now_ts(None)
+        self._last_stdout_hb_ts = 0.0
         self._last_fg_value: Optional[int] = None
         self._last_advance_ratio: Optional[float] = None
         self._last_btc_taker_ratio: Optional[float] = None
@@ -156,7 +162,6 @@ class MacroAnalyzer:
         self._effective_geo_reason = "init"
         self._effective_advisor_interval_sec = self.advisor_interval_sec
         self._effective_advisor_reason = "init"
-        self.heartbeat_path = os.path.join(self.cache_dir, "macro_analyzer.heartbeat")
 
     def _maybe_notify_assessment(
         self,
@@ -461,7 +466,10 @@ class MacroAnalyzer:
                 "market_advisor_reason": getattr(self, "_effective_advisor_reason", "init"),
                 "thread_prune": self.thread_prune_interval_sec,
             },
-            extra={"global_session": session_ctx.session_key},
+            extra={
+                "global_session": session_ctx.session_key,
+                "last_thread_prune_ts": round(safe_nonneg_ts(getattr(self, "_last_thread_prune_ts", 0.0), 0.0), 3),
+            },
             logger_inst=logger,
         )
 

@@ -1805,7 +1805,7 @@ def test_intelligence_collectors_macroanalyzer_sanitize_bool_nan_inf_ttl_iter53_
     )
     assert ma.macro_llm_interval_sec > 1.0
     assert ma.advisor_interval_sec > 1.0
-    assert ma.thread_prune_interval_sec == 10800.0
+    assert ma.thread_prune_interval_sec == 86400.0
 
 def test_intelligence_cli_daemon_globaltelemetrycollector_iter54_s3(tmp_path):
     """[ITER54 #3] Intelligence CLI & Daemon / GlobalTelemetryCollector."""

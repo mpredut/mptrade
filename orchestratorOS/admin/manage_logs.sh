@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# manage_logs.sh -- combined log rotation, logger/ retention, and 3h agy-bot thread pruning.
+# manage_logs.sh -- combined log rotation, logger/ retention, and daily (04:00) agy-bot thread pruning.
 # 1. logrotate: caps the size of continuous nohup console logs via copytruncate.
 # 2. retention: age-based compression and deletion for dated files in logger/ and stream archives.
-# 3. prune_llm_threads.py: runs every 3 hours to prune expired automated agy-bot threads.
+# 3. prune_llm_threads.py: runs once daily at 04:00 to conservatively prune expired automated agy-bot threads.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -99,8 +99,8 @@ if [ -d "$LOGGER_DIR" ]; then
     echo "  after retention:  $(du -sh "$LOGGER_DIR" 2>/dev/null | cut -f1)"
 fi
 
-# 3. Retention for autonomous LLM CLI threads (every 3 hours)
-if [ $(( $(date +%-H) % 3 )) -eq 0 ] && [ -f "$ROOT/orchestratorOS/admin/prune_llm_threads.py" ]; then
-    echo "  pruning automated agy-bot CLI threads (3h cycle)..."
+# 3. Conservative daily retention for expired autonomous LLM CLI threads (04:00 quiet window only)
+if [ "$(date +%-H)" -eq 4 ] && [ -f "$ROOT/orchestratorOS/admin/prune_llm_threads.py" ]; then
+    echo "  pruning verified-stale automated agy-bot CLI threads (daily 04:00 cycle)..."
     "$ROOT/orchestratorOS/run_python.sh" "$ROOT/orchestratorOS/admin/prune_llm_threads.py" || true
 fi
