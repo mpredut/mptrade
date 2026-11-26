@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "binance-trading-bot"
+name = "mptrade"
 version = "1.0.0"
-description = "Binance Trading Bot with WebSocket support and price analysis"
+description = "Multi-venue automated trading fleet, market monitor, and AI risk/execution framework"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [
@@ -50,12 +50,12 @@ monitoring = [
     "langfuse>=2.0.0",
 ]
 all = [
-    "binance-trading-bot[dev,monitoring]",
+    "mptrade[dev,monitoring]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/mariusv/binance-trading-bot"
-Repository = "https://github.com/mariusv/binance-trading-bot.git"
+Homepage = "https://github.com/mpredut/mptrade"
+Repository = "https://github.com/mpredut/mptrade.git"
 
 [tool.setuptools]
 py-modules = [
@@ -101,6 +101,7 @@ where = ["."]
 include = [
     "212trading*",
     "binance_api*",
+    "core*",
     "discovery*",
     "hyperliquid*",
     "intelligence*",
@@ -110,6 +111,7 @@ include = [
     "orchestratorOS*",
     "orchestratorTrade*",
     "providers*",
+    "state_stores*",
     "strategies*",
     "verify_tools*",
     "visuals*",
