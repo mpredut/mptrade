@@ -1137,10 +1137,29 @@ def _clear_initial_order_price(initial_prices: dict, order_id: object, oid_str: 
     initial_prices.pop(oid_str, None)
 
 
+def _monitored_symbols() -> list[str]:
+    """Return all live 24x7 monitored symbols across Binance and non-Binance venues (e.g. Hyperliquid, Kraken)."""
+    base = list(sym.symbols)
+    try:
+        observe_only = sym.observe_only_registry_symbols()
+        for spec in sym.load_registry().values():
+            if (
+                getattr(spec, "enabled", False)
+                and str(getattr(spec, "market_hours", "") or "").strip().lower() == "24x7"
+                and spec.symbol not in base
+                and spec.symbol not in observe_only
+                and spec.symbol.upper() not in observe_only
+            ):
+                base.append(spec.symbol)
+    except Exception:
+        pass
+    return base
+
+
 def warmup_open_orders():
     """Seed existing open orders into tracking sets to avoid notifying historical orders on startup."""
     global _monitororder_initialized
-    for symbol in sym.symbols:
+    for symbol in _monitored_symbols():
         for side in ("SELL", "BUY"):
             try:
                 orders = api.get_open_orders(side, symbol)
@@ -1165,27 +1184,29 @@ def monitor_orders():
     hb_intervals = {
         "open_order": MONITOR_OPEN_ORDER_INTERVAL,
     }
-    touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=list(sym.symbols), intervals=hb_intervals)
+    monitored = _monitored_symbols()
+    touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=monitored, intervals=hb_intervals)
 
     while not _parse_bool_flag(getattr(api, "stop", False), False):
         try:
+            monitored = _monitored_symbols()
             currenttime = time.time()
             if currenttime < monitor_open_orders_lasttime:
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
             if currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL:
                 cycle_maps: list[tuple[dict, dict]] = []
-                for symbol in sym.symbols:
+                for symbol in monitored:
                     for side in ("SELL", "BUY"):
                         monitor_open_orders_by_type(symbol, side, _cycle_maps=cycle_maps)
                 monitor_open_orders_lasttime = currenttime
 
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=monitored, intervals=hb_intervals)
             time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
 
         except Exception as e:
             err_prefix = "Provider API error" if isinstance(e, ProviderError) else "Error"
             print(f"{err_prefix}: {e}")
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=list(sym.symbols), intervals=hb_intervals)
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=_monitored_symbols(), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
 
 

@@ -286,11 +286,12 @@ def make_test_margins(*, disable_external_pillars: bool = False, strip_venue_ref
         for k in (
             "binance_buy_reference", "binance_sell_reference",
             "kraken_buy_reference", "kraken_sell_reference",
+            "hyperliquid_buy_reference", "hyperliquid_sell_reference",
             "assetguardian_buy_reference", "assetguardian_sell_reference",
             "monitortrades_buy_reference", "monitortrades_sell_reference",
             "tradeall_buy_reference", "tradeall_sell_reference",
             "rtrade_buy_reference", "rtrade_sell_reference",
-            "kraken_window_h",
+            "kraken_window_h", "hyperliquid_window_h",
         ):
             base.pop(k, None)
         base.update({

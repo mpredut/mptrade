@@ -81,9 +81,10 @@ def _fmt_age(val: Optional[float]) -> str:
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
     syms = symbols_for("binance")
-    for inst in select_instruments(role="mt").values():
-        if not is_primary_stream_venue(inst.provider) and inst.symbol not in syms:
-            syms.append(inst.symbol)
+    for role in ("mt", "tradeall_fire", "assetguardian"):
+        for inst in select_instruments(role=role).values():
+            if not is_primary_stream_venue(inst.provider) and inst.symbol not in syms:
+                syms.append(inst.symbol)
     if not syms:
         raise ValueError("No configured symbols to verify")
     return syms

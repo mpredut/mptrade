@@ -27,7 +27,7 @@ from order_lifecycle import (
     propagate_submission_refusal,
     restore_cancelled_instrument_orders,
 )
-from order_retry import resolve_accepted_order
+from order_retry import get_accepted_order_owner_map, resolve_accepted_order
 from providers.quantity import resolve_assets
 from state_io import load_json_state, read_json_dict, save_json_state
 from guard_hierarchy import GUARD_REGISTRY
@@ -1397,7 +1397,7 @@ def _campaign_tier(symbol, drawdown_abs, maximum_row, free_cash,
     # guard and can be refused on every cycle; walking tiers from the top made that
     # refused tier the permanent pick, so the deeper tiers designed to bypass the
     # guard were never attempted. Per-tier budgets are unchanged by the order.
-    _, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment)
+    _, buy_mult, _ = _p3b_threshold_multipliers(p3b_assessment, provider_name=_provider_name_for(symbol))
     vol_mult = _symbol_volatility_mult(symbol)
     return _first_due_buy_tier(drawdown_abs, _completed_tier_values(state), buy_mult, vol_mult), state
 
@@ -1753,12 +1753,26 @@ def _restore_preempted_orders(symbol: str, orders: list[dict], reason: str) -> i
     )
 
 
+def _resolve_order_owner_map(orders) -> dict[str, str] | None:
+    """Hydrate accepted order-id owner map when any venue order uses a hashed/opaque clientOrderId (e.g. Hyperliquid)."""
+    if not orders or not any(
+        isinstance(o, dict) and resolve_priority_bot_owner(o) == "unspecified"
+        for o in orders
+    ):
+        return None
+    try:
+        return get_accepted_order_owner_map()
+    except Exception:
+        return None
+
+
 def _resolve_blocking_sell_orders(symbol, open_sells, *, canceled_orders_out: list | None = None):
     """Allow short retry when blocked only by lower-priority bots (rtrade, tradeall), then preemptively cancel."""
     if not open_sells:
         _rtrade_sell_block_since.pop(symbol, None)
         return []
-    if any(not (isinstance(o, dict) and can_bot_preempt_order("assetguardian", o)) for o in open_sells):
+    owner_map = _resolve_order_owner_map(open_sells)
+    if any(not (isinstance(o, dict) and can_bot_preempt_order("assetguardian", o, owner_map=owner_map)) for o in open_sells):
         _rtrade_sell_block_since.pop(symbol, None)
         return open_sells
     now = time.time() * 1.0
@@ -1838,7 +1852,7 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
     free_qty = _finite_float(free_qty)
     if current_price is None or free_qty is None or free_qty < 0:
         return None, state, None
-    sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment)
+    sell_mult, _, _ = _p3b_threshold_multipliers(p3b_assessment, provider_name=_provider_name_for(symbol))
     vol_mult = _symbol_volatility_mult(symbol)
     active_tiers = _effective_sell_tiers(portfolio_growth_pct, sell_mult=sell_mult)
     min_trigger_thr = min(
@@ -1871,10 +1885,11 @@ def _sell_campaign_tier(symbol, current_price, minimum_row, free_qty, provider,
             return None
 
     def _filter_blocking_sells(orders, *, needs_locked: bool = True) -> list[dict]:
+        owner_map = _resolve_order_owner_map(orders)
         return [
             o for o in (orders or ())
-            if resolve_priority_bot_owner(o) in {"assetguardian", "manual", "unspecified"}
-            or (needs_locked and can_bot_preempt_order("assetguardian", o))
+            if resolve_priority_bot_owner(o, owner_map=owner_map) in {"assetguardian", "manual", "unspecified"}
+            or (needs_locked and can_bot_preempt_order("assetguardian", o, owner_map=owner_map))
         ]
 
     preloaded_open_sells = None
@@ -2109,8 +2124,8 @@ def _next_check_seconds():
         for row in root["symbols"].values() if isinstance(row, dict)
     ) or any(_rtrade_sell_block_since.values()):
         return min(CHECK_INTERVAL_SECONDS, ACTIVE_TRIGGER_SECONDS)
-    sell_mult, buy_mult, _ = _p3b_threshold_multipliers()
     for symbol, evaluation in _last_evaluation.items():
+        sell_mult, buy_mult, _ = _p3b_threshold_multipliers(provider_name=_provider_name_for(symbol))
         vol_mult = _symbol_volatility_mult(symbol)
         drawdown = evaluation.get("drawdown")
         row = casefold_get(root["symbols"], symbol, {})

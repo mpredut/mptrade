@@ -554,12 +554,12 @@ _MARGINS_LAST_CHECK: float = 0.0
 _DEFAULT_ORDER_GUARD_ANCHOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_guard.py")
 
 _REQUIRED_ORDER_GUARD_KEYS = frozenset({
-    "default", "binance", "kraken", "default_window_h", "kraken_window_h",
-    "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy",
-    "default_chop_weight", "binance_chop_weight", "kraken_chop_weight",
+    "default", "binance", "kraken", "hyperliquid", "default_window_h", "kraken_window_h", "hyperliquid_window_h",
+    "default_weight_proxy", "binance_weight_proxy", "kraken_weight_proxy", "hyperliquid_weight_proxy",
+    "default_chop_weight", "binance_chop_weight", "kraken_chop_weight", "hyperliquid_chop_weight",
     "default_max_daily_trades", "default_safeback_sec",
-    "default_buy_reference", "binance_buy_reference", "kraken_buy_reference",
-    "default_sell_reference", "binance_sell_reference", "kraken_sell_reference",
+    "default_buy_reference", "binance_buy_reference", "kraken_buy_reference", "hyperliquid_buy_reference",
+    "default_sell_reference", "binance_sell_reference", "kraken_sell_reference", "hyperliquid_sell_reference",
     "assetguardian_buy_reference", "assetguardian_sell_reference",
     "monitortrades_buy_reference", "monitortrades_sell_reference",
     "tradeall_buy_reference", "tradeall_sell_reference",
@@ -588,7 +588,7 @@ _REQUIRED_ORDER_GUARD_KEYS = frozenset({
     "autonomous_trading_mode", "autonomous_trading_max_notional_usd",
     "autonomous_trading_min_notional_usd", "autonomous_trading_min_confidence",
     "autonomous_trading_notify", "default_bypass_guards", "binance_bypass_guards",
-    "kraken_bypass_guards",
+    "kraken_bypass_guards", "hyperliquid_bypass_guards",
 })
 
 VALID_PROFIT_GUARD_MODES = frozenset({"strict", "average", "last", "hybrid", "dynamic", "off"})
