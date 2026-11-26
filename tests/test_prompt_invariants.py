@@ -1420,7 +1420,7 @@ def test_cross_section_prompt_invariants_and_live_evaluator() -> None:
         "    | hyperliquid | HYPEUSDC | TIER_0 | 4 (4.0/4.5) | $10 | 0.01 | 0.01 | 0.01 |\n"
         "    | kraken | HYPEUSD | TIER_0 | 22 (22.0/37.0) | $1 | 0.06 | 0.00000001 | 0.01 |\n"
         "  * AI Execution & Plan Calibration (7d): plans=10 (BUY:3hit/1inv/1early/1open, SELL:2hit/1inv/0early/1open, hit=71%) | "
-        "binance: LIM 4/5[80%] | fill_by_offset(<0.2%:100%[2/2], 0.2-0.5%:50%[2/4])\n"
+        "binance: LIM 4/6[67%] | fill_by_offset(<0.2%:100%[2/2], 0.2-0.5%:50%[2/4])\n"
         "### 2. MACRO, REGIME & CROSS-MARKET:\n"
         "  * Market Breadth: advance_ratio=0.4138, advancing=12/29, BTC_vol_share=38.5%, Alt_vol_share=61.5%\n"
         "  * Macro Sentiment Advisor (conf=0.75): Neutral | live_btc_flow_delta=(BTC=$60,000.00(POC=$59,500.00), taker_ratio=1.20)\n"
@@ -2438,6 +2438,66 @@ def test_multi_order_last_cycle_execution_status_no_false_status_conflict() -> N
     )
     bad_viols = [v for v in audit_rendered_prompt_text(bad_first) if v.code == "PROMPT_ORDER_LIFECYCLE_CONSISTENCY"]
     assert any("568763607" in v.detail for v in bad_viols)
+
+
+def test_cycle21_wave4_lifo_qty_active_plan_breach_spot_perp_sibling_ext_fg_cal_and_fill_parity() -> None:
+    """Validate LIFO lot qty cap, active-plan breach/spot parity, Spot/Perp equity, xStocks sibling, header ExtVsRTH, Fear&Greed, calibration offset sum, and LCES/RecentIntents fill parity."""
+    clean_c21 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$5,000.00, invested=$2,500.00, free_cash=$2,500.00 (50.0%), "
+        "venues(hyperliquid=$4,000.00, t212=$1,000.00)\n"
+        "  * Available Free Quote Cash per Venue: hyperliquid USDC=$2,500.00\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [hyperliquid] HYPEUSDC: free_HYPE=25.0 ($1500.00 USD), px=60.0, avg_cost=58.0 (pnl_vs_cost=3.45%), "
+        "open_lifo_lots=[10.0@56.0(+7.14%), 15.0@59.333333(+1.12%)], lifo_avg=58.0 (pnl_vs_lifo=3.45%), limits(max_buy=$2000.0, max_sell=$1500.0)\n"
+        "    - [t212] SPCX_US_EQ: free_SPCX_US_EQ=7.751938 ($1000.00 USD), px=129.0, limits(max_buy=$0.0, max_sell=$1000.0)\n"
+        "  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):\n"
+        "    - [hyperliquid] HYPEUSDC BUY@58.0 (FILLED, spot=60.0, age=0.5h): target=63.0 (+5.00% vs_spot), invalidation=57.0 (-5.00% vs_spot), RR@spot=1.00x [ACTIVE]\n"
+        "  * AI Execution & Plan Calibration (7d): plans=10 (BUY:4hit/2inv/2early/2open, hit=67%); "
+        "venue_tca(hyperliquid: LIM 6/10[60%] slip_bps=-0.2 arr_bps=-10.0); fill_by_offset(<=40bp:75%[3/4], 40-100bp:50%[3/6])\n"
+        "  * Kraken Tokenized Equities / xStocks: SPCX=$129.00, EXT_CLOSE, xstock_vs_underlying=+0.00% | "
+        "t212_sibling(SPCX_US_EQ: qty=7.751938, avg_cost=140.0, pnl_vs_cost=-7.86%, peak_px=160.0[-19.38%], last_sell=125.0(REDUCE))\n"
+        "  * Hyperliquid Spot/Perp Equity Summary: engine=HL HYPE, paper=False, equity=$4,000.00, free_cash=$2,500.00, qty=25.0 ($1,500.00)\n"
+        "  * Last Cycle Execution Status — last_cycle_execution_status: "
+        "[hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=58.0, limit_px=58.0, ref_px=58.0, qty=10.0, notional=$580.00, slippage_bps=0.0, arr_bps=0.0, id=9001, age=5.0m)\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=58.0, qty=10.0, notional=$580.00, target=63.0, inval=57.0, slippage_bps=0.0, arr_bps=0.0, id=9001, age=0.08h)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Fear & Greed: 15 (Extreme Fear, 7d_chg=-5, 7d_hist=[15, 18, 17, 16, 18, 19, 20], age=2.0m)\n"
+        "### 3. TRADABLE US EQUITIES (UNIFIED PRICE, VOLUME ZONES & FLOW):\n"
+        "  * SPCX_US_EQ: Price=$129.00 [src=yahoo_ext_cached, age=10.0m, ext_vs_rth=+1.57%, t212_close=$127.00]\n"
+        "    - Trend: 24h=+1.57%\n"
+    )
+    assert audit_rendered_prompt_text(clean_c21) == []
+
+    bad_c21 = (
+        clean_c21
+        .replace("open_lifo_lots=[10.0@56.0(+7.14%), 15.0@59.333333(+1.12%)]", "open_lifo_lots=[15.0@56.0(+7.14%), 20.0@59.333333(+1.12%)]")
+        .replace("spot=60.0, age=0.5h): target=63.0 (+5.00% vs_spot), invalidation=57.0 (-5.00% vs_spot), RR@spot=1.00x [ACTIVE]", "spot=55.0, age=0.5h): target=63.0 (+14.55% vs_spot), invalidation=57.0 (+3.64% vs_spot), RR@spot=4.00x [ACTIVE]")
+        .replace("40-100bp:50%[3/6]", "40-100bp:50%[5/10]")
+        .replace("pnl_vs_cost=-7.86%, peak_px=160.0[-19.38%]", "pnl_vs_cost=-2.00%, peak_px=160.0[-5.00%]")
+        .replace("equity=$4,000.00, free_cash=$2,500.00, qty=25.0 ($1,500.00)", "equity=$4,500.00, free_cash=$2,500.00, qty=25.0 ($1,500.00)")
+        .replace("- [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=58.0, qty=10.0, notional=$580.00,", "- [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=59.0, qty=10.0, notional=$590.00,")
+        .replace("Fear & Greed: 15 (Extreme Fear, 7d_chg=-5, 7d_hist=[15, 18, 17, 16, 18, 19, 20]", "Fear & Greed: 15 (Extreme Fear, 7d_chg=-2, 7d_hist=[22, 18, 17, 16, 18, 19, 20]")
+        .replace("ext_vs_rth=+1.57%, t212_close=$127.00", "ext_vs_rth=+5.00%, t212_close=$127.00")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_c21)}
+    assert {
+        "hyperliquid:HYPEUSDC:lifo_lots_qty",
+        "hyperliquid:HYPEUSDC:spot_parity",
+        "hyperliquid:HYPEUSDC:active_status_breach",
+        "Calibration.offset_vs_venue_tca",
+        "xStocks.sibling:SPCX_US_EQ:pnl_vs_cost",
+        "xStocks.sibling:SPCX_US_EQ:peak_dd",
+        "Section1.SpotPerpEquitySum:hyperliquid",
+        "Section1.SpotPerpVenueParity:hyperliquid",
+        "Section1.FillParity:9001:fill_px",
+        "Section2.FearGreed:hist_parity",
+        "Section2.FearGreed:chg_7d",
+        "SPCX_US_EQ:HeaderExtVsRTH",
+    }.issubset(bad_subjs)
+
 
 
 

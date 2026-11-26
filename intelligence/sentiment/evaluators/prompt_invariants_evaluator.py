@@ -15,6 +15,7 @@ from botcore import (
     clamp_float,
     fmt_signed,
     safe_float,
+    safe_int,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
@@ -276,6 +277,22 @@ _XSTOCK_SPCX_PX_RE = re.compile(r"\bSPCX=\$([0-9,]+\.?\d*)")
 _CROSS_EQ_SPCX_PX_RE = re.compile(r"^\s*\|\s*SPCX_US_EQ\s*\|\s*\$([0-9,]+\.?\d*)\s*\|", re.MULTILINE)
 _INTENT_ID_ONLY_RE = re.compile(r"\bid=([A-Za-z0-9_-]+)\b")
 _VA_POS_VAL_RE = re.compile(r"vol_profile\([^)]*\bva_pos=([+-]?[0-9.]+)%([^)]*)\)")
+_SPOT_PERP_EQ_LINE_RE = re.compile(r"^\s*\*\s+([A-Za-z0-9]+)\s+Spot/Perp Equity Summary[^:]*:(.*)$", re.MULTILINE)
+_SP_EQUITY_RE = re.compile(r"\bequity=\$([0-9,]+\.?\d*)")
+_SP_FREE_CASH_RE = re.compile(r"\bfree_cash=\$([0-9,]+\.?\d*)")
+_SP_LOCKED_Q_RE = re.compile(r"\blocked_quote=\$([0-9,]+\.?\d*)")
+_SP_QTY_VAL_RE = re.compile(r"\bqty=[0-9.]+\s*\(\$([0-9,]+\.?\d*)\)")
+_XSTOCK_SIBLING_LINE_RE = re.compile(r"\bSPCX=\$([0-9,]+\.?\d*)[^\n]*?\b[a-z0-9]+_sibling\(([A-Za-z0-9_]+):([^\n]+)")
+_SIB_AVG_PNL_RE = re.compile(r"\bavg_cost=([0-9.]+),\s*pnl_vs_cost=([+-]?[0-9.]+)%")
+_SIB_PEAK_DD_RE = re.compile(r"\bpeak_px=([0-9.]+)\[([+-]?[0-9.]+)%\]")
+_EQ_HDR_EXT_RE = re.compile(
+    r"^\s*\*\s+([A-Za-z0-9_]+):\s*Price=\$([0-9,]+\.?\d*)\s*\[[^\]]*\bext_vs_rth=([+-]?[0-9.]+)%,\s*[a-z0-9_]+_close=\$([0-9,]+\.?\d*)",
+    re.MULTILINE,
+)
+_FEAR_GREED_RE = re.compile(
+    r"^\s*-\s*Fear & Greed:\s*([+-]?\d+)\s*\([^)]*\b7d_chg=([+-]?\d+),\s*7d_hist=\[([0-9,\s+-]+)\]",
+    re.MULTILINE,
+)
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
@@ -1126,9 +1143,12 @@ def audit_rendered_prompt_text(
         m_px_row = _PX_FIELD_RE.search(rest)
         px_r = safe_pos_float(m_px_row.group(1), default=None) if m_px_row else None
         val_u: Optional[float] = None
+        fb_q_row: Optional[float] = None
+        lb_q_row: Optional[float] = None
         lb_u_row: Optional[float] = None
         if (m_fbv := _FREE_BASE_VAL_RE.search(rest)) is not None:
             fb_q = safe_nonneg_float(m_fbv.group(1), default=None)
+            fb_q_row = fb_q
             val_u = _parse_money(m_fbv.group(2))
             if val_u is not None:
                 sum_pos_invested += val_u
@@ -1142,6 +1162,7 @@ def audit_rendered_prompt_text(
                 )
         if (m_lbu := _LOCKED_BASE_QTY_USD_RE.search(rest)) is not None:
             lb_q_r = safe_nonneg_float(m_lbu.group(1), default=None)
+            lb_q_row = lb_q_r
             lb_u_row = _parse_money(m_lbu.group(2))
             if lb_q_r is not None:
                 locked_base_by_vs[(ven.lower(), sym.upper())] = lb_q_r
@@ -1230,9 +1251,19 @@ def audit_rendered_prompt_text(
                                         f"open_lifo_lots {lq:g}@{lp:g} pnl={fmt_signed(lr, 2)}% != expected {fmt_signed(exp_lr, 2)}%",
                                     )
                                 )
-                if 0 < len(parsed_lots) < 4 and (m_la := _POS_LIFO_AVG_RE.search(rest)) is not None:
+                tot_lq = sum(q for q, _ in parsed_lots)
+                if fb_q_row is not None and tot_lq > 0.0:
+                    held_q = fb_q_row + (lb_q_row or 0.0)
+                    if tot_lq > held_q + max(1e-4, held_q * 0.005):
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_POSITION_ANCHORS_AND_CYCLE_MATH",
+                                f"{ven}:{sym}:lifo_lots_qty",
+                                f"sum(open_lifo_lots qty)={tot_lq:g} exceeds held base qty={held_q:g}",
+                            )
+                        )
+                if 0 < len(parsed_lots) < 4 and "older_core_qty=" not in rest and (m_la := _POS_LIFO_AVG_RE.search(rest)) is not None:
                     rep_la = safe_pos_float(m_la.group(1), default=None)
-                    tot_lq = sum(q for q, _ in parsed_lots)
                     if rep_la is not None and tot_lq > 0.0:
                         wavg_la = sum(q * p for q, p in parsed_lots) / tot_lq
                         if abs(wavg_la - rep_la) / rep_la > 0.005:
@@ -1534,6 +1565,30 @@ def audit_rendered_prompt_text(
                         "PROMPT_ACTIVE_PLAN_RR_MATH",
                         f"{ven_p}:{sym_p}:plan_geometry",
                         f"{side_p}@{entry_p:g} violates directional geometry (target={tgt_p:g}, invalidation={inv_p:g})",
+                    )
+                )
+        if spot_p is not None and (p_ref_px := px_by_vs.get((ven_p.lower(), sym_p.upper()))) is not None and p_ref_px > 0.0:
+            if abs(spot_p - p_ref_px) / p_ref_px > 0.005:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_ACTIVE_PLAN_RR_MATH",
+                        f"{ven_p}:{sym_p}:spot_parity",
+                        f"active plan spot={spot_p:g} diverges >0.5% from Section 1 px={p_ref_px:g}",
+                    )
+                )
+        if not is_resting_p and "[ACTIVE]" in body_p and spot_p is not None:
+            breached_buy = side_p == "BUY" and (
+                (inv_p is not None and spot_p < inv_p * 0.999) or (tgt_p is not None and spot_p > tgt_p * 1.001)
+            )
+            breached_sell = side_p == "SELL" and (
+                (inv_p is not None and spot_p > inv_p * 1.001) or (tgt_p is not None and spot_p < tgt_p * 0.999)
+            )
+            if breached_buy or breached_sell:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_ACTIVE_PLAN_RR_MATH",
+                        f"{ven_p}:{sym_p}:active_status_breach",
+                        f"{side_p} plan marked [ACTIVE] while live spot={spot_p:g} breached target={tgt_p}/invalidation={inv_p}",
                     )
                 )
         if anc_p is not None and anc_p > 0.0:
@@ -2528,10 +2583,36 @@ def _audit_prompt_cross_section_math(
                     )
                 )
 
-    # Execution fill notional/arr_bps, Cross-Market US Equities ExtVsRTH, Breadth ETH/BTC, and Section 4 vs_btc parity
+    # Execution fill notional/arr_bps, cross-block fill parity, Cross-Market/Header ExtVsRTH, xStocks sibling, Breadth & Section 4
+    seen_fill_by_id: dict[str, dict[str, float]] = {}
     for m_ex in _EXEC_FILL_RE.finditer(sec1_body):
         ex_side, ex_st, ex_body = m_ex.group(1), m_ex.group(2), m_ex.group(3)
         kv = dict(_EXEC_KV_RE.findall(ex_body))
+        if ex_st == "FILLED":
+            if (m_foid := _INTENT_ID_ONLY_RE.search(ex_body)) is not None:
+                f_oid = m_foid.group(1)
+                cur_fv: dict[str, float] = {}
+                if "fill_px" in kv and (v_fp := _parse_money(kv["fill_px"].lstrip("$"))) is not None:
+                    cur_fv["fill_px"] = v_fp
+                if "qty" in kv and (v_q := safe_pos_float(kv["qty"].replace(",", ""), default=None)) is not None:
+                    cur_fv["qty"] = v_q
+                if "notional" in kv and (v_nt := _parse_money(kv["notional"].lstrip("$"))) is not None:
+                    cur_fv["notional"] = v_nt
+                if f_oid in seen_fill_by_id:
+                    prev_fv = seen_fill_by_id[f_oid]
+                    for fk, fval in cur_fv.items():
+                        if fk in prev_fv:
+                            tol_f = max(0.50 if fk == "notional" else 1e-4, abs(prev_fv[fk]) * 0.005)
+                            if abs(fval - prev_fv[fk]) > tol_f:
+                                violations.append(
+                                    InvariantViolation(
+                                        "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                                        f"Section1.FillParity:{f_oid}:{fk}",
+                                        f"order id={f_oid} has conflicting {fk} across Section 1: {prev_fv[fk]:g} vs {fval:g}",
+                                    )
+                                )
+                elif cur_fv:
+                    seen_fill_by_id[f_oid] = cur_fv
         if ex_st == "FILLED" and "fill_px" in kv and "qty" in kv and "notional" in kv:
             fp_v = _parse_money(kv["fill_px"].lstrip("$"))
             q_v = safe_pos_float(kv["qty"].replace(",", ""), default=None)
@@ -2589,6 +2670,51 @@ def _audit_prompt_cross_section_math(
                         f"reported ExtVsRTH={fmt_signed(rep_ext, 2)}% != expected {fmt_signed(exp_ext, 2)}% (px={px_e:g}, close={cl_e:g})",
                     )
                 )
+    for m_eqh in _EQ_HDR_EXT_RE.finditer(prompt_text):
+        eq_hs = m_eqh.group(1)
+        px_eh = _parse_money(m_eqh.group(2))
+        rep_eh = safe_float(m_eqh.group(3), default=None)
+        cl_eh = _parse_money(m_eqh.group(4))
+        if px_eh is not None and rep_eh is not None and cl_eh is not None and cl_eh > 0.0:
+            exp_eh = ((px_eh - cl_eh) / cl_eh) * 100.0
+            if abs(exp_eh - rep_eh) > 0.15:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                        f"{eq_hs}:HeaderExtVsRTH",
+                        f"reported header ext_vs_rth={fmt_signed(rep_eh, 2)}% != expected {fmt_signed(exp_eh, 2)}% (px={px_eh:g}, close={cl_eh:g})",
+                    )
+                )
+    for m_xsib in _XSTOCK_SIBLING_LINE_RE.finditer(sec1_body):
+        u_sib_px = _parse_money(m_xsib.group(1))
+        sib_sym, sib_rest = m_xsib.group(2), m_xsib.group(3)
+        if u_sib_px is not None and u_sib_px > 0.0:
+            if (m_sap := _SIB_AVG_PNL_RE.search(sib_rest)) is not None:
+                s_avg = safe_pos_float(m_sap.group(1), default=None)
+                s_pnl = safe_float(m_sap.group(2), default=None)
+                if s_avg is not None and s_pnl is not None:
+                    exp_sp = ((u_sib_px - s_avg) / s_avg) * 100.0
+                    if abs(exp_sp - s_pnl) > 0.15:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                                f"xStocks.sibling:{sib_sym}:pnl_vs_cost",
+                                f"sibling pnl_vs_cost={fmt_signed(s_pnl, 2)}% != expected {fmt_signed(exp_sp, 2)}% (px={u_sib_px:g}, avg={s_avg:g})",
+                            )
+                        )
+            if (m_spd := _SIB_PEAK_DD_RE.search(sib_rest)) is not None:
+                s_pk = safe_pos_float(m_spd.group(1), default=None)
+                s_dd = safe_float(m_spd.group(2), default=None)
+                if s_pk is not None and s_dd is not None:
+                    exp_sd = ((u_sib_px - s_pk) / s_pk) * 100.0
+                    if abs(exp_sd - s_dd) > 0.15:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                                f"xStocks.sibling:{sib_sym}:peak_dd",
+                                f"sibling peak_dd={fmt_signed(s_dd, 2)}% != expected {fmt_signed(exp_sd, 2)}% (px={u_sib_px:g}, peak={s_pk:g})",
+                            )
+                        )
     if (m_eb := _BREADTH_ETH_BTC_RE.search(prompt_text)) is not None and (btc_live := sec3_px_by_sym.get("BTCUSDC")) is not None:
         rep_eb = safe_pos_float(m_eb.group(1), default=None)
         eth_br = _parse_money(m_eb.group(2))
@@ -2665,9 +2791,12 @@ def _audit_prompt_calibration_and_breadth(
                                     f"reported hit={rep_hit:.0f}% != expected {exp_h:.1f}% ({tot_h}/{resolved})",
                                 )
                             )
+            vt_fills = vt_total = 0
             for m_lim in _CAL_LIM_RE.finditer(ln):
                 f_n = safe_nonneg_int(m_lim.group(1), default=0)
                 t_n = safe_nonneg_int(m_lim.group(2), default=0)
+                vt_fills += f_n
+                vt_total += t_n
                 rep_p = safe_nonneg_float(m_lim.group(3), default=None)
                 if t_n <= 0 or f_n > t_n or (rep_p is not None and abs(rep_p - (f_n / t_n) * 100.0) > 1.0):
                     violations.append(
@@ -2678,10 +2807,13 @@ def _audit_prompt_calibration_and_breadth(
                         )
                     )
             if (m_ob := _CAL_OFFSET_BLOCK_RE.search(ln)) is not None:
+                fo_fills = fo_total = 0
                 for m_oi in _CAL_OFFSET_ITEM_RE.finditer(m_ob.group(1)):
                     rep_p = safe_nonneg_float(m_oi.group(1), default=None)
                     f_n = safe_nonneg_int(m_oi.group(2), default=0)
                     t_n = safe_nonneg_int(m_oi.group(3), default=0)
+                    fo_fills += f_n
+                    fo_total += t_n
                     if t_n <= 0 or f_n > t_n or (rep_p is not None and abs(rep_p - (f_n / t_n) * 100.0) > 1.0):
                         violations.append(
                             InvariantViolation(
@@ -2690,6 +2822,14 @@ def _audit_prompt_calibration_and_breadth(
                                 f"fill_by_offset {rep_p}%[{f_n}/{t_n}] inconsistent",
                             )
                         )
+                if vt_total > 0 and fo_total > 0 and (fo_fills > vt_fills or fo_total > vt_total):
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_CALIBRATION_MATH",
+                            "Calibration.offset_vs_venue_tca",
+                            f"fill_by_offset sum ({fo_fills}/{fo_total}) exceeds venue_tca sum ({vt_fills}/{vt_total})",
+                        )
+                    )
         if "Market Breadth:" in ln:
             if (m_ba := _BREADTH_ADV_RE.search(ln)) is not None:
                 ar = safe_float(m_ba.group(1), default=None)
@@ -2799,6 +2939,37 @@ def _audit_prompt_section1_parity_and_structure(
                             f"venue {vk_nav} cash+locked+positions=${comp_v:.2f} exceeds venues({vk_nav})=${nav_v:.2f}",
                         )
                     )
+    else:
+        v_map_s1 = {}
+
+    # 2A. Spot/Perp Equity Summary conservation and venue parity (venue-agnostic)
+    for m_spe in _SPOT_PERP_EQ_LINE_RE.finditer(sec1_body):
+        sp_ven, sp_body = m_spe.group(1).lower(), m_spe.group(2)
+        m_eq = _SP_EQUITY_RE.search(sp_body)
+        m_fc = _SP_FREE_CASH_RE.search(sp_body)
+        if m_eq is not None and (eq_v := _parse_money(m_eq.group(1))) is not None:
+            if m_fc is not None and (fc_sp := _parse_money(m_fc.group(1))) is not None:
+                m_lq_sp = _SP_LOCKED_Q_RE.search(sp_body)
+                lq_sp = (_parse_money(m_lq_sp.group(1)) or 0.0) if m_lq_sp is not None else 0.0
+                m_qv_sp = _SP_QTY_VAL_RE.search(sp_body)
+                if m_qv_sp is not None or "qty=" not in sp_body:
+                    qv_sp = (_parse_money(m_qv_sp.group(1)) or 0.0) if m_qv_sp is not None else 0.0
+                    if abs((fc_sp + lq_sp + qv_sp) - eq_v) > max(0.25, eq_v * 0.005):
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_SECTION1_SUM_CONSERVATION",
+                                f"Section1.SpotPerpEquitySum:{sp_ven}",
+                                f"{sp_ven} free_cash(${fc_sp:.2f})+locked(${lq_sp:.2f})+qty_val(${qv_sp:.2f})=${fc_sp + lq_sp + qv_sp:.2f} != equity=${eq_v:.2f}",
+                            )
+                        )
+            if (ven_ref_eq := v_map_s1.get(sp_ven)) is not None and abs(eq_v - ven_ref_eq) > max(0.25, eq_v * 0.005):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION1_SUM_CONSERVATION",
+                        f"Section1.SpotPerpVenueParity:{sp_ven}",
+                        f"{sp_ven} Spot/Perp equity=${eq_v:.2f} != venues({sp_ven})=${ven_ref_eq:.2f}",
+                    )
+                )
 
     # 2B. Recent Autonomous Intents unique order IDs
     if "Recent Autonomous Intents:" in sec1_body:
@@ -2890,7 +3061,40 @@ def _audit_prompt_section1_parity_and_structure(
                     )
                 )
 
-    # 5. Section 2 Options VRP Identity (VRP == DVOL - RV) and SPY/QQQ vs Long_Horizon now: parity
+    # 5. Section 2 Fear & Greed history consistency, Options VRP Identity (VRP == DVOL - RV), and SPY/QQQ vs Long_Horizon parity
+    for m_fg in _FEAR_GREED_RE.finditer(prompt_text):
+        fg_now = safe_int(m_fg.group(1), default=None)
+        fg_chg = safe_int(m_fg.group(2), default=None)
+        fg_hist = [
+            hv
+            for tok in m_fg.group(3).split(",")
+            if (hv := safe_int(tok.strip(), default=None)) is not None
+        ]
+        if fg_now is not None and (not (0 <= fg_now <= 100) or any(not (0 <= h <= 100) for h in fg_hist)):
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                    "Section2.FearGreed:bounds",
+                    f"Fear & Greed value={fg_now} or 7d_hist={fg_hist} outside [0, 100]",
+                )
+            )
+        if fg_now is not None and fg_hist:
+            if fg_hist[0] != fg_now:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        "Section2.FearGreed:hist_parity",
+                        f"Fear & Greed value={fg_now} != 7d_hist[0]={fg_hist[0]}",
+                    )
+                )
+            if fg_chg is not None and (fg_hist[0] - fg_hist[-1]) != fg_chg:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        "Section2.FearGreed:chg_7d",
+                        f"Fear & Greed 7d_chg={fg_chg} != 7d_hist[0]-7d_hist[-1]={fg_hist[0] - fg_hist[-1]}",
+                    )
+                )
     dvol_by_coin: dict[str, float] = {}
     for m_dv in _DVOL_RE.finditer(prompt_text):
         if (dv_v := safe_pos_float(m_dv.group(2), default=None)) is not None:
