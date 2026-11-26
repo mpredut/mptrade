@@ -37,6 +37,7 @@ from intelligence.macro_sentiment_ssot import (
     resolve_derived_telemetry_intervals,
 )
 from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+    compute_futures_premarket_lead,
     format_bottom_structure_6h_parts,
     format_compact_usd,
     format_equity_macro_regime_line,
@@ -456,6 +457,16 @@ def _format_macro_and_news_section(
         if "(" in sa_flow_raw
         else (f"({sa_flow_raw})" if sa_flow_raw else "")
     )
+    sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
+    sa_fut_lead_v: Optional[float] = None
+    if isinstance(mb_bench, dict) and mb_bench:
+        fl_raw = safe_float(compute_futures_premarket_lead(mb_bench).get("futures_lead_pct"), None)
+        if fl_raw is not None and (
+            abs(fl_raw) >= 0.25
+            or "fut " in sa_summary_raw.lower()
+            or "futures" in sa_summary_raw.lower()
+        ):
+            sa_fut_lead_v = fl_raw
     if sa_flow_delta:
         sa_flow_delta = _SA_FLOW_POSTURE_RE.sub(r"\1summary", sa_flow_delta)
         if sa_age_m is not None:
@@ -467,6 +478,12 @@ def _format_macro_and_news_section(
             and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None
         ):
             sa_flow_delta = sa_flow_delta.replace(" vs ", f", CB_Prem={fmt_signed(cb_v, 1)}bps vs ", 1)
+        if (
+            sa_fut_lead_v is not None
+            and "Fut_Lead=" not in sa_flow_delta
+            and " vs " in sa_flow_delta
+        ):
+            sa_flow_delta = sa_flow_delta.replace(" vs ", f", Fut_Lead={fmt_signed(sa_fut_lead_v, 2)}% vs ", 1)
     if not sa_flow_delta and sa and (sa_age_m or 0.0) >= 5.0:
         micro_map = getattr(sensors, "microstructure", None) or {}
         btc_m = (
@@ -502,9 +519,10 @@ def _format_macro_and_news_section(
                 d_parts.append(f"cvd_1h={fmt_signed(cvd1h_v / 1e6)}M")
             if isinstance(mb_bench, dict) and (cb_v := safe_float(mb_bench.get("coinbase_premium_bps"), None)) is not None:
                 d_parts.append(f"CB_Prem={fmt_signed(cb_v, 1)}bps")
+            if sa_fut_lead_v is not None:
+                d_parts.append(f"Fut_Lead={fmt_signed(sa_fut_lead_v, 2)}%")
             if d_parts:
                 sa_flow_delta = f"({', '.join(d_parts)} vs {sa_age_m}m-old summary)"
-    sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
     sa_summary = (
         _SA_SUMMARY_DIRECTIVE_RE.sub(
             lambda m: "." if m.group(0).lstrip().startswith(",") else "",

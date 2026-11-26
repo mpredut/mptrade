@@ -21,6 +21,7 @@ from instrument_registry import (
     disabled_registry_symbols,
     observe_only_registry_symbols,
 )
+from intelligence.macro.lexicon_ssot import has_acute_shock_keywords
 from intelligence.macro_sentiment_ssot import normalize_threat_level
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from providers.intent_state import decision_has_cancel_directive, eval_doc_was_actionable
@@ -581,6 +582,12 @@ def evaluate_crypto_executor_delta_gate(
 
     macro_verdict = _extract_macro_verdict_sig(sa)
     geo_verdict = _extract_geo_verdict_sig(gt)
+    geo_unassessed_note = (
+        str(gt.get("live_unassessed_high_sev_note") or "").strip()
+        if isinstance(gt, Mapping)
+        else ""
+    )
+    geo_unassessed_acute = bool(geo_unassessed_note and has_acute_shock_keywords(geo_unassessed_note))
     snapshot_meta: Dict[str, Any] = {
         "eval_prices": eval_prices,
         "macro_ts": round(macro_ts, 3),
@@ -592,6 +599,8 @@ def evaluate_crypto_executor_delta_gate(
         "order_attention_flags": order_attention_flags,
         "plan_states": plan_states,
     }
+    if geo_unassessed_note:
+        snapshot_meta["geo_unassessed_note"] = geo_unassessed_note
 
     (
         max_move_pct,
@@ -656,6 +665,7 @@ def evaluate_crypto_executor_delta_gate(
 
     prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
     prev_geo_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
+    prev_geo_unassessed = str(prev_meta.get("geo_unassessed_note") or "").strip()
     if geo_shock or (
         geo_ts > 0.0
         and (
@@ -665,6 +675,8 @@ def evaluate_crypto_executor_delta_gate(
         and (not geo_verdict or not prev_geo_verdict or geo_verdict != prev_geo_verdict)
     ):
         return False, "geo_update", escalate_high_effort, snapshot_meta
+    if geo_unassessed_acute and geo_unassessed_note != prev_geo_unassessed:
+        return False, "geo_unassessed_acute_headline", escalate_high_effort, snapshot_meta
 
     prev_oids = sorted({str(x).strip() for x in (prev_meta.get("open_order_ids") or []) if str(x).strip()})
     if open_order_ids != prev_oids:

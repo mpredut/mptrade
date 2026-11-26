@@ -2001,5 +2001,82 @@ def test_crypto_prompt_pass2_real_spot_cvd_zero_vol_and_holiday_clickbait(tmp_pa
     assert has_financial_or_geopolitical_context("US announces new tariffs on host of countries including China") is True
 
 
+def test_crypto_prompt_pass4_arb_ob_freshness_live_fut_lead_and_essay_severity_filter():
+    """Pass 4 live crypto prompt coherence regressions:
+    1. compute_cross_venue_arb_metrics uses formulaic OB freshness budget (2 * orderbook_interval_sec = 30s)
+       so same-sweep L2 orderbooks (~17s/19s old, 2.3s skew) compute true L2 arb instead of flipping sign on stale spot.
+    2. Section 1 Macro Sentiment Advisor live_btc_flow_delta appends live Fut_Lead when stale summary cites Fut
+       or live Futures_Lead is active.
+    3. Editorial opinion / feature / ICC-judge profile headlines are excluded from high-severity crisis keywords
+       while real kinetic drone/warship strikes and nuclear arsenal escalation stay high-severity.
+    """
+    from types import SimpleNamespace
+    from intelligence.macro.lexicon_ssot import match_high_severity_keywords
+    from intelligence.sentiment.evaluators.microstructure_evaluator import compute_cross_venue_arb_metrics
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+
+    now_s = 1_795_678_000.0
+    # 1. Same-sweep L2 books (16.9s & 19.2s old, 2.3s skew) must use L2 mids (+0.7bps), not stale Kraken last trade (-5.6bps)
+    micro_arb = {
+        "HYPEUSDC": {
+            "venue": "hyperliquid",
+            "ob_mid_price": 61.0695,
+            "_ob_raw_ts": now_s - 16.9,
+            "spread_bps": 0.16,
+        },
+        "HYPEUSD": {
+            "venue": "kraken",
+            "ob_mid_price": 61.065,
+            "_ob_raw_ts": now_s - 19.2,
+            "spread_bps": 1.64,
+        },
+    }
+    pt_arb = {"HYPEUSDC": {"price": 61.0555}, "HYPEUSD": {"price": 61.09}}
+    compute_cross_venue_arb_metrics("HYPEUSDC", micro_arb["HYPEUSDC"], pt_arb["HYPEUSDC"], micro_arb, pt_arb, now_ts=now_s)
+    compute_cross_venue_arb_metrics("HYPEUSD", micro_arb["HYPEUSD"], pt_arb["HYPEUSD"], micro_arb, pt_arb, now_ts=now_s)
+    assert micro_arb["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(0.7, abs=0.1)
+    assert micro_arb["HYPEUSD"]["cross_venue_arb_bps"] == pytest.approx(-0.7, abs=0.1)
+
+    # 2. Section 1 live_btc_flow_delta reconciles stale 'Fut +0.67%' in aged summary with live Fut_Lead
+    mb_live = {
+        "ts": now_s - 60.0,
+        "coinbase_premium_bps": -1.9,
+        "items": {
+            "SPY": {"price": 716.70, "chg_24h_pct": 0.23, "market_state": "CLOSED", "bar_age_min": 380.0},
+            "QQQ": {"price": 633.93, "chg_24h_pct": -0.23, "market_state": "CLOSED", "bar_age_min": 380.0},
+            "ES=F": {"price": 7213.25, "chg_24h_pct": 0.24, "since_cash_close_pct": -0.30, "bar_age_min": 12.0},
+            "NQ=F": {"price": 26182.50, "chg_24h_pct": 0.32, "since_cash_close_pct": -0.32, "bar_age_min": 12.0},
+        },
+    }
+    sec1_fut = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "confidence": 0.76,
+                    "ts": now_s - 1320.0,
+                    "summary": "BTC $60.4k <6h low, CB -2.4bps, Fut +0.67%.",
+                },
+                geopolitical_threat=None,
+                macro_benchmarks=mb_live,
+                microstructure={"BTCUSDC": {"taker_buy_sell_ratio": 0.94, "cvd_15m_usd": -2_250_000.0}},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "CB_Prem=-1.9bps, Fut_Lead=-0.32% vs 22.0m-old summary" in sec1_fut
+
+    # 3. Opinion/feature essays and ICC-judge profiles do not match high-severity crisis keywords,
+    #    while real kinetic strikes and nuclear arsenal expansion still match.
+    assert match_high_severity_keywords("The world must choose between nuclear abolition and nuclear catastrophe") == ()
+    assert match_high_severity_keywords("How Silicon Valley became central to Israel's war on Palestinians") == ()
+    assert match_high_severity_keywords("ICC judge Kimberly Prost tries war crimes. She's a target of US sanctions") == ()
+    assert match_high_severity_keywords("Two Libyan sailors die after Ukrainian drone strike on Russian warship in Benghazi") != ()
+    assert match_high_severity_keywords("North Korea's Kim calls for nuclear arsenal expansion, says status 'will never change'") != ()
+    assert match_high_severity_keywords("US imposes new treasury sanctions package targeting Russian oil exports") != ()
+
+
+
 
 

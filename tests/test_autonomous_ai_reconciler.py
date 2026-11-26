@@ -10884,3 +10884,65 @@ def test_quota_soft_conserve_openai_compat_routing_and_threshold_bounds(tmp_path
     refreshed_snap = rec_live._load_cached_quota_snapshot()
     assert refreshed_snap["buckets"]["gemini-4-neon-medium"] == pytest.approx(1.0)
     assert len(probe_calls) == 1
+
+
+def test_delta_gate_wakes_once_on_unassessed_acute_geo_headline() -> None:
+    """Delta-Gate wakes once on a newly arrived acute unassessed geopolitical headline, then sleeps until changed."""
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+
+    t0 = 1_795_678_000.0
+    note_acute = (
+        "UNASSESSED_FRESH_HIGH_SEV (1 headline(s) arrived after shield eval: "
+        "Strait of Hormuz blockade halts crude oil tanker traffic after naval clash)"
+    )
+    note_non_acute = (
+        "UNASSESSED_FRESH_HIGH_SEV (1 headline(s) arrived after shield eval: "
+        "Two Libyan sailors die after Ukrainian drone strike on Russian warship in Benghazi)"
+    )
+
+    def _mk_sensors(unassessed_note: str):
+        return SimpleNamespace(
+            prices_and_trends={"BTCUSDC": {"price": 60500.0}},
+            portfolio_summary={"tradable_positions": [], "open_limit_orders": [], "recent_orders": {}},
+            sentiment_advisor={"ts": t0 - 600.0, "market_bias": "NEUTRAL", "recommended_action": "HOLD"},
+            geopolitical_threat={
+                "ts": t0 - 1200.0,
+                "threat_level": "NORMAL",
+                "recommended_brake": "NONE",
+                "risk_score": 0.15,
+                **({"live_unassessed_high_sev_note": unassessed_note} if unassessed_note else {}),
+            },
+            source_timestamps={},
+        )
+
+    prev_hold = {
+        "ts": t0 - 300.0,
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC"}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 60500.0},
+            "macro_ts": t0 - 600.0,
+            "macro_verdict": "NEUTRAL||HOLD|",
+            "geo_ts": t0 - 1200.0,
+            "geo_verdict": "NORMAL|NONE",
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+
+    # 1. Non-acute unassessed note stays quiet_flat (no LLM spam)
+    skip_na, rsn_na, _, _ = evaluate_crypto_executor_delta_gate(_mk_sensors(note_non_acute), prev_hold, now_ts=t0)
+    assert skip_na is True and "quiet_flat" in rsn_na
+
+    # 2. First arrival of an acute unassessed breaking headline wakes LLM once and persists geo_unassessed_note
+    skip_1, rsn_1, _, meta_1 = evaluate_crypto_executor_delta_gate(_mk_sensors(note_acute), prev_hold, now_ts=t0)
+    assert skip_1 is False and rsn_1 == "geo_unassessed_acute_headline"
+    assert meta_1["geo_unassessed_note"] == note_acute
+
+    # 3. Subsequent flat cycle seeing the exact same already-acknowledged note returns quiet_flat
+    prev_ack = {**prev_hold, "ts": t0, "delta_gate_meta": meta_1}
+    skip_2, rsn_2, _, _ = evaluate_crypto_executor_delta_gate(_mk_sensors(note_acute), prev_ack, now_ts=t0 + 360.0)
+    assert skip_2 is True and "quiet_flat" in rsn_2
+

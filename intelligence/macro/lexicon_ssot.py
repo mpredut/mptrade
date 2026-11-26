@@ -353,6 +353,7 @@ def _is_excluded_non_crisis_attack_keyword(
         if (
             (combined_words & {"anniversary", "extinguished", "hitler", "holocaust", "kuwait", "memorial", "museum", "nazi", "nazis", "nuremberg", "wwi", "wwii"})
             or ("years" in combined_words and "since" in combined_words)
+            or ("crimes" in combined_words and bool(combined_words & {"icc", "judge", "prosecutor", "tribunal", "court"}))
         ) and not (
             combined_words
             & {
@@ -534,6 +535,7 @@ def _is_excluded_non_crisis_attack_keyword(
                     "awarded", "contract", "contracts", "filmmaker", "newsom",
                     "deportation", "deportations", "restarting", "lieberman",
                     "sand", "cling", "diplomat", "diplomats", "spat",
+                    "abolition", "disarmament", "became", "silicon", "judge", "icc", "crimes",
                 }
             )
         ) and not (combined_words & ((eff_kinetic - kw_words) | _BROAD_MARKET_INDEX_CONTEXT_WORDS)):
@@ -572,6 +574,7 @@ def _is_excluded_non_crisis_attack_keyword(
             & {
                 "jail", "jailed", "jailing", "sailor", "prison", "sentenced",
                 "convicted", "trial", "arrest", "arrested", "indicted", "court",
+                "judge", "icc", "crimes", "prosecutor",
                 "children", "child", "camp", "diplomat", "diplomats",
                 "representative", "expels", "expel", "expelled",
             }

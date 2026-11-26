@@ -35,6 +35,7 @@ from pricewindow import adaptive_thresholds
 from providers.base import MarketDataProvider
 from intelligence.internal.state.survival import estimate_remaining_trend_hours, is_t_cache_entry_fresh
 from intelligence.macro_sentiment_ssot import (
+    resolve_derived_telemetry_intervals,
     scan_latest_long_trend_value,
     parse_ts_px_row,
 )
@@ -867,14 +868,17 @@ def compute_cross_venue_arb_metrics(
             peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None,
             source="spot",
         )
+        ob_itv = safe_pos_float(
+            resolve_derived_telemetry_intervals().get("orderbook_interval_sec"), default=15.0
+        ) or 15.0
         aligned = resolve_aligned_quote_pair(
             own_ob_q,
             peer_ob_q,
             own_spot_q,
             peer_spot_q,
             now_ts=now_ts,
-            max_skew_sec=2.0,
-            max_age_sec=10.0,
+            max_skew_sec=min(4.0, max(2.0, ob_itv * 0.25)),
+            max_age_sec=ob_itv * 2.0,
             max_fallback_divergence=0.01,
             max_pair_divergence=0.10,
         )
