@@ -5661,6 +5661,79 @@ def test_simultaneous_buys_share_cycle_venue_quote_cash_budget(tmp_path):
     assert by_def["BTCUSDC"]["history"][-1].get("category") == "deferred"
     assert by_def["ARBUSDC"]["status"] == "EXECUTED" and by_def["ARBUSDC"]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
 
+    # 8. normalize_trading_decisions preserves same-symbol standalone CANCEL directives alongside BUY/SELL and
+    #    deduplicates overlapping cancel_order_ids + plain HOLD cleanly.
+    same_sym_decs = normalize_trading_decisions({
+        "market_trading_decisions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "BUY", "confidence": 0.91, "suggested_notional_usd": 500.0},
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "CANCEL", "cancel_order_ids": ["ord-opp-1"], "confidence": 0.90},
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "CANCEL", "cancel_order_ids": ["ord-opp-1", "ord-opp-2"], "confidence": 0.89},
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "HOLD", "confidence": 0.95},
+        ]
+    })
+    assert [(d["decision"], d.get("cancel_order_ids")) for d in same_sym_decs] == [
+        ("BUY", None),
+        ("CANCEL", ["ord-opp-1"]),
+        ("CANCEL", ["ord-opp-2"]),
+    ]
+    # Redundant standalone CANCEL targeting an order_id already covered by BUY is deduplicated cleanly
+    overlap_decs = normalize_trading_decisions({
+        "market_trading_decisions": [
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "BUY", "cancel_order_ids": ["ord-1"], "confidence": 0.92, "suggested_notional_usd": 500.0},
+            {"venue": "binance", "symbol": "BTCUSDC", "decision": "CANCEL", "cancel_order_ids": ["ord-1"], "confidence": 0.90},
+        ]
+    })
+    assert len(overlap_decs) == 1 and overlap_decs[0]["decision"] == "BUY"
+
+    # 9. Standalone CANCEL marks matching unfilled EXECUTED AI intents as terminal CANCELED in durable state so
+    #    daily BUY circuit-breaker stops counting them and prune_reconciled_terminal_open_orders drops stale book ghosts.
+    from providers.ai_circuit_breaker import evaluate_ai_intent_circuit_breaker
+    from providers.intent_state import prune_reconciled_terminal_open_orders
+
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    now_sc = time.time()
+    gw2.save_all_intents([
+        {
+            "intent_id": "ai_buy_to_cancel",
+            "timestamp": now_sc - 120.0,
+            "decision": "BUY",
+            "symbol": "ADAUSDC",
+            "venue": "binance",
+            "order_type": "LIMIT",
+            "limit_price": 0.14,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 840.0,
+            "execution_payload": {"orderId": "ada_rest_1", "status": "NEW", "executedQty": "0.0"},
+            "history": [],
+        }
+    ])
+    ada_can.open_orders.return_value = [
+        {"orderId": "ada_rest_1", "clientOrderId": "AI_ai_buy_to_cancel", "side": "BUY", "price": "0.14", "origQty": "6000", "executedQty": "0"}
+    ]
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: can_map[(str(venue).lower(), str(sym).upper())]
+    res_sc = gw2.submit(
+        {"decision": "CANCEL", "venue": "binance", "symbol": "ADAUSDC", "cancel_order_ids": ["ada_rest_1"], "confidence": 0.92},
+        source="auto_cryptotrade_executor",
+        max_mode="enforce",
+    )
+    assert res_sc is not None and res_sc["status"] == "CANCELED"
+    persisted_after = gw2.load_all_intents()
+    assert persisted_after[0]["execution_payload"]["status"] == "CANCELED"
+    assert persisted_after[0]["execution_payload"]["reconciled_terminal"] is True
+    _, _, _, cb_after = evaluate_ai_intent_circuit_breaker(
+        {"intent_id": "next_buy", "decision": "BUY"},
+        persisted_after,
+        decision="BUY",
+        symbol="ADAUSDC",
+        venue="binance",
+        price=0.14,
+        effective_usd=500.0,
+        min_notional_usd=10.0,
+        now_ts=now_sc,
+    )
+    assert cb_after["daily_sym_buys"] == 0 and cb_after["daily_buy_notional_usd"] == 0.0
+    assert prune_reconciled_terminal_open_orders([{"venue": "binance", "order_id": "ada_rest_1"}], persisted_after) == []
+
 
 
 

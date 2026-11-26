@@ -132,6 +132,7 @@ from providers.intent_execution import (
 )
 from providers.intent_state import (
     _extract_intent_id,
+    _intent_order_ids,
     append_intent_history,
     collect_known_ai_order_ids,
     extract_intent_cancel_order_ids,
@@ -150,7 +151,7 @@ from providers.intent_telemetry import (
     extract_frozen_trade_plan_status,
 )
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
-from providers.order_ohlc_utils import extract_remaining_qty
+from providers.order_ohlc_utils import extract_executed_qty, extract_remaining_qty
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
 from providers.portfolio_state_store import resolve_kraken_trade_cache_position
 from providers.quantity import clamp_notional_to_wallet_balance, resolve_assets
@@ -336,6 +337,41 @@ class AutonomousIntentGateway:
                     continue
                 item["resolved_plan_status"] = clean_updates[iid]
                 item["resolved_plan_ts"] = eff_now
+                updated += 1
+            if updated > 0:
+                self.save_all_intents(intents)
+        return updated
+
+    def _mark_canceled_ai_intents(self, canceled_ids: List[str], now_ts: float) -> int:
+        """Mark unfilled EXECUTED AI intents matching standalone-canceled order IDs as terminal CANCELED."""
+        clean_ids = {c for raw in canceled_ids if (c := clean_order_id(raw))}
+        if not clean_ids:
+            return 0
+        eff_now = round(resolve_now_ts(now_ts), 3)
+        updated = 0
+        with durable_intents_lock(self.intents_file):
+            intents = load_durable_intents_state(self.intents_file, read_only=False)
+            for item in intents:
+                if not isinstance(item, dict) or (clean_upper_scalar(item.get("status")) or "") != "EXECUTED":
+                    continue
+                ep = item.get("execution_payload")
+                if not isinstance(ep, dict) or extract_executed_qty(ep, default=0.0) > 0.0:
+                    continue
+                if (clean_upper_scalar(ep.get("status")) or "") in ("FILLED", "CLOSED", "CANCELED", "CANCELLED"):
+                    continue
+                matched = _intent_order_ids(item) & clean_ids
+                if not matched:
+                    continue
+                ep_new = dict(ep)
+                ep_new["status"] = "CANCELED"
+                ep_new.pop("msg", None)
+                ep_new["terminal_ts"] = eff_now
+                ep_new["reconciled_terminal"] = True
+                item["execution_payload"] = ep_new
+                append_intent_history(
+                    item,
+                    {"ts": eff_now, "action": "CANCELED_STANDALONE", "canceled_order_ids": sorted(matched)},
+                )
                 updated += 1
             if updated > 0:
                 self.save_all_intents(intents)
@@ -1477,6 +1513,8 @@ class AutonomousIntentGateway:
                             cycle_caps[q_key] += freed_c
                 cancel_rec["canceled_order_ids"] = list(canceled_ids)
                 cancel_rec["failed_order_ids"] = list(failed_ids)
+                if canceled_ids:
+                    self._mark_canceled_ai_intents(canceled_ids, now)
                 if scan_errors:
                     cancel_rec["scan_errors"] = list(scan_errors)
                 if canceled_ids and not failed_ids and not scan_errors and len(canceled_ids) >= len(target_oids):

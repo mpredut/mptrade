@@ -499,7 +499,7 @@ def is_topic_resume_warm(
         return False
     if conversation_id is not None and cid != str(conversation_id).strip():
         return False
-    if _parse_bool_flag(entry.get("needs_full_prompt"), False):
+    if _parse_bool_flag(entry.get("needs_full_prompt"), False) or _parse_bool_flag(entry.get("pending_rotation"), False):
         return False
     if safe_nonneg_int(entry.get("turn_count"), 0) <= 0:
         return False

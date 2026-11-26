@@ -606,13 +606,25 @@ def normalize_trading_decisions(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     decisions: list[dict[str, Any]] = []
     seen_keys: set[tuple[Any, ...]] = set()
+    covered_cancel_oids: dict[tuple[Any, ...], set[str]] = {}
     for item in candidates:
         venue_norm, sym_canon, quotes, side_norm = _intent_venue_symbol_side_key(
             item.get("venue"), item.get("symbol"), item.get("decision") or "HOLD"
         )
         key = (venue_norm, sym_canon, quotes, "") if sym_canon else (venue_norm, "", (), side_norm)
+        cancel_oids = extract_intent_cancel_order_ids(item)
+        if side_norm not in ("BUY", "SELL") and cancel_oids and sym_canon:
+            seen_oids = covered_cancel_oids.setdefault(key, set())
+            new_oids = [oid for oid in cancel_oids if oid not in seen_oids]
+            if new_oids:
+                seen_oids.update(new_oids)
+                seen_keys.add(key)
+                decisions.append({**item, "cancel_order_ids": new_oids} if len(new_oids) != len(cancel_oids) else item)
+            continue
         if key not in seen_keys:
             seen_keys.add(key)
+            if cancel_oids and sym_canon:
+                covered_cancel_oids.setdefault(key, set()).update(cancel_oids)
             decisions.append(item)
     return decisions
 

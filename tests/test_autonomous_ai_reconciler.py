@@ -9564,6 +9564,12 @@ def test_proposal3_warm_resume_lifecycle_and_detached_rest_fallback_safety(tmp_p
     record_topic_turn(topic, cid, '{"summary": "post_compact_full"}', compacted=False, cli_base=str(bot_base))
     assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is True
 
+    # 7b. Scheduled slow-turn rotation (pending_rotation=True) marks thread COLD so next turn sends full policy
+    record_topic_turn(topic, cid, '{"summary": "slow_turn"}', compacted=False, schedule_rotation=True, cli_base=str(bot_base))
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is False
+    record_topic_turn(topic, cid, '{"summary": "post_slow_clear"}', compacted=False, cli_base=str(bot_base))
+    assert is_topic_resume_warm(topic, cli_base=str(bot_base), conversation_id=cid) is True
+
     # 8. has_pending_ui_turn detects newer user steps in Web UI summary store (read-only)
     ui_base = Path(resolve_ui_cli_base())
     (ui_base / "conversations").mkdir(parents=True, exist_ok=True)
