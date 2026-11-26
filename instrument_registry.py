@@ -997,6 +997,19 @@ def discover_tradable_specs(
     return active_map
 
 
+def monitored_order_symbols(*, asset_scope: str = "crypto", path=None) -> list[str]:
+    """Return canonical active tradable symbols from instruments.conf across all configured venues (SSOT)."""
+    ws_dir = os.path.dirname(os.path.abspath(str(path))) if path is not None else None
+    base_specs = load_registry(path) if path is not None else None
+    specs = discover_tradable_specs(
+        workspace_dir=ws_dir,
+        only_workspace_conf=True,
+        asset_scope=asset_scope,
+        base_specs=base_specs,
+    )
+    return list(dict.fromkeys(spec.symbol for spec in specs.values() if getattr(spec, "symbol", None)))
+
+
 def resolve_instrument_spec(
     symbol: str,
     venue: str | None = None,

@@ -233,6 +233,19 @@ def _resolve_provider_name(symbol: str) -> str:
     return resolve_symbol_provider_name(symbol, market_api=mkt, fallback="Binance")
 
 
+def _explicit_provider_kw(symbol: str, provider_name: str | None = None) -> dict[str, str]:
+    """Pass explicit ``provider_name`` when MarketApi's implicit ``supports_symbol`` route does not claim ``symbol``."""
+    supports_fn = getattr(mkt, "supports_symbol", None)
+    if callable(supports_fn):
+        try:
+            if supports_fn(symbol):
+                return {}
+        except Exception:
+            pass
+    pname = provider_name or _resolve_provider_name(symbol)
+    return {"provider_name": pname} if pname else {}
+
+
 def _resolve_provider(symbol: str, provider_name: str):
     prov_by_name = getattr(mkt, "provider_by_name", None)
     provider = prov_by_name(provider_name) if callable(prov_by_name) else None
@@ -423,7 +436,7 @@ def _expire_open_order_if_ttl_exceeded(
                 f"age {age_str} >= TTL {ttl_str}. Canceling on venue..."
             )
             try:
-                if mkt.cancel_order(symbol, oid_str) is False:
+                if mkt.cancel_order(symbol, oid_str, **_explicit_provider_kw(symbol)) is False:
                     print(f"[MONITORORDER] Cancel returned False for expired order {order_id};", "will retry next cycle.")
                     return True, age_sec, effective_ttl
                 _clear_initial_order_price(initial_prices, order_id, oid_str)
@@ -620,7 +633,8 @@ def _lease_replacement_and_preflight(
                 venue_cache_gate(symbol, order_type)
         cache_permit = mkt.preflight_order(
             symbol, order_type, preflight_qty, new_price,
-            market=False, kind="monitor_order_replace")
+            market=False, kind="monitor_order_replace",
+            **_explicit_provider_kw(symbol, provider_name))
         if requires_permit and cache_permit is None:
             raise SubmissionRefused("account_cache_not_fresh")
     except Exception as exc:  # noqa: BLE001
@@ -683,6 +697,7 @@ def _dispatch_native_or_cancel_replace(
                 replaces_locked_balance=locked_balance,
                 _outcome_context=native_outcome,
                 cache_permit=cache_permit,
+                **_explicit_provider_kw(symbol, provider_name),
             )
         except Exception as exc:  # noqa: BLE001
             native_order = None
@@ -762,6 +777,7 @@ def _dispatch_native_or_cancel_replace(
                 cache_permit = mkt.preflight_order(
                     symbol, order_type, preflight_qty, new_price,
                     market=False, kind="monitor_order_replace",
+                    **_explicit_provider_kw(symbol, provider_name),
                 )
             except Exception:
                 cache_permit = None
@@ -774,6 +790,7 @@ def _dispatch_native_or_cancel_replace(
                 cache_permit = mkt.preflight_order(
                     symbol, order_type, preflight_qty, new_price,
                     market=False, kind="monitor_order_replace",
+                    **_explicit_provider_kw(symbol, provider_name),
                 )
                 if requires_permit and cache_permit is None:
                     raise SubmissionRefused("account_cache_not_fresh")
@@ -792,7 +809,7 @@ def _dispatch_native_or_cancel_replace(
         cancel_confirmed = True
     else:
         try:
-            cancel_confirmed = api.cancel_order(symbol, order_id) is not False
+            cancel_confirmed = api.cancel_order(symbol, order_id, **_explicit_provider_kw(symbol, provider_name)) is not False
         except Exception as exc:  # noqa: BLE001
             cancel_confirmed = False
             print(
@@ -800,7 +817,7 @@ def _dispatch_native_or_cancel_replace(
                 "reconciling venue status before deciding on replacement."
             )
     try:
-        status = mkt.order_status(symbol, str(order_id))
+        status = mkt.order_status(symbol, str(order_id), **_explicit_provider_kw(symbol, provider_name))
     except Exception as exc:  # noqa: BLE001
         order_retry.complete_claim(
             replacement_claim, "status_error",
@@ -873,7 +890,8 @@ def _dispatch_native_or_cancel_replace(
             caller_owns_retry=True,
             client_order_id=client_order_id,
             _outcome_context=outcome,
-            cache_permit=cache_permit)
+            cache_permit=cache_permit,
+            **_explicit_provider_kw(symbol, provider_name))
     except Exception as exc:  # noqa: BLE001
         new_order = None
         outcome.update(state="unknown", reason=f"replacement_exception:{exc}")
@@ -950,9 +968,11 @@ def monitor_open_orders_by_type(
         return
     order_type = order_type_u
 
-    orders = api.get_open_orders(order_type, symbol)
+    provider_name = _resolve_provider_name(symbol)
+    prov_kw = _explicit_provider_kw(symbol, provider_name)
+    orders = api.get_open_orders(order_type, symbol, **prov_kw)
     has_orders = bool(orders and isinstance(orders, dict))
-    current_price = safe_pos_float(api.get_current_price(symbol), default=None) if has_orders else None
+    current_price = safe_pos_float(api.get_current_price(symbol, **prov_kw), default=None) if has_orders else None
     if not has_orders or current_price is None:
         print(
             f"For {symbol} there are no open {order_type} orders to begin with."
@@ -976,7 +996,6 @@ def monitor_open_orders_by_type(
     eff_pushback_offset = eff_mid_proc / 100.0
 
     initial_prices = initial_sell_prices if order_type == "SELL" else initial_buy_prices
-    provider_name = _resolve_provider_name(symbol)
     if isinstance(_cycle_maps, list) and custom_ttl_map is None and accepted_owner_map is None:
         if not _cycle_maps:
             _cycle_maps.append(_resolve_accepted_ttl_and_owner_maps())
@@ -1137,32 +1156,14 @@ def _clear_initial_order_price(initial_prices: dict, order_id: object, oid_str: 
     initial_prices.pop(oid_str, None)
 
 
-def _monitored_symbols() -> list[str]:
-    """Return all live 24x7 monitored symbols across Binance and non-Binance venues (e.g. Hyperliquid, Kraken)."""
-    base = list(sym.symbols)
-    try:
-        observe_only = sym.observe_only_registry_symbols()
-        for spec in sym.load_registry().values():
-            if (
-                getattr(spec, "enabled", False)
-                and str(getattr(spec, "market_hours", "") or "").strip().lower() == "24x7"
-                and spec.symbol not in base
-                and spec.symbol not in observe_only
-                and spec.symbol.upper() not in observe_only
-            ):
-                base.append(spec.symbol)
-    except Exception:
-        pass
-    return base
-
-
 def warmup_open_orders():
     """Seed existing open orders into tracking sets to avoid notifying historical orders on startup."""
     global _monitororder_initialized
-    for symbol in _monitored_symbols():
+    for symbol in sym.monitored_order_symbols():
+        prov_kw = _explicit_provider_kw(symbol)
         for side in ("SELL", "BUY"):
             try:
-                orders = api.get_open_orders(side, symbol)
+                orders = api.get_open_orders(side, symbol, **prov_kw)
                 if orders and isinstance(orders, dict):
                     for oid in orders.keys():
                         clean_oid = clean_order_id_str(oid)
@@ -1184,12 +1185,12 @@ def monitor_orders():
     hb_intervals = {
         "open_order": MONITOR_OPEN_ORDER_INTERVAL,
     }
-    monitored = _monitored_symbols()
+    monitored = sym.monitored_order_symbols()
     touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=monitored, intervals=hb_intervals)
 
     while not _parse_bool_flag(getattr(api, "stop", False), False):
         try:
-            monitored = _monitored_symbols()
+            monitored = sym.monitored_order_symbols()
             currenttime = time.time()
             if currenttime < monitor_open_orders_lasttime:
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
@@ -1206,7 +1207,7 @@ def monitor_orders():
         except Exception as e:
             err_prefix = "Provider API error" if isinstance(e, ProviderError) else "Error"
             print(f"{err_prefix}: {e}")
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=_monitored_symbols(), intervals=hb_intervals)
+            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=sym.monitored_order_symbols(), intervals=hb_intervals)
             time.sleep(TIME_SLEEP_ERROR)
 
 

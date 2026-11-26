@@ -36,7 +36,7 @@ from cachepaths import (  # noqa: E402
     is_equity_venue,
     is_primary_stream_venue,
 )
-from instrument_registry import casefold_get, is_symbol_market_open, select_instruments, symbols_for  # noqa: E402
+from instrument_registry import casefold_get, is_symbol_market_open, monitored_order_symbols, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402
 
 _DEFAULT_CACHEDB = os.path.join(ROOT, "cachedb")
@@ -80,11 +80,7 @@ def _fmt_age(val: Optional[float]) -> str:
 
 def expected_symbols():
     """Use the registry without credentials; invalid configuration must fail the check."""
-    syms = symbols_for("binance")
-    for role in ("mt", "tradeall_fire", "assetguardian"):
-        for inst in select_instruments(role=role).values():
-            if not is_primary_stream_venue(inst.provider) and inst.symbol not in syms:
-                syms.append(inst.symbol)
+    syms = list(dict.fromkeys(symbols_for("binance") + monitored_order_symbols()))
     if not syms:
         raise ValueError("No configured symbols to verify")
     return syms
