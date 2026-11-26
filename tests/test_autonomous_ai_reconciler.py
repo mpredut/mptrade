@@ -2935,7 +2935,8 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert t212_specs["fee_tier"] == "INVEST_RTH"
     assert t212_specs["maker_fee_bps"] == 15.0
     assert t212_specs["taker_fee_bps"] == 15.0
-    assert t212_specs["step_size"] == 0.001
+    assert t212_specs["step_size"] == 0.01
+    assert t212_specs["min_qty"] == 0.01
     assert t212_specs["tick_size"] == 0.01
 
     assert abs(liq["long_liq_dist_pct"]) >= 1.2

@@ -18557,6 +18557,119 @@ def test_cycle6_clock_anchor_lces_delta_gate_ts_and_venue_cash_breakdown_sync(tm
     assert "free_quote_breakdown" not in tpos_stale[0]
 
 
+def test_cycle7_8_t212_step_size_invariant_keys_and_prompt_sections_dedup():
+    """Cycles 7 & 8 audit fixes:
+    1. T212Provider._DEFAULT_STEP_FALLBACK matches pair_precision (_ORDER_MIN = 0.01) so
+       sub-0.01 share dust is never advertised as sellable and limits(min_qty=0.01, step=0.01).
+    2. audit_snapshot_invariants validates real production portfolio_risk_engine and
+       major_swing_high_px/major_swing_low_px keys (not only synthetic test keys).
+    3. Section 1 anchors fallback resolve_macro_economic_calendar to evaluated_at_ts, suppresses
+       duplicate macro benchmark lines on equities when summary_line differs, and Section 3B keeps
+       shared_perp_sym cycle_delta strictly venue-local (dt + d_ob only).
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from intelligence.sentiment.collectors.macro_telemetry_collector import TelemetrySensorSnapshot
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import resolve_venue_fee_and_limits
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_macro_and_news_section,
+        _format_microstructure_section,
+    )
+    from verify_tools.audit_prompt_invariants import audit_snapshot_invariants
+
+    # 1. T212 step_size & min_qty = 0.01 (matching T212Client round(qty, 2) and _ORDER_MIN = 0.01)
+    t212_dust = resolve_venue_fee_and_limits(
+        "t212", "AMD_US_EQ", price=414.0, free_quote=500.0, free_base=0.005
+    )
+    assert t212_dust["step_size"] == 0.01
+    assert t212_dust["min_qty"] == 0.01
+    assert t212_dust["effective_max_sell_usd"] == 0.0
+
+    # 2. audit_snapshot_invariants catches NAV and major_swing violations on real production schema keys
+    prod_bad_snap = {
+        "prices_and_trends": {
+            "BTCUSDC": {"price": 65000.0, "major_swing_high_px": 62000.0},
+        },
+        "portfolio_summary": {
+            "portfolio_risk_engine": {
+                "unified_nav_usd": 10000.0,
+                "invested_exposure_usd": 1500.0,
+                "global_free_cash_usd": 7000.0,
+                "locked_quote_usd": 900.0,
+                "venue_nav_breakdown_usd": {"binance": 5000.0, "kraken": 4000.0},
+            }
+        },
+    }
+    bad_codes = {v.code for v in audit_snapshot_invariants(prod_bad_snap)}
+    assert {"NAV_CONSERVATION", "SWING_WAVE_EXTREMES"}.issubset(bad_codes)
+
+    # 3a. Section 1 fallback calendar uses now_ts=ref_now (Thanksgiving 2026-11-26) & equities never duplicates benchmarks
+    tg_ts = datetime(2026, 11, 26, 11, 0, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    snap_eq = TelemetrySensorSnapshot(
+        evaluated_at_ts=tg_ts,
+        macro_benchmarks={
+            "ts": tg_ts - 60.0,
+            "summary_line": "STALE_CACHED_SUMMARY_LINE",
+            "items": {
+                "SPY": {"symbol": "SPY", "price": 716.70, "chg_24h_pct": 0.23, "market_state": "CLOSED", "bar_age_min": 360.0},
+            },
+        },
+    )
+    sec1_eq = "\n".join(_format_macro_and_news_section(snap_eq, asset_scope="equities", now_ts=tg_ts))
+    assert "Thanksgiving Day" in sec1_eq
+    assert "- US Equity & Macro Regime:" in sec1_eq
+    assert "- US Equities, Futures & Macro Rates Benchmarks" not in sec1_eq
+
+    # 3b. Section 3B shared_perp_sym (HYPEUSD) emits venue-local cycle_delta(dt, d_ob) without duplicating perp d_cvd/d_tr/d_oi
+    sec3b = "\n".join(
+        _format_microstructure_section(
+            {
+                "HYPEUSDC": {
+                    "ob_imbalance": 0.54,
+                    "bid_depth_usd": 1000000.0,
+                    "ask_depth_usd": 900000.0,
+                    "bid_wall_px": 60.6,
+                    "bid_wall_usd": 200000.0,
+                    "ask_wall_px": 61.4,
+                    "ask_wall_usd": 180000.0,
+                    "taker_buy_sell_ratio": 0.85,
+                    "taker_buy_vol_usd": 1000000.0,
+                    "taker_sell_vol_usd": 1200000.0,
+                    "cvd_15m_usd": -200000.0,
+                    "oi_usd": 250000000.0,
+                    "oi_1h_chg_pct": -0.5,
+                    "ob_mid_price": 61.0,
+                    "cycle_delta": {"dt_min": 6.0, "ob_imbalance_delta": 0.01, "cvd_15m_delta_usd": -500000.0, "taker_ratio_delta": -0.3, "oi_delta_pct": -0.2},
+                },
+                "HYPEUSD": {
+                    "ob_imbalance": 0.71,
+                    "bid_depth_usd": 500000.0,
+                    "ask_depth_usd": 200000.0,
+                    "bid_wall_px": 60.6,
+                    "bid_wall_usd": 100000.0,
+                    "ask_wall_px": 61.4,
+                    "ask_wall_usd": 50000.0,
+                    "taker_buy_sell_ratio": 0.85,
+                    "cvd_15m_usd": -200000.0,
+                    "oi_usd": 250000000.0,
+                    "ob_mid_price": 61.0,
+                    "cycle_delta": {"dt_min": 6.0, "ob_imbalance_delta": -0.034, "cvd_15m_delta_usd": -500000.0, "taker_ratio_delta": -0.3, "oi_delta_pct": -0.2},
+                },
+            },
+            {"HYPEUSDC": {"price": 61.0}, "HYPEUSD": {"price": 61.0}},
+            asset_scope="crypto",
+        )
+    )
+    hypeusd_line = next(l for l in sec3b.splitlines() if "  * HYPEUSD:" in l)
+    assert "perp_whale_flow=shared_with_HYPEUSDC" in hypeusd_line
+    assert "cycle_delta(dt=6.0m, d_ob=-0.034)" in hypeusd_line
+    assert "d_cvd=" not in hypeusd_line
+    assert "d_tr=" not in hypeusd_line
+    assert "d_oi=" not in hypeusd_line
+
+
+
 
 
 

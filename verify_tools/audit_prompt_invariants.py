@@ -129,14 +129,23 @@ def audit_snapshot_invariants(
         ps = {}
 
     # 1. Portfolio NAV conservation
-    pr = ps.get("portfolio_risk")
+    pr = ps.get("portfolio_risk_engine") if isinstance(ps.get("portfolio_risk_engine"), Mapping) else ps.get("portfolio_risk")
     if isinstance(pr, Mapping):
         nav = safe_nonneg_float(
-            pr.get("crypto_nav_usd") or pr.get("equities_nav_usd") or pr.get("total_nav_usd"),
+            pr.get("unified_nav_usd")
+            or pr.get("crypto_nav_usd")
+            or pr.get("equities_nav_usd")
+            or pr.get("total_nav_usd"),
             default=None,
         )
-        inv = safe_nonneg_float(pr.get("invested_usd"), default=None)
-        free_c = safe_nonneg_float(pr.get("free_cash_usd"), default=None)
+        inv = safe_nonneg_float(
+            pr.get("invested_exposure_usd") if pr.get("invested_exposure_usd") is not None else pr.get("invested_usd"),
+            default=None,
+        )
+        free_c = safe_nonneg_float(
+            pr.get("global_free_cash_usd") if pr.get("global_free_cash_usd") is not None else pr.get("free_cash_usd"),
+            default=None,
+        )
         locked_q = safe_nonneg_float(pr.get("locked_quote_usd"), default=0.0)
         if nav is not None and inv is not None and free_c is not None:
             comp_sum = inv + free_c + (locked_q or 0.0)
@@ -148,7 +157,11 @@ def audit_snapshot_invariants(
                         f"nav={nav:.2f} != invested({inv:.2f}) + free_cash({free_c:.2f}) + locked({locked_q:.2f}) = {comp_sum:.2f}",
                     )
                 )
-        v_map = pr.get("venue_nav_usd")
+        v_map = (
+            pr.get("venue_nav_breakdown_usd")
+            if isinstance(pr.get("venue_nav_breakdown_usd"), Mapping)
+            else pr.get("venue_nav_usd")
+        )
         if nav is not None and isinstance(v_map, Mapping) and v_map:
             v_sum = sum(safe_nonneg_float(v, default=0.0) or 0.0 for v in v_map.values())
             if abs(nav - v_sum) > nav_tol_usd:
@@ -263,8 +276,14 @@ def audit_snapshot_invariants(
             safe_float(pinfo.get("pos_15m_pct"), default=None),
             range_tol_pct,
         )
-        maj_hi = safe_pos_float(pinfo.get("major_high"), default=None)
-        maj_lo = safe_pos_float(pinfo.get("major_low"), default=None)
+        maj_hi = safe_pos_float(
+            pinfo.get("major_swing_high_px") if pinfo.get("major_swing_high_px") is not None else pinfo.get("major_high"),
+            default=None,
+        )
+        maj_lo = safe_pos_float(
+            pinfo.get("major_swing_low_px") if pinfo.get("major_swing_low_px") is not None else pinfo.get("major_low"),
+            default=None,
+        )
         if maj_hi is not None and px > maj_hi * 1.001:
             violations.append(
                 InvariantViolation(

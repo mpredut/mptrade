@@ -574,15 +574,19 @@ def _format_macro_and_news_section(
         ]
     breaking_news = getattr(sensors, "breaking_news", None) or macro.get("recent_news") or []
     mc = _resolve_macro_sensor(sensors, macro, "macro_calendar") or resolve_macro_economic_calendar(
-        breaking_news=breaking_news
+        now_ts=ref_now,
+        breaking_news=breaking_news,
     )
     if mc_line := _format_macro_calendar_line(mc):
         lines.append(mc_line)
     mb_bench_line = _extract_macro_benchmarks_line(mb_bench, include_crypto=True, now_ts=ref_now)
-    if mb_bench_line and not (
+    eq_already_rendered_benchmarks = bool(
         is_equities_scope
-        and f"{eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}" == mb_bench_line
-    ):
+        and isinstance(mb_bench, dict)
+        and mb_bench
+        and eq_reg_line not in ("RISK_ON", "RISK_OFF", "NEUTRAL")
+    )
+    if mb_bench_line and not eq_already_rendered_benchmarks:
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
@@ -1120,22 +1124,23 @@ def _format_microstructure_section(
                 cd_parts.append(f"dt={cd_map['dt_min']}m")
             if (d_ob := safe_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
                 cd_parts.append(f"d_ob={fmt_signed(d_ob, 3)}")
-            if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
-                cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
-            if (
-                not no_flow
-                and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
-                and abs(d_tr) >= 0.05
-            ):
-                cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
-            if (
-                show_whale_long_delta
-                and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
-                and abs(d_wl) >= 0.005
-            ):
-                cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
-            if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
-                cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
+            if shared_perp_sym is None:
+                if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
+                    cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
+                if (
+                    not no_flow
+                    and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
+                    and abs(d_tr) >= 0.05
+                ):
+                    cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
+                if (
+                    show_whale_long_delta
+                    and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
+                    and abs(d_wl) >= 0.005
+                ):
+                    cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
+                if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
+                    cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
             if len(cd_parts) > 1:
                 cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
 
