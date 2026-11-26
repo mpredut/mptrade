@@ -41,6 +41,7 @@ from cacheaccount import (
     CacheOrderOpenManager,
     CacheTradeManager,
     OPEN_ORDER_SYNC_INTERVAL_SEC,
+    ORDER_SYNC_INTERVAL_SEC,
     UnifiedOrderBookEvidence,
 )
 from cachepaths import (
@@ -48,6 +49,7 @@ from cachepaths import (
     ORDER_LEDGER_ACTIVE_FILENAME,
     get_cachedb_dir,
     is_equity_venue,
+    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cachedb_filepath,
     split_symbol_assets,
@@ -91,6 +93,7 @@ class VenueCoherenceEvidence:
     open_file_exists: bool = False
     filled_items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     filled_latest_ft_ts: float = 0.0
+    filled_sym_ft_ts: dict[str, float] = field(default_factory=dict)
     filled_file_exists: bool = False
     trade_items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     balance_items: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -98,6 +101,7 @@ class VenueCoherenceEvidence:
     balance_file_exists: bool = False
     health_sync_ts_by_stream: dict[str, float] = field(default_factory=dict)
     configured_base_assets: frozenset[str] = frozenset()
+    configured_symbols: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -500,6 +504,57 @@ def _evaluate_venue_coherence(
                     )
                 )
 
+        # 6b. Per-symbol filled_orders fetchtime freshness parity (prevents max() from masking one invalidated symbol).
+        fo_h_ts = ev.health_sync_ts_by_stream.get("filled_orders", 0.0)
+        if fo_h_ts > 0.0 and ev.filled_file_exists and ev.filled_latest_ft_ts > 0.0:
+            filled_items_cf = {
+                str(k).strip().casefold(): str(k).strip()
+                for k in (ev.filled_items or {})
+                if str(k or "").strip()
+            }
+            ft_by_cf = {
+                str(k).strip().casefold(): ft_v
+                for k, ft_s in (ev.filled_sym_ft_ts or {}).items()
+                if str(k or "").strip() and (ft_v := safe_pos_float(ft_s, default=None)) is not None
+            }
+            if ev.configured_symbols:
+                checked_syms = [
+                    sym_s for sym_s in sorted(ev.configured_symbols) if sym_s.casefold() in filled_items_cf
+                ]
+            elif ft_by_cf:
+                checked_syms = sorted(filled_items_cf.values())
+            else:
+                checked_syms = []
+            per_sym_lag_grace = (
+                (ORDER_SYNC_INTERVAL_SEC + sync_grace)
+                if is_primary_stream_venue(v)
+                else sync_grace
+            )
+            for sym_s in checked_syms:
+                sym_ft = ft_by_cf.get(sym_s.casefold(), 0.0)
+                if sym_ft <= 0.0:
+                    out.append(
+                        CoherenceViolation(
+                            venue=v,
+                            rule="health_symbol_fetchtime_missing",
+                            detail=(
+                                f"{sym_s} present in filled_orders items but missing fetchtime while "
+                                f"health filled_orders_sync_ts={fo_h_ts:.1f}"
+                            ),
+                        )
+                    )
+                elif (fo_h_ts - sym_ft) > per_sym_lag_grace:
+                    out.append(
+                        CoherenceViolation(
+                            venue=v,
+                            rule="health_symbol_fetchtime_lag",
+                            detail=(
+                                f"{sym_s} fetchtime={sym_ft:.1f} lags health filled_orders_sync_ts={fo_h_ts:.1f} "
+                                f"by {fo_h_ts - sym_ft:.1f}s (> {per_sym_lag_grace:.1f}s)"
+                            ),
+                        )
+                    )
+
     return out
 
 
@@ -552,17 +607,20 @@ def _resolve_cache_file(cachedb_dir: str, filename: str) -> str:
     return str(resolve_cachedb_filepath(flat))
 
 
-def _configured_base_assets_for_venue(venue: str) -> frozenset[str]:
+def _configured_venue_metadata(venue: str) -> tuple[frozenset[str], frozenset[str]]:
     try:
         specs = select_instruments(venue)
     except Exception:
-        return frozenset()
+        return frozenset(), frozenset()
     bases: set[str] = set()
+    syms: set[str] = set()
     for spec in specs.values():
+        if (s_clean := clean_scalar_str(spec.symbol)) is not None:
+            syms.add(s_clean)
         raw_part = spec.symbol if is_equity_venue(venue) else (spec.base or (split_symbol_assets(spec.symbol) or ("", ""))[0])
         if (b_k := canonical_balance_asset_key(raw_part, venue=venue)) is not None:
             bases.add(b_k)
-    return frozenset(bases)
+    return frozenset(bases), frozenset(syms)
 
 
 def _read_health_sync_map(
@@ -643,10 +701,12 @@ def load_account_cache_coherence_snapshot(
             if fo_exists
             else ({}, {})
         )
-        fo_latest_ft = max(
-            (normalize_epoch_sec(ft_v, default=0.0) or 0.0 for ft_v in (fo_ft or {}).values()),
-            default=0.0,
-        )
+        fo_sym_ft = {
+            str(sk).strip(): ft_s
+            for sk, ft_v in (fo_ft or {}).items()
+            if str(sk or "").strip() and (ft_s := normalize_epoch_sec(ft_v, default=0.0) or 0.0) > 0.0
+        }
+        fo_latest_ft = max(fo_sym_ft.values(), default=0.0)
 
         # 3. Trade cache mirror
         tr_fname = CacheTradeManager.VENUE_FILENAMES.get(v_norm, "")
@@ -679,6 +739,7 @@ def load_account_cache_coherence_snapshot(
             else ({}, 0.0, {})
         )
 
+        cfg_bases, cfg_syms = _configured_venue_metadata(v_norm)
         venue_evidence[v_norm] = VenueCoherenceEvidence(
             venue=v_norm,
             open_items=oo_items,
@@ -688,13 +749,15 @@ def load_account_cache_coherence_snapshot(
             open_file_exists=oo_exists,
             filled_items=fo_items,
             filled_latest_ft_ts=fo_latest_ft,
+            filled_sym_ft_ts=fo_sym_ft,
             filled_file_exists=fo_exists,
             trade_items=tr_items,
             balance_items=bal_items,
             balance_verified_ts=bal_ver,
             balance_file_exists=bal_exists,
             health_sync_ts_by_stream=health_by_venue.get(v_norm, {}),
-            configured_base_assets=_configured_base_assets_for_venue(v_norm),
+            configured_base_assets=cfg_bases,
+            configured_symbols=cfg_syms,
         )
 
     # 5. Order Ledger (orders_active.json)

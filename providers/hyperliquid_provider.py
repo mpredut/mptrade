@@ -685,7 +685,9 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
                     include_none_cloid=include_none_cloid,
                 )
         clean_oid = extract_order_id(oid, default=None)
-        if ok and clean_oid:
+        if ok and clean_oid and not (
+            order_tif == "Alo" and str(msg or "").strip().lower() == "resting"
+        ):
             self._invalidate_fills_cache(symbol)
         return ok, oid, msg, clean_oid
 

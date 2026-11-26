@@ -1012,3 +1012,456 @@ def test_multi_symbol_ws_invalidated_fetchtime_triggers_targeted_rest_recovery(t
     assert viols == [], [v.format_line() for v in viols]
 
 
+def test_cross_cache_per_symbol_fetchtime_invariants_across_venues():
+    """Pure invariant check: per-symbol filled_orders fetchtime detects single-symbol invalidation/lag without false-flagging retired symbols or Binance WS-vs-REST skew."""
+    t_now = 1_795_755_000.0
+
+    # 1. Kraken multi-symbol: HYPEUSD missing fetchtime while SPCXxUSD & ANTxUSD are fresh -> caught despite max(ft)==fresh; retired TAOUSD ignored.
+    ev_krk_missing = VenueCoherenceEvidence(
+        venue="kraken",
+        filled_file_exists=True,
+        filled_items={"HYPEUSD": [], "SPCXxUSD": [], "ANTxUSD": [], "TAOUSD": []},
+        filled_sym_ft_ts={"SPCXxUSD": t_now - 2.0, "ANTxUSD": t_now - 2.0, "TAOUSD": t_now - 90_000.0},
+        filled_latest_ft_ts=t_now - 2.0,
+        health_sync_ts_by_stream={"filled_orders": t_now - 2.0},
+        configured_symbols=frozenset({"HYPEUSD", "SPCXxUSD", "ANTxUSD"}),
+    )
+    v_miss = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_krk_missing}, health_present=True),
+        sync_grace_sec=15.0,
+    )
+    assert [v.rule for v in v_miss] == ["health_symbol_fetchtime_missing"]
+    assert "HYPEUSD" in v_miss[0].detail
+
+    # 2. Kraken multi-symbol: HYPEUSD lags health by 30s (> 15s sync_grace) -> caught; retired TAOUSD still ignored.
+    ev_krk_lag = VenueCoherenceEvidence(
+        venue="kraken",
+        filled_file_exists=True,
+        filled_items={"HYPEUSD": [], "SPCXxUSD": [], "ANTxUSD": [], "TAOUSD": []},
+        filled_sym_ft_ts={
+            "HYPEUSD": t_now - 32.0,
+            "SPCXxUSD": t_now - 2.0,
+            "ANTxUSD": t_now - 2.0,
+            "TAOUSD": t_now - 90_000.0,
+        },
+        filled_latest_ft_ts=t_now - 2.0,
+        health_sync_ts_by_stream={"filled_orders": t_now - 2.0},
+        configured_symbols=frozenset({"HYPEUSD", "SPCXxUSD", "ANTxUSD"}),
+    )
+    v_lag = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_krk_lag}, health_present=True),
+        sync_grace_sec=15.0,
+    )
+    assert [v.rule for v in v_lag] == ["health_symbol_fetchtime_lag"]
+    assert "HYPEUSD" in v_lag[0].detail
+
+    # 3. Kraken healthy: all configured symbols fresh, retired TAOUSD ancient -> 0 violations.
+    ev_krk_ok = VenueCoherenceEvidence(
+        venue="kraken",
+        filled_file_exists=True,
+        filled_items={"HYPEUSD": [], "SPCXxUSD": [], "ANTxUSD": [], "TAOUSD": []},
+        filled_sym_ft_ts={
+            "HYPEUSD": t_now - 2.0,
+            "SPCXxUSD": t_now - 2.0,
+            "ANTxUSD": t_now - 2.0,
+            "TAOUSD": t_now - 90_000.0,
+        },
+        filled_latest_ft_ts=t_now - 2.0,
+        health_sync_ts_by_stream={"filled_orders": t_now - 2.0},
+        configured_symbols=frozenset({"HYPEUSD", "SPCXxUSD", "ANTxUSD"}),
+    )
+    assert (
+        evaluate_account_cache_coherence(
+            AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_krk_ok}, health_present=True),
+            sync_grace_sec=15.0,
+        )
+        == []
+    )
+
+    # 4. Binance (primary stream venue): 22s skew after an ADAUSDC WS fill is inside ORDER_SYNC_INTERVAL_SEC + sync_grace (39s) -> OK;
+    #    50s skew exceeds bound -> health_symbol_fetchtime_lag; missing fetchtime -> health_symbol_fetchtime_missing.
+    ev_bn_skew_ok = VenueCoherenceEvidence(
+        venue="binance",
+        filled_file_exists=True,
+        filled_items={"BTCUSDC": [], "ADAUSDC": [], "BNBUSDC": []},
+        filled_sym_ft_ts={"BTCUSDC": t_now - 24.0, "ADAUSDC": t_now - 2.0, "BNBUSDC": t_now - 500_000.0},
+        filled_latest_ft_ts=t_now - 2.0,
+        health_sync_ts_by_stream={"filled_orders": t_now - 2.0},
+        configured_symbols=frozenset({"BTCUSDC", "ADAUSDC"}),
+    )
+    assert (
+        evaluate_account_cache_coherence(
+            AccountCacheCoherenceSnapshot(now_s=t_now, venues={"binance": ev_bn_skew_ok}, health_present=True),
+            sync_grace_sec=15.0,
+        )
+        == []
+    )
+
+    ev_bn_bad = VenueCoherenceEvidence(
+        venue="binance",
+        filled_file_exists=True,
+        filled_items={"BTCUSDC": [], "ADAUSDC": [], "SOLUSDC": []},
+        filled_sym_ft_ts={"BTCUSDC": t_now - 55.0, "ADAUSDC": t_now - 2.0},
+        filled_latest_ft_ts=t_now - 2.0,
+        health_sync_ts_by_stream={"filled_orders": t_now - 2.0},
+        configured_symbols=frozenset({"BTCUSDC", "ADAUSDC", "SOLUSDC"}),
+    )
+    v_bn = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=t_now, venues={"binance": ev_bn_bad}, health_present=True),
+        sync_grace_sec=15.0,
+    )
+    assert sorted((v.rule, v.detail.split()[0]) for v in v_bn) == [
+        ("health_symbol_fetchtime_lag", "BTCUSDC"),
+        ("health_symbol_fetchtime_missing", "SOLUSDC"),
+    ]
+
+
+def test_hyperliquid_dependent_crosscheck_alo_resting_perp_fill_backoff_recovery_and_cost_basis(tmp_path, monkeypatch):
+    """Dependent cross-check across HyperliquidProvider, _HyperliquidAccountTradeBridge, position_cost_basis, and coherence audit."""
+    import threading
+    from types import SimpleNamespace
+    import providers.quantity as providers_qty
+    from providers.hyperliquid_provider import HyperliquidProvider
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    tr_path = acct_dir / "cache_trade_hyperliquid.json"
+    fo_path = acct_dir / "cache_order_filled_hyperliquid.json"
+    oo_path = acct_dir / "cache_order_open_hyperliquid.json"
+    bal_path = acct_dir / "cache_balance_hyperliquid.json"
+    health_path = acct_dir / "cache_account_health.json"
+
+    t0 = 1_795_760_000.0
+    t0_ms = int(t0 * 1000)
+    fill_1 = {
+        "coin": "@107",
+        "px": "62.06",
+        "sz": "10.0",
+        "side": "B",
+        "time": t0_ms - 60_000,
+        "oid": 617441855947,
+        "tid": 734038162456393,
+        "fee": "0.004",
+        "feeToken": "HYPE",
+    }
+    fill_2 = {
+        "coin": "@107",
+        "px": "64.06",
+        "sz": "10.0",
+        "side": "B",
+        "time": t0_ms + 30_000,
+        "oid": 617441999999,
+        "tid": 734038162459999,
+        "fee": "0.004",
+        "feeToken": "HYPE",
+    }
+
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(tr_path), {"HYPEUSDC": [fill_1]}, now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path), {"HYPEUSDC": [fill_1]}, venue="hyperliquid", now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path), {"HYPEUSDC": []}, now_ms=t0_ms, verified_ts=t0
+    )
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path), {"USDC": (1000.0, 0.0), "HYPE": (9.996, 0.0)}, venue="hyperliquid", now_s=t0, verified_ts=t0
+    )
+
+    now_ref = [t0]
+    monkeypatch.setattr(cacheaccount, "_now_time", lambda: now_ref[0])
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda v=None: int(now_ref[0] * 1000) if v is None else int(v))
+    monkeypatch.setattr(providers_qty.time, "time", lambda: now_ref[0])
+
+    hl = HyperliquidProvider(token="HYPE", live_enabled=True)
+    hl._ssot_fills_cache_path = str(tr_path)
+    monkeypatch.setattr(hl, "_filled_orders_cache_file", lambda: str(fo_path))
+    monkeypatch.setattr(hl, "_pair", lambda: "@107")
+    monkeypatch.setattr(hl, "require_account_cache_fresh_for_submit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(hl, "round_price", lambda _s, px: round(float(px), 2))
+    monkeypatch.setattr(hl, "round_quantity", lambda _s, q: round(float(q), 2))
+
+    # 1. Baseline: position_cost_basis is fresh & exact (net 9.996 HYPE after 0.004 base fee).
+    assert hl.position_cost_basis("HYPEUSDC", 9.996, 86400.0) == pytest.approx(62.06 / 0.9996, rel=1e-3)
+
+    # 2. Placing a post-only Alo resting order MUST preserve fetchtime and keep position_cost_basis available!
+    fake_signer = SimpleNamespace(
+        sz_decimals=lambda _t: 2,
+        spot_order=lambda pair, is_buy, qty, px, **kw: (True, 617441888888, "resting"),
+    )
+    monkeypatch.setattr(hl, "_signer", lambda: fake_signer)
+    res_alo = hl.place_order("HYPEUSDC", "BUY", 61.50, 5.0, post_only=True)
+    assert res_alo and res_alo["orderId"] == 617441888888
+    assert hl.position_cost_basis("HYPEUSDC", 9.996, 86400.0) == pytest.approx(62.06 / 0.9996, rel=1e-3)
+    _, fo_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="hyperliquid")
+    assert fo_ft.get("HYPEUSDC") == t0_ms
+
+    # 3. Placing a crossing GTC order DOES invalidate fetchtime (conservative).
+    res_gtc = hl.place_order("HYPEUSDC", "BUY", 64.06, 10.0, post_only=False)
+    assert res_gtc and res_gtc["orderId"] == 617441888888
+    _, fo_ft_inv = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="hyperliquid")
+    assert "HYPEUSDC" not in fo_ft_inv
+
+    # 4. While HYPEUSDC is invalidated, a perp fill on the co-mingled wallet (coin="ETH") arrives over WS:
+    #    must NOT fabricate spot health and must NOT reset _last_fills_touch_ms!
+    health_calls: list[tuple[str, str, int]] = []
+    refresh_calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        cacheaccount,
+        "_record_venue_health_sync",
+        lambda v, s, *, now_ms=None: health_calls.append((v, s, int(now_ms or 0))) or True,
+    )
+    monkeypatch.setattr(
+        cacheaccount,
+        "request_venue_account_refresh",
+        lambda v, *, include_open_orders=False, blocking=False: refresh_calls.append((v, include_open_orders)) or True,
+    )
+
+    rest_state = {"calls": 0, "fail": True}
+
+    class _DynamicHLProv(HyperliquidProvider):
+        def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0, *, client=None):
+            rest_state["calls"] += 1
+            if rest_state["fail"]:
+                raise RuntimeError("HTTP 429 rate limit")
+            return [fill_1, fill_2]
+
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _DynamicHLProv if v == "hyperliquid" else None),
+    )
+
+    class _DummyWs:
+        _lock = threading.Lock()
+        _symbols = ["HYPEUSDC"]
+        _fills_ws_seeded = True
+        _last_fills_touch_ms = t0_ms
+
+        @staticmethod
+        def _candidate_mids_keys(s):
+            return ("@107", "HYPE/USDC") if s == "HYPEUSDC" else ()
+
+    ws = _DummyWs()
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(ws, user_address="0xabc", fills_cache_path=str(tr_path))
+    ws._fills_ws_seeded = True
+    ws._last_fills_touch_ms = t0_ms
+    orig_sched = bridge._schedule_invalidated_fills_resync
+    monkeypatch.setattr(
+        bridge, "_schedule_invalidated_fills_resync", lambda syms, ff, tms: orig_sched(syms, ff, tms, blocking=True)
+    )
+
+    # Perp fill arrives at t0 + 10s -> completely ignored for spot health & touch timer.
+    now_ref[0] = t0 + 10.0
+    bridge.handle_user_fills({"isSnapshot": False, "fills": [{"coin": "ETH", "oid": 999, "sz": "1.0", "px": "2000.0"}]}, ts_ms=t0_ms + 10_000)
+    assert health_calls == []
+    assert ws._last_fills_touch_ms == t0_ms
+
+    # 5. At t0 + 20s, WS tick triggers REST resync -> 429 engages 30s backoff; health stays silent!
+    now_ref[0] = t0 + 20.0
+    bridge.touch_fills_cache_if_needed(t0_ms + 20_000)
+    assert rest_state["calls"] == 1
+    assert health_calls == []
+    assert bridge._rest_backoff_sec == pytest.approx(30.0)
+
+    # At t0 + 36s (inside 30s backoff window), second tick must NOT hammer REST!
+    now_ref[0] = t0 + 36.0
+    bridge.touch_fills_cache_if_needed(t0_ms + 36_000)
+    assert rest_state["calls"] == 1
+    assert health_calls == []
+
+    # 6. At t0 + 55s (backoff expired), REST recovers fill_2 -> triggers balance/open-order refresh, restores fetchtime, resets backoff,
+    #    updates position_cost_basis to blended 63.06, and passes full coherence audit!
+    rest_state["fail"] = False
+    now_ref[0] = t0 + 55.0
+    t_rec_ms = t0_ms + 55_000
+    bridge.touch_fills_cache_if_needed(t_rec_ms)
+    assert rest_state["calls"] == 2
+    assert bridge._rest_backoff_sec == 0.0
+    assert ("hyperliquid", True) in refresh_calls
+    assert ("hyperliquid", "filled_orders", t_rec_ms) in health_calls
+    assert ("hyperliquid", "trades", t_rec_ms) in health_calls
+    assert hl.position_cost_basis("HYPEUSDC", 19.992, 86400.0) == pytest.approx(63.06 / 0.9996, rel=1e-3)
+
+    # Simulate the triggered balance/open-orders refresh settling at t0 + 56s.
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path), {"USDC": (359.4, 0.0), "HYPE": (19.992, 0.0)}, venue="hyperliquid", now_s=t0 + 56.0, verified_ts=t0 + 56.0
+    )
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path), {"HYPEUSDC": []}, now_ms=t0_ms + 56_000, verified_ts=t0 + 56.0
+    )
+    _write_health_doc(
+        health_path,
+        now_ms=t0_ms + 56_000,
+        started_ms=t0_ms - 5_000,
+        venue_streams={
+            "hyperliquid": {
+                "balances": t0_ms + 56_000,
+                "open_orders": t0_ms + 56_000,
+                "filled_orders": t_rec_ms,
+                "trades": t_rec_ms,
+            }
+        },
+    )
+
+    # 7. Late order_status poll for already-persisted fill_2 preserves fetchtime & cost basis and keeps coherence clean!
+    fake_cli = SimpleNamespace(
+        info=SimpleNamespace(
+            query_order_by_oid=lambda _addr, _oid: {
+                "status": "order",
+                "order": {"status": "filled", "order": {"coin": "@107", "origSz": "10.0", "sz": "0.0"}},
+            },
+            user_fills=lambda _addr: [fill_1, fill_2],
+        )
+    )
+    monkeypatch.setattr(hl, "_require_hl_client_and_pair", lambda *_a, **_kw: (fake_cli, "@107", "0xabc"))
+    st_late = hl.order_status("HYPEUSDC", "617441999999")
+    assert st_late.status == "closed" and st_late.filled_qty == pytest.approx(10.0)
+    assert hl.position_cost_basis("HYPEUSDC", 19.992, 86400.0) == pytest.approx(63.06 / 0.9996, rel=1e-3)
+
+    viols = audit_account_cache_coherence(
+        str(tmp_path),
+        now_s=t0 + 57.0,
+        venues=("hyperliquid",),
+        health_path=str(health_path),
+        include_ledger=False,
+    )
+    assert viols == [], [v.format_line() for v in viols]
+
+
+def test_kraken_multi_symbol_ws_fill_preserves_invalidation_and_cli_cross_cache_catches_drift(tmp_path, capsys):
+    """Dependent cross-check: Kraken WS fill on SPCXxUSD must report missing HYPEUSD via missing_out and --check-cross-cache catches false health."""
+    from botcore import resolve_now_ts
+    from verify_tools import audit_prompt_invariants as audit_cli
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    tr_path = acct_dir / "cache_trade_kraken.json"
+    fo_path = acct_dir / "cache_order_filled_kraken.json"
+    oo_path = acct_dir / "cache_order_open_kraken.json"
+    bal_path = acct_dir / "cache_balance_kraken.json"
+    health_path = acct_dir / "cache_account_health.json"
+
+    t0 = resolve_now_ts() - 60.0
+    t0_ms = int(t0 * 1000)
+    f_hype = {"symbol": "HYPEUSD", "id": "T-H1", "orderId": "O-H1", "side": "BUY", "price": 62.0, "qty": 2.0, "quantity": 2.0, "time": t0_ms - 50_000}
+    f_spcx1 = {"symbol": "SPCXxUSD", "id": "T-S1", "orderId": "O-S1", "side": "BUY", "price": 125.0, "qty": 1.0, "quantity": 1.0, "time": t0_ms - 40_000}
+    f_tao_retired = {"symbol": "TAOUSD", "id": "T-T0", "orderId": "O-T0", "side": "BUY", "price": 180.0, "qty": 1.0, "quantity": 1.0, "time": t0_ms - 900_000}
+
+    pairs = ("HYPEUSD", "SPCXxUSD")
+    cacheaccount.CacheTradeManager._merge_venue_fills_snapshot_locked(
+        str(tr_path),
+        {"HYPEUSD": [f_hype], "SPCXxUSD": [f_spcx1], "TAOUSD": [f_tao_retired]},
+        now_ms=t0_ms,
+        is_snapshot=False,
+        touch_symbols=(*pairs, "TAOUSD"),
+        touch_create_missing=True,
+        sanitize_venue="kraken",
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path),
+        {"HYPEUSD": [f_hype], "SPCXxUSD": [f_spcx1], "TAOUSD": [f_tao_retired]},
+        venue="kraken",
+        now_ms=t0_ms,
+        is_snapshot=False,
+        touch_symbols=(*pairs, "TAOUSD"),
+        touch_create_missing=True,
+    )
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path), {"HYPEUSD": [], "SPCXxUSD": []}, now_ms=t0_ms + 20_000, verified_ts=t0 + 20.0
+    )
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path), {"USD": (500.0, 0.0), "HYPE": (2.0, 0.0), "SPCXx": (2.0, 0.0)}, venue="kraken", now_s=t0 + 20.0, verified_ts=t0 + 20.0
+    )
+
+    # Invalidate ONLY HYPEUSD; then a live WS fill arrives for SPCXxUSD 20s later (< old 60s throttle).
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSD", str(tr_path))
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSD", str(fo_path))
+
+    t1_ms = t0_ms + 20_000
+    f_spcx2 = {"symbol": "SPCXxUSD", "id": "T-S2", "orderId": "O-S2", "side": "BUY", "price": 126.0, "qty": 1.0, "quantity": 1.0, "time": t1_ms - 1000}
+    tr_missing: list[str] = []
+    fo_missing: list[str] = []
+    cacheaccount.CacheTradeManager._merge_venue_fills_snapshot_locked(
+        str(tr_path),
+        {"SPCXxUSD": [f_spcx2]},
+        now_ms=t1_ms,
+        is_snapshot=False,
+        touch_symbols=pairs,
+        touch_create_missing=False,
+        sanitize_venue="kraken",
+        missing_out=tr_missing,
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path),
+        {"SPCXxUSD": [f_spcx2]},
+        venue="kraken",
+        now_ms=t1_ms,
+        is_snapshot=False,
+        touch_symbols=pairs,
+        touch_create_missing=False,
+        missing_out=fo_missing,
+    )
+    assert tr_missing == ["HYPEUSD"]
+    assert fo_missing == ["HYPEUSD"]
+    _, fo_ft_after = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="kraken")
+    assert fo_ft_after.get("SPCXxUSD") == t1_ms
+    assert "HYPEUSD" not in fo_ft_after
+
+    # If health had falsely advanced while HYPEUSD was missing, CLI --check-cross-cache catches kraken:health_symbol_fetchtime_missing!
+    _write_health_doc(
+        health_path,
+        now_ms=t1_ms,
+        started_ms=t0_ms - 5_000,
+        venue_streams={
+            "kraken": {
+                "balances": t1_ms,
+                "open_orders": t1_ms,
+                "filled_orders": t1_ms,
+                "trades": t1_ms,
+            }
+        },
+    )
+    rc_bad = audit_cli.main(["--check-cross-cache", "--scope", "crypto", "--cache-dir", str(tmp_path)])
+    err_bad = capsys.readouterr().err
+    assert rc_bad == 1
+    assert "CROSS_CACHE_COHERENCE" in err_bad
+    assert "kraken:health_symbol_fetchtime_missing" in err_bad
+    assert "HYPEUSD" in err_bad
+
+    # After REST catch-up restores HYPEUSD, coherence passes cleanly even though retired TAOUSD still has old t0_ms fetchtime.
+    t2_ms = t0_ms + 30_000
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path),
+        {"HYPEUSD": [f_hype], "SPCXxUSD": [f_spcx1, f_spcx2]},
+        venue="kraken",
+        now_ms=t2_ms,
+        is_snapshot=False,
+        touch_symbols=pairs,
+        touch_create_missing=True,
+    )
+    _write_health_doc(
+        health_path,
+        now_ms=t2_ms,
+        started_ms=t0_ms - 5_000,
+        venue_streams={
+            "kraken": {
+                "balances": t2_ms,
+                "open_orders": t2_ms,
+                "filled_orders": t2_ms,
+                "trades": t2_ms,
+            }
+        },
+    )
+    cacheaccount.CacheBalanceManager.replace_venue_balances_snapshot(
+        str(bal_path), {"USD": (500.0, 0.0), "HYPE": (2.0, 0.0), "SPCXx": (2.0, 0.0)}, venue="kraken", now_s=t0 + 30.0, verified_ts=t0 + 30.0
+    )
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path), {"HYPEUSD": [], "SPCXxUSD": []}, now_ms=t2_ms, verified_ts=t0 + 30.0
+    )
+    rc_ok = audit_cli.main(["--check-cross-cache", "--scope", "crypto", "--cache-dir", str(tmp_path)])
+    assert rc_ok == 0
+
+
+

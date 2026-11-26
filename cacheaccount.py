@@ -1091,7 +1091,8 @@ class CacheTradeManager(CacheAccountManagerBase):
                     bucket.sort(key=lambda r: extract_timestamp_ms(r, default=0) or 0)
                 items[sym_key] = bucket
             old_ft = safe_pos_float(ft.get(sym_key), default=None)
-            if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
+            ft_gap_ms = math.trunc(OPEN_ORDER_SYNC_INTERVAL_SEC * 1000)
+            if old_ft is None or (eff_now_ms - old_ft) >= ft_gap_ms:
                 changed = True
             ft[sym_key] = eff_now_ms
         if touch_symbols and cls.touch_venue_ws_fetchtimes_in_dict(
@@ -1113,8 +1114,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         sanitize_venue: Optional[str] = None,
         indent: Optional[int] = None,
         force_save: bool = False,
+        missing_out: Optional[list[str]] = None,
     ) -> dict:
         """Atomically load, merge, touch, and persist a venue trade snapshot under ``.generation.lock``."""
+        if isinstance(missing_out, list):
+            missing_out.clear()
         target_path = str(cache_file)
         is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         touch_create_b = _parse_bool_flag(touch_create_missing, False)
@@ -1141,6 +1145,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 now_ms,
                 symbols=touch_symbols,
                 create_missing=touch_create_b,
+                missing_out=missing_out,
             ):
                 changed = True
             if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
@@ -1159,8 +1164,11 @@ class CacheTradeManager(CacheAccountManagerBase):
         touch_create_missing: bool = False,
         sanitize_venue: Optional[str] = None,
         indent: Optional[int] = None,
+        missing_out: Optional[list[str]] = None,
     ) -> bool:
         """Merge ``{symbol: [fill_dict, ...]}`` into a shared SSOT trade cache file (`items` + `fetchtime`)."""
+        if isinstance(missing_out, list):
+            missing_out.clear()
         is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         if not cache_file or not isinstance(fills_by_symbol, dict):
             return False
@@ -1176,6 +1184,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 touch_create_missing=touch_create_missing,
                 sanitize_venue=sanitize_venue,
                 indent=indent,
+                missing_out=missing_out,
             )
             return True
         except Exception:
@@ -2835,8 +2844,11 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         touch_create_missing: bool = False,
         indent: Optional[int] = 1,
         force_save: bool = False,
+        missing_out: Optional[list[str]] = None,
     ) -> dict:
         """Atomically aggregate and merge per-symbol fills into ``cache_order_filled_<venue>.json``."""
+        if isinstance(missing_out, list):
+            missing_out.clear()
         target_path = str(cache_file)
         eff_now_ms = resolve_now_ms(now_ms)
         strict_int = bool(is_primary_stream_venue(venue)) if venue else False
@@ -2986,23 +2998,18 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     items[sym_key] = new_bucket
                     changed = True
                 old_ft = safe_pos_float(ft.get(sym_key), default=None)
-                if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
+                ft_gap_ms = math.trunc(OPEN_ORDER_SYNC_INTERVAL_SEC * 1000)
+                if old_ft is None or (eff_now_ms - old_ft) >= ft_gap_ms:
                     changed = True
                 ft[sym_key] = eff_now_ms
-            if touch_symbols:
-                for ts_sym in touch_symbols:
-                    if clean_scalar_str(ts_sym) is None:
-                        continue
-                    if ts_sym not in items and touch_create_b:
-                        items[ts_sym] = []
-                        changed = True
-                    # When touch_create_missing=False, never resurrect a symbol whose fetchtime
-                    # was explicitly invalidated after order execution until a real fill or REST sync arrives.
-                    if touch_create_b or (ts_sym in items and ts_sym in ft):
-                        old_ft = safe_pos_float(ft.get(ts_sym), default=None)
-                        if old_ft is None or (eff_now_ms - old_ft) >= 60_000:
-                            changed = True
-                        ft[ts_sym] = eff_now_ms
+            if touch_symbols and CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+                cache_obj,
+                eff_now_ms,
+                symbols=touch_symbols,
+                create_missing=touch_create_b,
+                missing_out=missing_out,
+            ):
+                changed = True
             if changed or is_snapshot_b or force_save_b or not os.path.exists(target_path):
                 save_json_state(target_path, cache_obj, indent=indent, skip_if_unchanged=True)
             return cache_obj
@@ -4693,6 +4700,8 @@ class _HyperliquidAccountTradeBridge:
         self.hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
         self._rest_resync_lock = threading.Lock()
         self._rest_resync_in_flight = False
+        self._rest_backoff_sec: float = 0.0
+        self._next_rest_resync_ms: int = 0
         ws_stream._fills_cache_path = fills_cache_path
         ws_stream._fills_ws_seeded = False
         ws_stream._last_fills_touch_ms = 0
@@ -4717,25 +4726,34 @@ class _HyperliquidAccountTradeBridge:
             return
         ws_stream = self.ws_stream
         with ws_stream._lock:
-            symbols = ws_stream._symbols
+            symbols = tuple(ws_stream._symbols or ())
         parsed = self.hl_prov_cls.extract_ws_user_fills(
             data, symbols, candidate_mids_fn=ws_stream._candidate_mids_keys
         )
         if parsed is None:
             return
         is_snapshot, fills_by_symbol = parsed
+        has_spot_fills = any(fills_by_symbol.values())
+        if not is_snapshot and not has_spot_fills:
+            # Ignore non-spot / untracked-coin fills (e.g. perp legs on a co-mingled wallet)
+            # so they neither fabricate spot health nor starve invalidated-symbol recovery.
+            return
         fills_file = self.resolve_fills_cache_file()
+        tr_missing: list[str] = []
+        fo_missing: list[str] = []
         # Hyperliquid WS ``userFills`` snapshots only carry a bounded recent fill window;
         # always union-merge into ``CacheTradeManager`` (matching ``CacheOrderFilledManager``)
         # so reconnect snapshots never wipe older fills from ``cache_trade_hyperliquid.json``.
-        CacheTradeManager.merge_venue_fills_snapshot(
+        tr_ok = CacheTradeManager.merge_venue_fills_snapshot(
             fills_file,
             fills_by_symbol,
             now_ms=ts_ms,
             is_snapshot=False,
             touch_symbols=symbols,
             touch_create_missing=is_snapshot,
+            missing_out=tr_missing,
         )
+        fo_ok = False
         try:
             CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
                 _sibling_order_filled_path(fills_file, "hyperliquid"),
@@ -4745,16 +4763,26 @@ class _HyperliquidAccountTradeBridge:
                 is_snapshot=is_snapshot,
                 touch_symbols=symbols,
                 touch_create_missing=is_snapshot,
+                missing_out=fo_missing,
             )
-            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
+            fo_ok = True
         except Exception:
             pass
-        _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
+        if fo_ok and not fo_missing:
+            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
+        if tr_ok and not tr_missing:
+            _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
         if is_snapshot:
             ws_stream._fills_ws_seeded = True
-        elif any(fills_by_symbol.values()):
-            request_venue_account_refresh("hyperliquid", include_open_orders=True)
-        ws_stream._last_fills_touch_ms = ts_ms
+            ws_stream._last_fills_touch_ms = ts_ms
+        else:
+            if has_spot_fills:
+                request_venue_account_refresh("hyperliquid", include_open_orders=True)
+            missing_syms = tuple(dict.fromkeys((*tr_missing, *fo_missing)))
+            if missing_syms:
+                self._schedule_invalidated_fills_resync(missing_syms, fills_file, ts_ms)
+            else:
+                ws_stream._last_fills_touch_ms = ts_ms
 
     def _schedule_invalidated_fills_resync(
         self,
@@ -4767,15 +4795,17 @@ class _HyperliquidAccountTradeBridge:
         """Recover invalidated ``fetchtime`` entries via authoritative Hyperliquid REST fills off the WS thread."""
         if not symbols or self.hl_prov_cls is None:
             return False
+        now_ms = ts_ms if blocking else max(ts_ms, resolve_now_ms())
         with self._rest_resync_lock:
-            if self._rest_resync_in_flight:
+            if self._rest_resync_in_flight or now_ms < self._next_rest_resync_ms:
                 return False
             self._rest_resync_in_flight = True
 
         def _worker() -> None:
+            last_err = ""
+            ok_syms: list[str] = []
             try:
                 fills_by_sym: dict[str, list[dict[str, Any]]] = {}
-                ok_syms: list[str] = []
                 for sym_s in symbols:
                     try:
                         tok = canonical_base_asset(sym_s) or sym_s
@@ -4784,9 +4814,18 @@ class _HyperliquidAccountTradeBridge:
                             fills_by_sym[sym_s] = rows
                             ok_syms.append(sym_s)
                     except Exception as exc:
+                        last_err = str(exc)
                         log(f"[hyperliquid_cache][ws] invalidated fills REST resync {sym_s} failed: {exc}")
                 if ok_syms:
                     sync_ms = max(ts_ms, resolve_now_ms())
+                    fo_path = _sibling_order_filled_path(fills_file, "hyperliquid")
+                    before_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+                        fo_path,
+                        venue="hyperliquid",
+                        allow_legacy=False,
+                        allow_trade_fallback=False,
+                    )
+                    before_count = sum(len(v) for v in before_items.values() if isinstance(v, list))
                     CacheTradeManager.merge_venue_fills_snapshot(
                         fills_file,
                         fills_by_sym,
@@ -4795,8 +4834,8 @@ class _HyperliquidAccountTradeBridge:
                         touch_symbols=ok_syms,
                         touch_create_missing=True,
                     )
-                    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                        _sibling_order_filled_path(fills_file, "hyperliquid"),
+                    merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                        fo_path,
                         fills_by_sym,
                         venue="hyperliquid",
                         now_ms=sync_ms,
@@ -4804,11 +4843,29 @@ class _HyperliquidAccountTradeBridge:
                         touch_symbols=ok_syms,
                         touch_create_missing=True,
                     )
+                    after_items = merged_fo.get("items") if isinstance(merged_fo, dict) else {}
+                    after_count = sum(
+                        len(v) for v in (after_items or {}).values() if isinstance(v, list)
+                    )
+                    if after_count > before_count:
+                        request_venue_account_refresh("hyperliquid", include_open_orders=True)
                     if len(ok_syms) == len(symbols):
                         _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
                         _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=sync_ms)
             finally:
                 with self._rest_resync_lock:
+                    if len(ok_syms) == len(symbols):
+                        self._rest_backoff_sec = 0.0
+                        self._next_rest_resync_ms = 0
+                    else:
+                        err_l = last_err.lower()
+                        if "429" in err_l or "rate limit" in err_l:
+                            self._rest_backoff_sec = min(300.0, max(30.0, self._rest_backoff_sec * 2.0))
+                        else:
+                            self._rest_backoff_sec = min(120.0, max(15.0, self._rest_backoff_sec * 2.0))
+                        self._next_rest_resync_ms = (
+                            ts_ms if blocking else max(ts_ms, resolve_now_ms())
+                        ) + math.trunc(self._rest_backoff_sec * 1000)
                     self._rest_resync_in_flight = False
 
         if blocking:
@@ -5190,6 +5247,10 @@ def run_kraken_trade_ws_loop(
                 last_flush_ms[0] = now_ms
                 should_hb = True
         else:
+            if not any(fills_by_sym.values()):
+                return
+            tr_missing: list[str] = []
+            fo_missing: list[str] = []
             CacheTradeManager._merge_venue_fills_snapshot_locked(
                 cache_file,
                 fills_by_sym,
@@ -5199,7 +5260,9 @@ def run_kraken_trade_ws_loop(
                 touch_create_missing=False,
                 sanitize_venue="kraken",
                 indent=1,
+                missing_out=tr_missing,
             )
+            fo_ok = False
             try:
                 CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
                     _sibling_order_filled_path(cache_file, "kraken"),
@@ -5210,14 +5273,18 @@ def run_kraken_trade_ws_loop(
                     touch_symbols=pairs,
                     touch_create_missing=False,
                     indent=1,
+                    missing_out=fo_missing,
                 )
-                _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
+                fo_ok = True
             except Exception:
                 pass
-            _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
-            if any(fills_by_sym.values()):
-                request_venue_account_refresh("kraken", include_open_orders=True)
-            last_flush_ms[0] = now_ms
+            if fo_ok and not fo_missing:
+                _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
+            if not tr_missing:
+                _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
+            request_venue_account_refresh("kraken", include_open_orders=True)
+            if not tr_missing and not fo_missing:
+                last_flush_ms[0] = now_ms
             should_hb = True
         if should_hb and callable(heartbeat_fn):
             heartbeat_fn()
