@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "ts": "2026-11-26T01:04:33+00:00",
+    "full_key": "BINANCE_TAO.mt.maxage_days",
+    "section": "BINANCE_TAO",
+    "key": "mt.maxage_days",
+    "symbol": "TAOUSDC",
+    "current_on_dev": 20.75,
+    "winner_value": 28.0,
+    "margin_vs_current": {
+      "half1": 702.18,
+      "half2": 69.11
+    },
+    "dev_commit": "532df0af"
+  },
+  {
+    "ts": "2026-11-26T01:04:33+00:00",
+    "full_key": "BINANCE_ARB.mt.gain",
+    "section": "BINANCE_ARB",
+    "key": "mt.gain",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 7.5,
+    "winner_value": 6.0,
+    "margin_vs_current": {
+      "half1": 19.38,
+      "half2": 55.63
+    },
+    "dev_commit": "532df0af"
+  }
+]
