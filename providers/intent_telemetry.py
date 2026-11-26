@@ -927,6 +927,17 @@ def resolve_symbol_price_bars(
     return None
 
 
+TERMINAL_TRADE_PLAN_STATUSES: frozenset[str] = frozenset({"TARGET_HIT", "INVALIDATED", "CLOSED_EARLY"})
+
+
+def extract_frozen_trade_plan_status(item: Any) -> str:
+    """Return persisted terminal trade-plan status (TARGET_HIT / INVALIDATED / CLOSED_EARLY) or empty string."""
+    if not isinstance(item, Mapping):
+        return ""
+    raw = clean_upper_scalar(item.get("resolved_plan_status")) or ""
+    return raw if raw in TERMINAL_TRADE_PLAN_STATUSES else ""
+
+
 def evaluate_trade_plan_path_status(
     side: str,
     spot_px: Optional[float],
@@ -1151,16 +1162,22 @@ def summarize_active_ai_trade_plans(
             seen_resting_buy_inst_keys.add(inst_key)
 
         spot_px = _resolve_spot_px(venue, sym, pos_hit)
-        sym_bars = resolve_symbol_price_bars(price_bars_by_symbol, venue, sym)
-        status = evaluate_trade_plan_path_status(
-            side,
-            spot_px,
-            inv_px,
-            tgt_px,
-            start_ts=eff_ts,
-            price_bars=sym_bars,
-            is_resting=is_resting,
-        )
+        frozen_st = "" if is_resting else extract_frozen_trade_plan_status(i)
+        if frozen_st == "CLOSED_EARLY":
+            continue
+        if frozen_st in ("TARGET_HIT", "INVALIDATED"):
+            status = frozen_st
+        else:
+            sym_bars = resolve_symbol_price_bars(price_bars_by_symbol, venue, sym)
+            status = evaluate_trade_plan_path_status(
+                side,
+                spot_px,
+                inv_px,
+                tgt_px,
+                start_ts=eff_ts,
+                price_bars=sym_bars,
+                is_resting=is_resting,
+            )
         if (
             side == "SELL"
             and not is_resting
@@ -1208,6 +1225,7 @@ def summarize_active_ai_trade_plans(
 
 
 __all__ = [
+    "TERMINAL_TRADE_PLAN_STATUSES",
     "_attach_intent_age_fields",
     "_filter_intents_by_scope",
     "_is_open_resting_detail",
@@ -1216,6 +1234,7 @@ __all__ = [
     "build_last_cycle_execution_status",
     "evaluate_trade_plan_path_status",
     "evaluate_trade_plan_status",
+    "extract_frozen_trade_plan_status",
     "resolve_symbol_price_bars",
     "summarize_active_ai_trade_plans",
     "summarize_recent_ai_intents",

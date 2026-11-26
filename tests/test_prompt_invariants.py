@@ -8,9 +8,11 @@ from intelligence.sentiment.collectors.portfolio_collector import derive_runtime
 from intelligence.sentiment.evaluators.microstructure_evaluator import compute_cross_venue_arb_metrics
 from providers.ai_attribution import evaluate_ai_attribution
 from providers.ai_survival_guard import (
+    evaluate_ai_calibration_feedback,
     evaluate_ai_decision_scorecard,
     match_filled_intent_rows_lifo_in_window,
 )
+from providers.intent_telemetry import summarize_active_ai_trade_plans
 from verify_tools.audit_prompt_invariants import (
     audit_rendered_prompt_text,
     audit_scorecard_temporal_invariants,
@@ -402,3 +404,136 @@ def test_prompt_and_snapshot_invariant_verifier_passes_clean_and_catches_bugs() 
         "PROMPT_RANGE_POS_MATH",
         "PROMPT_CROSS_VENUE_ARB_SYMMETRY",
     }.issubset(bad_codes)
+
+
+def test_frozen_resolved_plan_status_persists_write_once_and_survives_4h_bar_rollover(tmp_path) -> None:
+    """Once a filled plan hits TARGET_HIT on 5m bars and is frozen in durable state, coarse 4h bars never flip it to INVALIDATED."""
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+
+    ws = tmp_path / "ws"
+    (ws / "cachedb").mkdir(parents=True)
+    (ws / "order_guard.conf").write_text(
+        "autonomous_trading_mode = shadow\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb", mode="shadow")
+
+    t0 = 1_800_000_000.0
+    sell_intent = {
+        **_filled_intent("sell_plan_1", t0, "SELL", "ARBUSDC", "binance", 0.1100, 1000.0),
+        "target_px": 0.1080,
+        "invalidation_px": 0.1115,
+    }
+    assert gw.save_all_intents([sell_intent]) is True
+
+    # 1. Within 24h on fine 5m bars ([ts, close, vol, high, low]):
+    #    bar 1 hits target (low=0.1075), bar 2 later rebounds past invalidation (high=0.1122).
+    fine_bars = [
+        [t0 + 300.0, 0.1082, 100.0, 0.1102, 0.1075],
+        [t0 + 600.0, 0.1118, 100.0, 0.1122, 0.1080],
+    ]
+    newly_resolved: dict[str, str] = {}
+    cal_fine = evaluate_ai_calibration_feedback(
+        gw.load_all_intents(),
+        now_ts=t0 + 3600.0,
+        live_prices={"binance:ARBUSDC": 0.1118},
+        price_bars_by_symbol={"ARBUSDC": fine_bars},
+        lookback_days=7.0,
+        scope="crypto",
+        newly_resolved_out=newly_resolved,
+    )
+    assert cal_fine["by_side"]["SELL"]["TARGET_HIT"] == 1
+    assert cal_fine["by_side"]["SELL"]["INVALIDATED"] == 0
+    assert newly_resolved == {"sell_plan_1": "TARGET_HIT"}
+
+    # 2. Persist write-once via AutonomousIntentGateway; subsequent conflicting write must be ignored.
+    assert gw.persist_resolved_trade_plan_statuses(newly_resolved, now_ts=t0 + 3600.0) == 1
+    assert gw.persist_resolved_trade_plan_statuses({"sell_plan_1": "INVALIDATED"}, now_ts=t0 + 7200.0) == 0
+
+    persisted = gw.load_all_intents()
+    assert persisted[0]["resolved_plan_status"] == "TARGET_HIT"
+    assert persisted[0]["resolved_plan_ts"] == pytest.approx(t0 + 3600.0)
+
+    # 3. Past 24h rollover into coarse 4h bar ([ts, close, vol, high, low]) spanning BOTH target and invalidation:
+    #    verify unfrozen intent WOULD flip to INVALIDATED, while frozen persisted intent stays TARGET_HIT across all evaluators!
+    coarse_4h_bars = [
+        [t0 + 14400.0, 0.1120, 5000.0, 0.1125, 0.1075],
+    ]
+    unfrozen_cal = evaluate_ai_calibration_feedback(
+        [sell_intent],
+        now_ts=t0 + 90000.0,
+        live_prices={"binance:ARBUSDC": 0.1120},
+        price_bars_by_symbol={"ARBUSDC": coarse_4h_bars},
+        lookback_days=7.0,
+        scope="crypto",
+    )
+    assert unfrozen_cal["by_side"]["SELL"]["INVALIDATED"] == 1
+
+    recheck_resolved: dict[str, str] = {}
+    cal_4h = evaluate_ai_calibration_feedback(
+        persisted,
+        now_ts=t0 + 90000.0,
+        live_prices={"binance:ARBUSDC": 0.1120},
+        price_bars_by_symbol={"ARBUSDC": coarse_4h_bars},
+        lookback_days=7.0,
+        scope="crypto",
+        newly_resolved_out=recheck_resolved,
+    )
+    assert cal_4h["by_side"]["SELL"]["TARGET_HIT"] == 1
+    assert cal_4h["by_side"]["SELL"]["INVALIDATED"] == 0
+    assert recheck_resolved == {}
+
+    attr_4h = evaluate_ai_attribution(
+        persisted,
+        now_ts=t0 + 90000.0,
+        live_prices={"binance:ARBUSDC": 0.1120},
+        price_bars_by_symbol={"ARBUSDC": coarse_4h_bars},
+        lookback_days=7.0,
+        scope="crypto",
+    )
+    assert attr_4h["trade_plan_calibration"]["status_counts"]["TARGET_HIT"] == 1
+    assert attr_4h["trade_plan_calibration"]["status_counts"]["INVALIDATED"] == 0
+
+    active_plans = summarize_active_ai_trade_plans(
+        persisted,
+        "crypto",
+        t0 + 3600.0,
+        lambda it, default=0.0: it.get("clamped_notional_usd", default),
+        prices_and_trends={"ARBUSDC": {"price": 0.1120}},
+        price_bars_by_symbol={"ARBUSDC": coarse_4h_bars},
+    )
+    assert active_plans and active_plans[0]["status"] == "TARGET_HIT"
+
+    # 4. CLOSED_EARLY without price bars is NOT prematurely frozen, whereas with bars it IS frozen.
+    early_intents = [
+        {
+            **_filled_intent("buy_early_1", t0, "BUY", "BTCUSDC", "binance", 60000.0, 0.01),
+            "target_px": 62000.0,
+            "invalidation_px": 58000.0,
+        },
+        _filled_intent("sell_early_1", t0 + 1800.0, "SELL", "BTCUSDC", "binance", 60200.0, 0.01),
+    ]
+    res_no_bars: dict[str, str] = {}
+    evaluate_ai_calibration_feedback(
+        early_intents,
+        now_ts=t0 + 3600.0,
+        live_prices={"binance:BTCUSDC": 60200.0},
+        price_bars_by_symbol=None,
+        newly_resolved_out=res_no_bars,
+    )
+    assert res_no_bars == {}
+
+    res_with_bars: dict[str, str] = {}
+    evaluate_ai_calibration_feedback(
+        early_intents,
+        now_ts=t0 + 3600.0,
+        live_prices={"binance:BTCUSDC": 60200.0},
+        price_bars_by_symbol={"BTCUSDC": [[t0 + 900.0, 60150.0, 50.0, 60300.0, 59900.0]]},
+        newly_resolved_out=res_with_bars,
+    )
+    assert res_with_bars == {"buy_early_1": "CLOSED_EARLY"}
+

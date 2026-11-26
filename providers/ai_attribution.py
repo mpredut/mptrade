@@ -51,7 +51,11 @@ from .intent_state import (
     extract_intent_timestamp_s,
     parse_pos_epoch_s,
 )
-from .intent_telemetry import evaluate_trade_plan_path_status, resolve_symbol_price_bars
+from .intent_telemetry import (
+    evaluate_trade_plan_path_status,
+    extract_frozen_trade_plan_status,
+    resolve_symbol_price_bars,
+)
 from .nav_drawdown import (
     evaluate_nav_drawdown_metrics,
     format_nav_drawdown_summary_line,
@@ -634,6 +638,8 @@ def evaluate_ai_attribution(
     def _record_closed_plan_outcome(entry_row: dict[str, Any], exit_row: dict[str, Any]) -> str:
         if not entry_row["has_plan"]:
             return ""
+        if frozen_st := extract_frozen_trade_plan_status(entry_row):
+            return frozen_st
         sym_bars = resolve_symbol_price_bars(
             price_bars_by_symbol, entry_row.get("venue"), entry_row.get("symbol")
         )
@@ -658,17 +664,20 @@ def evaluate_ai_attribution(
             return None
         plan_st = ""
         if entry_row["has_plan"]:
-            sym_bars = resolve_symbol_price_bars(
-                price_bars_by_symbol, entry_row.get("venue"), entry_row.get("symbol")
-            )
-            plan_st = evaluate_trade_plan_path_status(
-                side,
-                spot_px,
-                entry_row["invalidation_px"],
-                entry_row["target_px"],
-                start_ts=safe_float(entry_row.get("ts"), default=0.0) or 0.0,
-                price_bars=sym_bars,
-            )
+            if frozen_st := extract_frozen_trade_plan_status(entry_row):
+                plan_st = frozen_st
+            else:
+                sym_bars = resolve_symbol_price_bars(
+                    price_bars_by_symbol, entry_row.get("venue"), entry_row.get("symbol")
+                )
+                plan_st = evaluate_trade_plan_path_status(
+                    side,
+                    spot_px,
+                    entry_row["invalidation_px"],
+                    entry_row["target_px"],
+                    start_ts=safe_float(entry_row.get("ts"), default=0.0) or 0.0,
+                    price_bars=sym_bars,
+                )
         gross_pct = compute_signed_price_edge_pct(side, entry_row["px"], spot_px)
         rt_bps = entry_row["rt_fee_bps"]
         net_pct = gross_pct - (rt_bps / 100.0)

@@ -59,9 +59,11 @@ from .intent_state import (
     symbols_match_intent_scope_and_quote,
 )
 from .intent_telemetry import (
+    TERMINAL_TRADE_PLAN_STATUSES,
     _compute_signed_exec_bps,
     evaluate_trade_plan_path_status,
     evaluate_trade_plan_status,
+    extract_frozen_trade_plan_status,
     resolve_symbol_price_bars,
 )
 from .order_ohlc_utils import extract_executed_qty
@@ -468,6 +470,7 @@ def build_normalized_filled_ai_intent_row(
         else None
     )
     row: dict[str, Any] = {
+        "intent_id": _extract_intent_id(it),
         "ts": ts_s,
         "venue": venue,
         "symbol": symbol,
@@ -482,6 +485,7 @@ def build_normalized_filled_ai_intent_row(
         "invalidation_px": inv_px,
         "target_px": tgt_px,
         "has_plan": _is_actionable_filled_trade_plan(venue, symbol, side, inv_px, tgt_px),
+        "resolved_plan_status": extract_frozen_trade_plan_status(it),
     }
     if include_slippage:
         lim_slip, arr_sf, mkt_slip = extract_fill_execution_slippage(it, side=side, exec_px=px, order_type=ot)
@@ -1466,8 +1470,9 @@ def evaluate_filled_trade_plans(
     live_prices: Optional[Mapping[str, Any]] = None,
     *,
     price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
+    newly_resolved_out: Optional[dict[str, str]] = None,
 ) -> tuple[dict[str, int], dict[str, dict[str, int]], int]:
-    """Evaluate every filled intent with a trade plan against chronological price bars, subsequent fills, and live spot."""
+    """Evaluate every filled intent with a trade plan against frozen status, chronological bars, subsequent fills, and live spot."""
     prices_map = live_prices if isinstance(live_prices, Mapping) else {}
     empty_side = lambda: {"TARGET_HIT": 0, "INVALIDATED": 0, "CLOSED_EARLY": 0, "ACTIVE": 0}
     status_counts = empty_side()
@@ -1485,6 +1490,11 @@ def evaluate_filled_trade_plans(
             if side_k not in ("BUY", "SELL"):
                 continue
             planned_n += 1
+            if frozen_st := extract_frozen_trade_plan_status(row):
+                final_st = frozen_st
+                status_counts[final_st] = status_counts.get(final_st, 0) + 1
+                by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
+                continue
             sym_bars = resolve_symbol_price_bars(
                 price_bars_by_symbol, row.get("venue"), row.get("symbol")
             )
@@ -1531,6 +1541,13 @@ def evaluate_filled_trade_plans(
                     check_spot=(spot_px is not None and spot_px > 0.0),
                 )
                 final_st = st if st in ("TARGET_HIT", "INVALIDATED", "ACTIVE") else "ACTIVE"
+            if (
+                newly_resolved_out is not None
+                and final_st in TERMINAL_TRADE_PLAN_STATUSES
+                and (final_st != "CLOSED_EARLY" or bool(sym_bars))
+                and (row_iid := clean_scalar_str(row.get("intent_id")))
+            ):
+                newly_resolved_out[row_iid] = final_st
             status_counts[final_st] = status_counts.get(final_st, 0) + 1
             by_side[side_k][final_st] = by_side[side_k].get(final_st, 0) + 1
     return status_counts, by_side, planned_n
@@ -1544,6 +1561,7 @@ def evaluate_ai_calibration_feedback(
     price_bars_by_symbol: Optional[Mapping[str, Sequence[Any]]] = None,
     lookback_days: float = 7.0,
     scope: str = "all",
+    newly_resolved_out: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Compute 0ms closed-loop BUY/SELL trade-plan calibration and per-venue execution TCA for Section 3C."""
     eff_now = resolve_now_ts(now_ts)
@@ -1613,7 +1631,10 @@ def evaluate_ai_calibration_feedback(
         )
 
     status_counts, by_side, planned_filled = evaluate_filled_trade_plans(
-        filled_rows, prices_map, price_bars_by_symbol=price_bars_by_symbol
+        filled_rows,
+        prices_map,
+        price_bars_by_symbol=price_bars_by_symbol,
+        newly_resolved_out=newly_resolved_out,
     )
     resolved_n = status_counts["TARGET_HIT"] + status_counts["INVALIDATED"]
     hit_rate = round((status_counts["TARGET_HIT"] / resolved_n) * 100.0, 1) if resolved_n > 0 else None

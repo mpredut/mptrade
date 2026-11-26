@@ -1625,6 +1625,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         eff_verified_symbols: Optional[set[tuple[str, str]]] = None,
         price_bars_by_symbol: Optional[Dict[str, List[List[Any]]]] = None,
         cache_dir: str = "",
+        intent_gateway: Any = None,
+        persist: bool = False,
     ) -> None:
         if isinstance(intents_data, list) and intents_data:
             if recent_intents_out := summarize_recent_ai_intents(
@@ -1682,6 +1684,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 )
                 if ai_scorecard.get("count", 0) > 0:
                     snapshot.portfolio_summary["ai_decision_scorecard"] = ai_scorecard
+                newly_resolved_plans: Dict[str, str] = {}
                 ai_cal = evaluate_ai_calibration_feedback(
                     intents_data,
                     now_ts=now_ts,
@@ -1689,9 +1692,17 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     price_bars_by_symbol=price_bars_by_symbol,
                     lookback_days=7.0,
                     scope=scope,
+                    newly_resolved_out=newly_resolved_plans,
                 )
                 if ai_cal.get("filled_total", 0) > 0 or ai_cal.get("venue_tca"):
                     snapshot.portfolio_summary["ai_calibration_feedback"] = ai_cal
+                if (
+                    persist
+                    and newly_resolved_plans
+                    and intent_gateway is not None
+                    and callable(persist_plans_fn := getattr(intent_gateway, "persist_resolved_trade_plan_statuses", None))
+                ):
+                    persist_plans_fn(newly_resolved_plans, now_ts=now_ts)
             except Exception:
                 pass
 
@@ -2311,6 +2322,8 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             eff_verified_symbols=verified_open_symbols if (has_inst_source or should_harvest) else None,
             price_bars_by_symbol=price_path_bars,
             cache_dir=cache_dir,
+            intent_gateway=intent_gateway,
+            persist=persist,
         )
         snapshot.portfolio_summary.update(
             harvest_bot_runtime_states(cache_dir, now_ts, _rj, tradable_positions=snapshot.portfolio_summary.get("tradable_positions"))

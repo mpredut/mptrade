@@ -24,7 +24,7 @@ import logging
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -37,6 +37,7 @@ from botcore import (
     _parse_bool_flag,
     add_store_true_cli_args,
     clean_order_id,
+    clean_scalar_str,
     clean_upper_scalar,
     disable_auto_start_websockets_default,
     extract_order_id,
@@ -47,6 +48,7 @@ from botcore import (
     is_us_rth_open,
     load_key_value_conf,
     opposite_side,
+    resolve_now_ts,
     safe_nonneg_float,
     safe_pos_float,
     split_csv,
@@ -126,6 +128,7 @@ from providers.intent_execution import (
     resolve_intent_topic_tag,
 )
 from providers.intent_state import (
+    _extract_intent_id,
     append_intent_history,
     collect_known_ai_order_ids,
     extract_intent_cancel_order_ids,
@@ -134,9 +137,14 @@ from providers.intent_state import (
     validate_and_build_intent_dict,
 )
 from providers.intent_state_store import (
+    durable_intents_lock,
     load_durable_intents_state,
     save_durable_intents_state,
     upsert_durable_intent,
+)
+from providers.intent_telemetry import (
+    TERMINAL_TRADE_PLAN_STATUSES,
+    extract_frozen_trade_plan_status,
 )
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
@@ -237,6 +245,38 @@ class AutonomousIntentGateway:
     def save_all_intents(self, intents: List[Dict[str, Any]]) -> bool:
         """Transactionally persists all intents to disk using `.previous` staging and atomic replace."""
         return save_durable_intents_state(self.intents_file, intents, log=logger)
+
+    def persist_resolved_trade_plan_statuses(
+        self,
+        resolved_by_intent_id: Mapping[str, str],
+        *,
+        now_ts: Optional[float] = None,
+    ) -> int:
+        """Write-once locked persistence of terminal trade-plan statuses so 7d calibration stays immutable past 24h."""
+        clean_updates = {
+            iid: st_u
+            for raw_id, raw_st in (resolved_by_intent_id.items() if isinstance(resolved_by_intent_id, Mapping) else ())
+            if (iid := clean_scalar_str(raw_id))
+            and (st_u := clean_upper_scalar(raw_st) or "") in TERMINAL_TRADE_PLAN_STATUSES
+        }
+        if not clean_updates:
+            return 0
+        eff_now = round(resolve_now_ts(now_ts), 3)
+        updated = 0
+        with durable_intents_lock(self.intents_file):
+            intents = load_durable_intents_state(self.intents_file, read_only=False)
+            for item in intents:
+                if not isinstance(item, dict):
+                    continue
+                iid = _extract_intent_id(item)
+                if not iid or iid not in clean_updates or extract_frozen_trade_plan_status(item):
+                    continue
+                item["resolved_plan_status"] = clean_updates[iid]
+                item["resolved_plan_ts"] = eff_now
+                updated += 1
+            if updated > 0:
+                self.save_all_intents(intents)
+        return updated
 
     def load_tradable_instruments(
         self,
