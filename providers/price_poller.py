@@ -156,8 +156,10 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
         ):
             ts_ms = safe_pos_int(items[-1][0], default=None)
             px = safe_pos_float(items[-1][1], default=None)
+        now_m = time.monotonic()
         with self._lock:
-            self._last_price_mono = time.monotonic()
+            self._last_price_mono = now_m
+            self._last_price_mono_by_symbol[symbol] = now_m
             subscribers = list(self._subscribers)
             if ts_ms is not None and px is not None:
                 prev_ts = self._last_emit_ts_ms.get(symbol)
@@ -336,6 +338,10 @@ class KrakenPriceStream(VenuePriceStreamBase):
         self._pair_to_symbol: dict[str, str] = {}
         for s_sym in self._symbols:
             self._register_symbol_pair(s_sym)
+
+    def _active_staleness_symbols(self) -> set[str]:
+        """Only enforce WS staleness on pairs actually subscribed to Kraken's public ticker channel."""
+        return set(self._pair_to_symbol.values())
 
     def _register_symbol_pair(self, s_sym: str) -> None:
         prov_cls = self._prov_cls
@@ -590,6 +596,9 @@ def start_nonbinance_trend_poller(
     def run():
         rth_seeded: set[str] = set()
         empty_backoff_ts: dict[str, float] = {}
+        err_backoff_until: dict[str, float] = {}
+        err_streaks: dict[str, int] = {}
+        in_flight_futs: dict[str, _futures.Future] = {}
         last_equity_poll_ts: dict[str, float] = {}
         equity_min_gap_sec = max(eff_interval, 6.0)
         equity_ext_gap_sec = max(60.0, equity_min_gap_sec)
@@ -612,12 +621,25 @@ def start_nonbinance_trend_poller(
                     break
                 stop_event.wait(0.1)
 
+        def _record_poll_error_backoff(sym_item: str, exc: object) -> float:
+            streak = err_streaks.get(sym_item, 0) + 1
+            err_streaks[sym_item] = streak
+            err_l = str(exc or "").lower()
+            if "429" in err_l or "rate limit" in err_l or "too many requests" in err_l:
+                delay_s = min(120.0, max(15.0, eff_interval * 4.0) * (2.0 ** min(streak - 1, 3)))
+            else:
+                delay_s = min(30.0, max(eff_interval * 2.0, 0.5) * (2.0 ** min(streak - 1, 5)))
+            err_backoff_until[sym_item] = time.time() + delay_s
+            return delay_s
+
         def _apply_fetched_price(sym_item: str, raw_px: Any, *, is_eq: bool) -> None:
             pf = safe_pos_float(raw_px, default=None)
             now_done = time.time()
             if pf is not None:
                 rth_seeded.add(sym_item)
                 empty_backoff_ts.pop(sym_item, None)
+                err_streaks.pop(sym_item, None)
+                err_backoff_until.pop(sym_item, None)
                 if is_eq:
                     last_equity_poll_ts[sym_item] = now_done
                 if has_cls_mark_ws:
@@ -650,6 +672,10 @@ def start_nonbinance_trend_poller(
             for s in symbols:
                 if stop_event.is_set():
                     break
+                if (prev_fut := in_flight_futs.get(s)) is not None:
+                    if not prev_fut.done():
+                        continue
+                    in_flight_futs.pop(s, None)
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
                 if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(s), False):
                     continue
@@ -659,6 +685,8 @@ def start_nonbinance_trend_poller(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
                 now_ts = time.time()
+                if now_ts < err_backoff_until.get(s, 0.0):
+                    continue
                 last_empty = empty_backoff_ts.get(s, 0.0)
                 market_open = not rth_gate_active or is_symbol_market_open(s, now_ts)
                 is_ext_open = bool(is_eq and rth_gate_active and not market_open and is_us_extended_hours_open(now_ts))
@@ -681,26 +709,7 @@ def start_nonbinance_trend_poller(
                 prefer_public_eq = bool(is_eq and (market_open or is_ext_open))
                 pending_polls.append((s, prov_name, is_eq, prefer_public_eq))
 
-            if len(pending_polls) == 1:
-                s_one, prov_one, is_eq_one, use_ext_one = pending_polls[0]
-                try:
-                    p = fetch_price_with_deadline(
-                        cpm.market_api,
-                        s_one,
-                        pool,
-                        eff_deadline,
-                        provider_name=prov_one,
-                        prefer_public_extended=use_ext_one,
-                    )
-                    _apply_fetched_price(s_one, p, is_eq=is_eq_one)
-                except _futures.TimeoutError:
-                    builtins.print(
-                        f"[NB-trend] {s_one}: fetch BLOCKED >{eff_deadline}s "
-                        f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
-                    )
-                except Exception as _e:
-                    builtins.print(f"[NB-trend] {s_one}: {_e}")
-            elif len(pending_polls) > 1:
+            if pending_polls:
                 fut_map = {}
                 for s_item, prov_item, is_eq_item, use_ext_item in pending_polls:
                     def _poll_item(_sym=s_item, _prov=prov_item, _ext=use_ext_item):
@@ -720,10 +729,13 @@ def start_nonbinance_trend_poller(
                     try:
                         _apply_fetched_price(s_done, fut.result(), is_eq=is_eq_done)
                     except Exception as _e:
-                        builtins.print(f"[NB-trend] {s_done}: {_e}")
+                        delay_s = _record_poll_error_backoff(s_done, _e)
+                        builtins.print(f"[NB-trend] {s_done}: {_e} (backoff {delay_s:.1f}s)")
                 for fut in not_done:
                     fut.cancel()
                     s_slow, _ = fut_map[fut]
+                    if not fut.done():
+                        in_flight_futs[s_slow] = fut
                     builtins.print(
                         f"[NB-trend] {s_slow}: fetch BLOCKED >{eff_deadline}s "
                         f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"

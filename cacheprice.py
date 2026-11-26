@@ -2243,6 +2243,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._price_anchor_confirmations: dict[str, int] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
+        self._in_flight_http_futs: dict[str, Any] = {}
         self._first_sleep = True
         self._tick_ipc_lock = threading.Lock()
         self._tick_ipc_stop = threading.Event()
@@ -2598,6 +2599,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         with self._fallback_pool_lock:
             pool = self._fallback_pool
             self._fallback_pool = None
+            self._in_flight_http_futs.clear()
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
             try:
@@ -2781,10 +2783,17 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             safe_pos_float(PRICE_FALLBACK_HTTP_DEADLINE_SEC, default=1.2) or 1.2,
             1.2,
         )
-        fut_map = {
-            pool.submit(self.get_remote_items, sym_item, st_item): (sym_item, st_item, is_rth_sym)
-            for sym_item, st_item, is_rth_sym in pending_polls
-        }
+        in_flight_map = getattr(self, "_in_flight_http_futs", None)
+        fut_map: dict[Any, tuple[str, Any, bool]] = {}
+        with self._fallback_pool_lock:
+            for sym_item, st_item, is_rth_sym in pending_polls:
+                if isinstance(in_flight_map, dict) and (prev_fut := in_flight_map.get(sym_item)) is not None:
+                    if not prev_fut.done():
+                        continue
+                    in_flight_map.pop(sym_item, None)
+                fut_map[pool.submit(self.get_remote_items, sym_item, st_item)] = (sym_item, st_item, is_rth_sym)
+        if not fut_map:
+            return True
         done, not_done = _futures.wait(fut_map.keys(), timeout=poll_deadline)
         for fut in done:
             sym_done, _, is_rth_done = fut_map[fut]
@@ -2804,6 +2813,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 self._rth_empty_backoff_ts[sym_done] = _now_time()
         for fut in not_done:
             fut.cancel()
+            sym_slow, _, _ = fut_map[fut]
+            if isinstance(in_flight_map, dict) and not fut.done():
+                with self._fallback_pool_lock:
+                    in_flight_map[sym_slow] = fut
+            if is_live_net:
+                self._record_empty_http_result(sym_slow, ok=False)
         return True
 
     def get_remote_items(self, symbol, startTime):

@@ -564,3 +564,110 @@ class TestFetchDeadline(TempDirTestCase):
         ts_map = _load_open_order_timestamps(self.tmp, {})
         self.assertAlmostEqual(ts_map.get("O-KRK-777"), 1700000123.5)
         self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
+
+    def test_poller_deduplicates_in_flight_hangs_and_backs_off_on_rate_limit_errors(self):
+        """NonBinanceTrendPoller must not pile duplicate hung requests into the pool and must back off on 429 errors."""
+        import threading
+
+        release_hang = threading.Event()
+        calls_by_sym = {"HYPEUSD": 0, "SPCXxUSD": 0}
+        pushed = []
+
+        class _MixedApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                calls_by_sym[symbol] = calls_by_sym.get(symbol, 0) + 1
+                if symbol == "HYPEUSD":
+                    release_hang.wait(timeout=5.0)
+                    return 62.5
+                return 129.5
+
+        cpm = _StubCpm(_MixedApi(), pushed=pushed)
+        poller = cm._start_nonbinance_trend_poller(
+            cpm,
+            ["HYPEUSD", "SPCXxUSD"],
+            interval_sec=0.05,
+            fetch_deadline_sec=0.08,
+            provider_names={"HYPEUSD": "Kraken", "SPCXxUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            time.sleep(0.45)
+            # HYPEUSD is hung in-flight -> at most 1 concurrent call submitted, while healthy SPCXxUSD keeps polling!
+            self.assertEqual(calls_by_sym["HYPEUSD"], 1)
+            self.assertGreaterEqual(calls_by_sym["SPCXxUSD"], 3)
+            self.assertTrue(any(s == "SPCXxUSD" for s, _ in pushed))
+            self.assertFalse(any(s == "HYPEUSD" for s, _ in pushed))
+            # Unblocking the hung fetch lets the next cycle poll fresh and recover HYPEUSD.
+            release_hang.set()
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not any(s == "HYPEUSD" for s, _ in pushed):
+                time.sleep(0.05)
+            self.assertTrue(any(s == "HYPEUSD" for s, _ in pushed))
+        finally:
+            release_hang.set()
+            poller.stop(timeout=2.0)
+
+        # 429 rate-limit exception triggers backoff instead of hammering every interval_sec.
+        rl_calls = [0]
+
+        class _RateLimitApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                rl_calls[0] += 1
+                raise RuntimeError("HTTP 429 rate limit exceeded")
+
+        cpm_rl = _StubCpm(_RateLimitApi(), pushed=[])
+        poller_rl = cm._start_nonbinance_trend_poller(
+            cpm_rl,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            fetch_deadline_sec=0.2,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            time.sleep(0.35)
+            self.assertEqual(rl_calls[0], 1)
+        finally:
+            poller_rl.stop(timeout=2.0)
+
+    def test_cpm_fallback_deduplicates_in_flight_timeouts_and_backs_off(self):
+        """CacheCurrentPriceManager live fallback pool must not pile up duplicate hung futures and must back off timed-out symbols."""
+        import threading
+
+        release_hang = threading.Event()
+        calls_by_sym = {"BTCUSDC": 0, "ETHUSDC": 0}
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=1.0,
+            symbols=["BTCUSDC", "ETHUSDC"],
+            filename=os.path.join(self.tmp, "cache_current_price_dedup.json"),
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+
+        def _fake_remote(symbol, _start_time):
+            calls_by_sym[symbol] = calls_by_sym.get(symbol, 0) + 1
+            if symbol == "BTCUSDC":
+                release_hang.wait(timeout=5.0)
+                return [[int(time.time() * 1000), 60000.0]]
+            return [[int(time.time() * 1000), 1700.0]]
+
+        cpm.get_remote_items = _fake_remote
+        orig_deadline = cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC
+        cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC = 0.08
+        try:
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertEqual(calls_by_sym["BTCUSDC"], 1)
+            self.assertEqual(calls_by_sym["ETHUSDC"], 1)
+            self.assertIn("BTCUSDC", cpm._in_flight_http_futs)
+            self.assertIn("BTCUSDC", cpm._empty_http_backoff_ts)
+
+            # Immediate second cycle while BTCUSDC is still hanging must NOT submit a second BTCUSDC call.
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertEqual(calls_by_sym["BTCUSDC"], 1)
+        finally:
+            cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC = orig_deadline
+            release_hang.set()
+            cpm._shutdown_fallback_pool()
+

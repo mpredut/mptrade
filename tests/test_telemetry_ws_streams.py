@@ -413,3 +413,59 @@ def test_public_price_stream_stale_reconnect_watchdog(monkeypatch):
     bn_fast._notify_subscribers("BTCUSDC", [[int(time.time() * 1000), 60000.0]])
     assert bn_fast._is_price_stream_stale(t0) is False
 
+
+def test_public_price_stream_per_symbol_staleness_and_kraken_xstock_exclusion(monkeypatch):
+    """Invariant: one ticking sibling symbol must never mask a silent subscribed symbol, while REST-polled Kraken xStocks are excluded."""
+    from binance_api import bapi_ws
+    from providers import price_poller as pp_mod
+    from providers import ws_stream as ws_mod
+
+    mono_now = [1000.0]
+    monkeypatch.setattr(ws_mod.time, "monotonic", lambda: mono_now[0])
+    monkeypatch.setattr(pp_mod.time, "monotonic", lambda: mono_now[0])
+
+    # 1. Multi-symbol Binance stream: BTCUSDC ticking must NOT mask silent ETHUSDC once limit elapses.
+    bn = bapi_ws.BinancePriceStream(["BTCUSDC", "ETHUSDC"], stale_reconnect_sec=120.0)
+    session_start = mono_now[0]
+    bn._notify_subscribers("BTCUSDC", [[1_795_760_000_000, 60000.0]])
+    bn._notify_subscribers("ETHUSDC", [[1_795_760_000_000, 1700.0]])
+    assert bn._is_price_stream_stale(session_start) is False
+
+    mono_now[0] = 1125.0  # +125s: keep BTCUSDC fresh, leave ETHUSDC silent -> MUST detect staleness!
+    bn._notify_subscribers("BTCUSDC", [[1_795_760_125_000, 60100.0]])
+    assert bn._is_price_stream_stale(session_start) is True
+
+    # Once ETHUSDC ticks too, stream is healthy again.
+    bn._notify_subscribers("ETHUSDC", [[1_795_760_125_000, 1705.0]])
+    assert bn._is_price_stream_stale(session_start) is False
+
+    # Dynamically adding SOLUSDC starts its staleness grace at add time, not old session_start.
+    assert bn.add_symbol("SOLUSDC") is True
+    assert bn._is_price_stream_stale(session_start) is False
+    mono_now[0] = 1250.0  # +125s after add_symbol without SOLUSDC ticks -> stale even if BTC/ETH ticked
+    bn._notify_subscribers("BTCUSDC", [[1_795_760_250_000, 60200.0]])
+    bn._notify_subscribers("ETHUSDC", [[1_795_760_250_000, 1710.0]])
+    assert bn._is_price_stream_stale(session_start) is True
+
+    # 2. Hyperliquid multi-symbol stream enforces the same per-symbol staleness invariant.
+    mono_now[0] = 2000.0
+    hl = pp_mod.HyperliquidPriceStream(["HYPEUSDC", "SOLUSDC"], stale_reconnect_sec=120.0)
+    hl._notify_subscribers("HYPEUSDC", [[1_795_760_000_000, 62.0]])
+    hl._notify_subscribers("SOLUSDC", [[1_795_760_000_000, 71.0]])
+    mono_now[0] = 2125.0
+    hl._notify_subscribers("HYPEUSDC", [[1_795_760_125_000, 62.5]])
+    assert hl._is_price_stream_stale(2000.0) is True
+
+    # 3. Kraken stream excludes REST-polled tokenized xStocks (SPCXxUSD) from WS staleness checks.
+    mono_now[0] = 3000.0
+    kr = pp_mod.KrakenPriceStream(["HYPEUSD", "SPCXxUSD"], stale_reconnect_sec=300.0)
+    assert kr._active_staleness_symbols() == {"HYPEUSD"}
+    kr._notify_subscribers("HYPEUSD", [[1_795_760_000_000, 62.0]])
+    mono_now[0] = 3310.0
+    kr._notify_subscribers("HYPEUSD", [[1_795_760_310_000, 62.2]])
+    assert kr._is_price_stream_stale(3000.0) is False
+    # If HYPEUSD itself goes silent for >300s, Kraken stream DOES report stale.
+    mono_now[0] = 3620.0
+    assert kr._is_price_stream_stale(3000.0) is True
+
+

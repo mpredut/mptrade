@@ -2024,6 +2024,28 @@ def test_open_order_stale_overwrite_readonly_ws_guard_and_refresh_escalation(tmp
     assert calls == [("bal", "hyperliquid"), ("open", "hyperliquid")]
 
 
+def test_short_trend_save_drops_nonpositive_fetchtimes(tmp_path):
+    """Invariant: CacheShortTrendManager.save_state_to_file must never persist zero/invalid fetchtime entries into .meta."""
+    import json
+    import cachetrend
+
+    st_path = tmp_path / "cache_short_trend.json"
+    mgr = cachetrend.CacheShortTrendManager(
+        ["BTCUSDC", "ETHUSDC"],
+        str(st_path),
+        data_sync_mode=cacheaccount.CacheManagerInterface.MODE_PRODUCER,
+    )
+    t_ok = 1_795_760_000.0
+    mgr._mem["BTCUSDC"] = {"symbol": "BTCUSDC", "current_price": 60500.0, "ts": t_ok}
+    mgr._mem["ETHUSDC"] = {"symbol": "ETHUSDC", "current_price": 1700.0}  # missing ts
+    mgr.fetchtime_per_symbol["ETHUSDC"] = 0
+    assert mgr.save_state_to_file() is True
+    meta = json.loads((tmp_path / "cache_short_trend.json.meta").read_text(encoding="utf-8"))
+    assert "BTCUSDC" in meta["fetchtime"] and meta["fetchtime"]["BTCUSDC"] > 0
+    assert "ETHUSDC" not in meta["fetchtime"]
+
+
+
 
 
 

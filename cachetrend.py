@@ -1546,8 +1546,10 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     ts_ms = self._snap_ts_ms(val)
                     if ts_ms is not None:
                         fetchtime[sym] = ts_ms
-                    elif sym in self.fetchtime_per_symbol:
-                        fetchtime[sym] = safe_nonneg_int(self.fetchtime_per_symbol[sym], default=0) or 0
+                    elif sym in self.fetchtime_per_symbol and (
+                        prev_ft := safe_pos_int(self.fetchtime_per_symbol[sym], default=None)
+                    ) is not None:
+                        fetchtime[sym] = prev_ft
                 self.fetchtime_per_symbol = dict(fetchtime)
                 self._rest_sync_cursor_per_symbol = dict(fetchtime)
                 counts = {sym: 1 for sym in snapshot_mem}

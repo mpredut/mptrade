@@ -249,6 +249,8 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             safe_nonneg_float(stale_reconnect_sec, default=0.0) or 0.0
         )
         self._last_price_mono: float = 0.0
+        self._last_price_mono_by_symbol: Dict[str, float] = {}
+        self._symbol_subscribed_mono: Dict[str, float] = {}
         if isinstance(symbols, str):
             raw_syms = [symbols]
         elif symbols is None or isinstance(symbols, (bool, bytes, dict)) or not isinstance(symbols, Iterable):
@@ -273,19 +275,37 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             if subscriber in self._subscribers:
                 self._subscribers.remove(subscriber)
 
-    def _mark_price_data_received(self) -> None:
+    def _active_staleness_symbols(self) -> Set[str]:
+        """Return symbols actively expected on this WebSocket connection for per-symbol staleness checks."""
+        return set(self._subscribed)
+
+    def _mark_price_data_received(self, symbol: Optional[str] = None) -> None:
+        now_m = time.monotonic()
         with self._lock:
-            self._last_price_mono = time.monotonic()
+            self._last_price_mono = now_m
+            if symbol:
+                self._last_price_mono_by_symbol[symbol] = now_m
 
     def _is_price_stream_stale(self, session_start_mono: float) -> bool:
         limit = safe_nonneg_float(getattr(self, "_stale_reconnect_sec", 0.0), default=0.0) or 0.0
         if limit <= 0.0:
             return False
+        now_m = time.monotonic()
         with self._lock:
-            if not self._subscribed:
+            active_syms = self._active_staleness_symbols()
+            if not active_syms:
                 return False
-            last_mono = max(self._last_price_mono, session_start_mono)
-        return (time.monotonic() - last_mono) >= limit
+            by_sym = self._last_price_mono_by_symbol
+            if not by_sym and self._last_price_mono > 0.0:
+                last_mono = max(self._last_price_mono, session_start_mono)
+                return (now_m - last_mono) >= limit
+            sub_mono = self._symbol_subscribed_mono
+            for sym_k in active_syms:
+                sym_start = max(session_start_mono, sub_mono.get(sym_k, 0.0))
+                sym_last = max(by_sym.get(sym_k, 0.0), sym_start)
+                if (now_m - sym_last) >= limit:
+                    return True
+            return False
 
     def _check_data_staleness_or_reconnect(
         self,
@@ -304,8 +324,10 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
         return True
 
     def _notify_subscribers(self, symbol: str, items) -> None:
+        now_m = time.monotonic()
         with self._lock:
-            self._last_price_mono = time.monotonic()
+            self._last_price_mono = now_m
+            self._last_price_mono_by_symbol[symbol] = now_m
             subscribers = list(self._subscribers)
         for sub in subscribers:
             try:
@@ -327,6 +349,7 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
                 return False
             self._subscribed.add(norm_s)
             self._symbols = tuple(dict.fromkeys((*self._symbols, norm_s)))
+            self._symbol_subscribed_mono[norm_s] = time.monotonic()
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
@@ -337,6 +360,8 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
             self._subscribed.discard(norm_s)
             self._symbols = tuple(s for s in self._symbols if s != norm_s)
             self._prices.pop(norm_s, None)
+            self._last_price_mono_by_symbol.pop(norm_s, None)
+            self._symbol_subscribed_mono.pop(norm_s, None)
         return True
 
     def get_price(self, symbol: str) -> Optional[float]:
