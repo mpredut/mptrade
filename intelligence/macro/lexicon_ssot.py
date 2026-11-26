@@ -674,6 +674,13 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "over your lifetime",
     "holiday spending plans",
     "for these shoppers",
+    "the answer might surprise you",
+    "is the stock market open",
+    "are stock markets open",
+    "are the stock markets open",
+    "are banks open",
+    "what's open and closed",
+    "what is open and closed",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(

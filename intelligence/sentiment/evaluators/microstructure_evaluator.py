@@ -113,12 +113,23 @@ def format_spot_volume_rvol_parts(
     if not isinstance(minfo, dict):
         return []
     parts: List[str] = []
-    if (v15 := safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)) is not None:
+    is_real_spot = minfo.get("spot_cvd_source") == "real_spot"
+    v15 = (
+        safe_nonneg_float(minfo.get("spot_vol_15m_usd"), default=None)
+        if is_real_spot
+        else safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)
+    )
+    if v15 is not None:
         r15 = safe_nonneg_float(minfo.get("rvol_15m"), default=None)
         parts.append(f"spot_vol_15m={fmt_usd(v15)}" + (f" (rvol_15m={r15:.2f}x)" if r15 is not None else ""))
     elif (r15 := safe_pos_float(minfo.get("rvol_15m"), default=None)) is not None:
         parts.append(f"rvol_15m={r15:.2f}x")
-    if (v1h := safe_pos_float(minfo.get("spot_vol_1h_usd"), default=None)) is not None:
+    v1h = (
+        safe_nonneg_float(minfo.get("spot_vol_1h_usd"), default=None)
+        if is_real_spot
+        else safe_pos_float(minfo.get("spot_vol_1h_usd"), default=None)
+    )
+    if v1h is not None:
         r1h = safe_nonneg_float(minfo.get("rvol_1h"), default=None)
         parts.append(f"spot_vol_1h={fmt_usd(v1h)}" + (f" (rvol_1h={r1h:.2f}x)" if r1h is not None else ""))
     elif (r1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
@@ -315,7 +326,12 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
             minfo["est_slip_2k_bps"] = round(min(250.0, max(0.5, sp_half + (2000.0 / (2.0 * eff_d1)) * 100.0)), 1)
     p_dict = pinfo if isinstance(pinfo, dict) else {}
     # Reconcile spot 15m/1h total volume & RVOL (runs before perp-CVD early return so spot-only xStocks & equities also get it)
-    live_v15 = safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)
+    is_real_spot_m = minfo.get("spot_cvd_source") == "real_spot"
+    live_v15 = (
+        safe_nonneg_float(minfo.get("spot_vol_15m_usd"), default=None)
+        if is_real_spot_m
+        else safe_pos_float(minfo.get("spot_vol_15m_usd"), default=None)
+    )
     p_v15 = safe_pos_float(p_dict.get("spot_vol_15m_usd"), default=None)
     eff_v15 = live_v15 if live_v15 is not None else p_v15
     if eff_v15 is not None:
@@ -487,6 +503,24 @@ def enrich_microstructure_cvd(minfo: Dict[str, Any], pinfo: Optional[Dict[str, A
         )
     )
     spot_cvd = agg_spot_cvd if use_agg_spot else local_spot_cvd
+    if is_real_spot_m:
+        sync_spot_thr = max(abs(cvd_usd) * 0.25, 5000.0)
+        if (
+            cvd_usd < 0.0
+            and minfo.get("cvd_regime") == "spot_absorbing"
+            and spot_cvd <= -sync_spot_thr
+            and local_spot_cvd <= 0.0
+            and chg_15m <= 0.15
+        ):
+            minfo["cvd_regime"] = "aggressive_market_dumps"
+        elif (
+            cvd_usd > 0.0
+            and minfo.get("cvd_regime") == "ask_absorbing"
+            and spot_cvd >= sync_spot_thr
+            and local_spot_cvd >= 0.0
+            and chg_15m >= -0.15
+        ):
+            minfo["cvd_regime"] = "aggressive_buying"
     oi_chg = safe_float(minfo.get("oi_1h_chg_pct"), default=0.0) or 0.0
     cvd_5m = safe_float(minfo.get("cvd_5m_usd"), default=0.0) or 0.0
     cvd_1h = safe_float(minfo.get("cvd_1h_usd"), default=0.0) or 0.0

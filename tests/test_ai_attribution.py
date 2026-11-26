@@ -1873,4 +1873,115 @@ def test_crypto_prompt_var_24_7_xstock_at_spot_arrival_shortfall_section_clock_a
     assert "short_liq=$0.149702[$332.0K, +1.12%]" in sec3b_txt
 
 
+def test_crypto_prompt_pass2_real_spot_cvd_zero_vol_and_holiday_clickbait(tmp_path):
+    """Pass 2 live crypto prompt audit regressions:
+    1. Synchronized real-spot + perp selling/buying overrides contradictory cvd_regime absorption labels.
+    2. Explicit zero 15m spot volume on real_spot (e.g. illiquid SPCXxUSD) is preserved & rendered as spot_vol_15m=$0.
+    3. Holiday market-hours clickbait headlines are filtered out of breaking news without suppressing real tariff news.
+    """
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+    from intelligence.sentiment.collectors.microstructure_collector import load_symbol_microstructure
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_microstructure_cvd,
+        format_spot_volume_rvol_parts,
+    )
+
+    # 1a. Live ADAUSDC pattern: perp + local real_spot + agg_spot all selling must not emit spot_absorbing
+    ada_sell = {
+        "ob_imbalance": 0.588,
+        "bid_depth_usd": 136431.0,
+        "ask_depth_usd": 95554.0,
+        "taker_buy_sell_ratio": 0.9062,
+        "cvd_15m_usd": -39200.0,
+        "cvd_5m_usd": 108500.0,
+        "cvd_1h_usd": -211500.0,
+        "spot_cvd_15m_usd": -9500.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 26600.0,
+        "agg_spot_cvd_15m_usd": -183600.0,
+        "agg_spot_vol_15m_usd": 298500.0,
+        "funding_rate": 0.0001,
+    }
+    enrich_microstructure_cvd(ada_sell, {"price": 0.1478, "chg_15m_pct": 0.07})
+    assert ada_sell["cvd_regime"] == "aggressive_market_dumps"
+    assert ada_sell["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_SELLING"
+
+    # 1b. Symmetric buy-side override: perp + real_spot both buying overrides ask_absorbing
+    sym_buy = {
+        "ob_imbalance": 0.45,
+        "bid_depth_usd": 90000.0,
+        "ask_depth_usd": 110000.0,
+        "taker_buy_sell_ratio": 1.12,
+        "cvd_15m_usd": 40000.0,
+        "spot_cvd_15m_usd": 12000.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 18000.0,
+        "agg_spot_cvd_15m_usd": 150000.0,
+        "agg_spot_vol_15m_usd": 210000.0,
+        "funding_rate": 0.0001,
+    }
+    enrich_microstructure_cvd(sym_buy, {"price": 1.0, "chg_15m_pct": 0.0})
+    assert sym_buy["cvd_regime"] == "aggressive_buying"
+    assert sym_buy["spot_perp_flow_regime"] == "SYNCHRONIZED_SPOT_PERP_BUYING"
+
+    # 1c. Genuine real-spot absorption (perp selling absorbed by real spot buying) remains spot_absorbing
+    btc_abs = {
+        "ob_imbalance": 0.588,
+        "bid_depth_usd": 136431.0,
+        "ask_depth_usd": 95554.0,
+        "taker_buy_sell_ratio": 0.9062,
+        "cvd_15m_usd": -39200.0,
+        "spot_cvd_15m_usd": 12000.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 30000.0,
+        "agg_spot_cvd_15m_usd": 95000.0,
+        "agg_spot_vol_15m_usd": 250000.0,
+        "funding_rate": 0.00005,
+    }
+    enrich_microstructure_cvd(btc_abs, {"price": 60494.0, "chg_15m_pct": 0.07})
+    assert btc_abs["cvd_regime"] == "spot_absorbing"
+    assert btc_abs["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
+
+    # 2. Zero 15m spot volume on real_spot (illiquid SPCXxUSD) is preserved through collector, evaluator, and formatter
+    ob_spcx = {
+        "symbol": "SPCXxUSD",
+        "mid_price": 128.225,
+        "best_bid": 128.2,
+        "best_ask": 128.25,
+        "spread_bps": 3.9,
+        "imbalance_ratio": 0.506,
+        "bid_depth_usd": 99468.0,
+        "ask_depth_usd": 97297.0,
+        "spot_cvd_15m_usd": 0.0,
+        "spot_cvd_source": "real_spot",
+        "spot_vol_15m_usd": 0.0,
+        "ts": 1795677700.0,
+    }
+    m_spcx = load_symbol_microstructure(str(tmp_path), "SPCXxUSD", ob=ob_spcx)
+    assert isinstance(m_spcx, dict)
+    assert m_spcx["spot_cvd_source"] == "real_spot"
+    assert m_spcx["spot_vol_15m_usd"] == 0.0
+    enrich_microstructure_cvd(
+        m_spcx,
+        {"price": 128.225, "spot_vol_24h_avg_15m_usd": 11000.0, "spot_vol_1h_usd": 2200.0, "rvol_1h": 0.05},
+    )
+    assert m_spcx["spot_vol_15m_usd"] == 0.0
+    assert m_spcx["rvol_15m"] == 0.0
+    parts = format_spot_volume_rvol_parts(m_spcx, lambda v: f"${v:,.0f}")
+    assert parts[0] == "spot_vol_15m=$0 (rvol_15m=0.00x)"
+    assert parts[1] == "spot_vol_1h=$2,200 (rvol_1h=0.05x)"
+    # Non-real_spot 0.0 volume stays omitted
+    assert format_spot_volume_rvol_parts({"spot_vol_15m_usd": 0.0}, lambda v: f"${v:,.0f}") == []
+
+    # 3. Holiday market-hours clickbait is filtered while genuine tariff headlines stay eligible
+    clickbait = "Is the stock market open for Thanksgiving? The answer might surprise you."
+    assert has_financial_or_geopolitical_context(clickbait) is False
+    assert is_off_topic_general_news_title(clickbait) is True
+    assert has_financial_or_geopolitical_context("US announces new tariffs on host of countries including China") is True
+
+
+
 

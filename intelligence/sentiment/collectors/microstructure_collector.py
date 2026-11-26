@@ -681,8 +681,9 @@ def load_symbol_microstructure(
             if (ob_sp_cvd := safe_float(obj_attr(ob, "spot_cvd_15m_usd"), default=None)) is not None:
                 m_info["spot_cvd_15m_usd"] = round(ob_sp_cvd, 0)
                 m_info["spot_cvd_source"] = str(obj_attr(ob, "spot_cvd_source") or "real_spot").strip()
-            if (ob_sp_vol := safe_pos_float(obj_attr(ob, "spot_vol_15m_usd"), default=None)) is not None:
-                m_info["spot_vol_15m_usd"] = round(ob_sp_vol, 0)
+            if (ob_sp_vol := safe_nonneg_float(obj_attr(ob, "spot_vol_15m_usd"), default=None)) is not None:
+                if ob_sp_vol > 0.0 or m_info.get("spot_cvd_source") == "real_spot":
+                    m_info["spot_vol_15m_usd"] = round(ob_sp_vol, 0)
             if (ob_agg_cvd := safe_float(obj_attr(ob, "agg_spot_cvd_15m_usd"), default=None)) is not None:
                 m_info["agg_spot_cvd_15m_usd"] = round(ob_agg_cvd, 0)
                 if (ob_agg_src := obj_attr(ob, "agg_spot_cvd_source")) and isinstance(ob_agg_src, str):
