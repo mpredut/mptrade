@@ -9788,6 +9788,51 @@ def test_live_price_geometry_updates_only_active_intraday_session_extremes():
     assert p_replay["session_extremes"]["london"] == [60.5, 61.0345]
 
 
+def test_major_swing_high_symmetry_purge_and_sibling_isolation():
+    """SSOT OPTIONAL_7D_SWING_METRIC_KEYS purges stale major_swing_high_px on 7d recompute and isolates USD major_swing_high_px from EUR siblings."""
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        enrich_cross_venue_trends,
+        sync_sibling_symbol_telemetry,
+    )
+    from intelligence.sentiment.evaluators.price_series_evaluator import OPTIONAL_7D_SWING_METRIC_KEYS
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import _GEOM_ANCHOR_KEYS
+
+    assert "major_swing_low_px" in OPTIONAL_7D_SWING_METRIC_KEYS
+    assert "rally_from_major_low_pct" in OPTIONAL_7D_SWING_METRIC_KEYS
+    assert "major_swing_high_px" in OPTIONAL_7D_SWING_METRIC_KEYS
+    assert "pullback_from_major_high_pct" in OPTIONAL_7D_SWING_METRIC_KEYS
+    assert "major_swing_high_px" in _GEOM_ANCHOR_KEYS
+
+    # 1. Recomputing 7d metrics on a monotonic/single-leg series purges stale major_swing_high_px from prior source
+    pt = {
+        "SPCXxUSD": {
+            "price": 128.4,
+            "major_swing_high_px": 140.2164,
+            "pullback_from_major_high_pct": -8.41,
+        }
+    }
+    now_ms = 1_795_680_000_000
+    monotonic_7d = [[now_ms - (6 - i) * 86_400_000, 120.0 + i * 1.4] for i in range(7)]
+    enrich_cross_venue_trends(pt, {}, {}, {}, {}, {}, {"SPCXxUSD": monotonic_7d})
+    assert "major_swing_high_px" not in pt["SPCXxUSD"]
+    assert "pullback_from_major_high_pct" not in pt["SPCXxUSD"]
+
+    # 2. USD major_swing_high_px must NEVER bleed onto EUR sibling (range_bound_keys symmetry)
+    p_sib = {
+        "BTCUSDC": {
+            "price": 60500.0,
+            "swing_low_px": 57224.2,
+            "swing_high_px": 61099.62,
+            "major_swing_high_px": 64220.46,
+            "pullback_from_major_high_pct": -5.79,
+        },
+        "BTCEUR": {"price": 55500.0},
+    }
+    sync_sibling_symbol_telemetry(p_sib, {})
+    assert "major_swing_high_px" not in p_sib["BTCEUR"]
+    assert "pullback_from_major_high_pct" not in p_sib["BTCEUR"]
+
+
 
 
 

@@ -216,6 +216,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
     _SHORT_SLOPE_OVERRIDE_KEYS,
+    OPTIONAL_7D_SWING_METRIC_KEYS,
     STALE_SHORT_24H_KEYS,
 )
 from instrument_registry import (
@@ -2565,7 +2566,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 elif rth_bar_fresh and px_diff_from_chart:
                     vals_5d.append(round(sym_px_cur, 4))
                 if len(vals_5d) >= 2:
-                    for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                    for k_7d_opt in OPTIONAL_7D_SWING_METRIC_KEYS:
                         pt_map[sym].pop(k_7d_opt, None)
                     pt_map[sym].update(compute_7d_range_metrics(vals_5d, decimals=4))
                     pt_map[sym].pop("is_partial_7d", None)
@@ -2691,7 +2692,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 and arch_span_7d_ms > safe_float(pt_map[sym].get("_partial_7d_span_ms"), 0.0)
             )
         ):
-            for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+            for k_7d_opt in OPTIONAL_7D_SWING_METRIC_KEYS:
                 pt_map[sym].pop(k_7d_opt, None)
             pt_map[sym].update(compute_7d_range_metrics(arch_vals_7d, decimals=4 if is_eq_sym else None))
             active_7d_vals = list(arch_vals_7d)
@@ -2739,7 +2740,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 try:
                     vals_7d = load_stitched_7d_ohlc_closes(ohlc_fn, sym, eff_now, m24, sym_px_cur)
                     if len(vals_7d) >= 2 and ("chg_7d_pct" not in pt_map[sym] or len(vals_7d) >= 24):
-                        for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                        for k_7d_opt in OPTIONAL_7D_SWING_METRIC_KEYS:
                             pt_map[sym].pop(k_7d_opt, None)
                         pt_map[sym].update(compute_7d_range_metrics(vals_7d))
                         pt_map[sym].pop("_partial_7d_span_ms", None)

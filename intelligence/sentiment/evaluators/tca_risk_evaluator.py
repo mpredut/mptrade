@@ -792,7 +792,7 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                 for k7 in (
                     "pos_7d_pct", "low_7d", "high_7d", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
                     "swing_low_px", "swing_high_px", "rally_from_swing_low_pct", "pullback_from_swing_high_pct",
-                    "major_swing_low_px", "rally_from_major_low_pct", "avg_swing_amp_7d_pct",
+                    "major_swing_low_px", "rally_from_major_low_pct", "major_swing_high_px", "pullback_from_major_high_pct", "avg_swing_amp_7d_pct",
                 ):
                     if pinfo.get(k7) is not None:
                         eq_entry[k7] = pinfo[k7]

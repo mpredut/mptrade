@@ -2647,6 +2647,14 @@ _SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (
     "gradient_recent_fast",
     "gradient_recent",
 )
+OPTIONAL_7D_SWING_METRIC_KEYS: Tuple[str, ...] = (
+    "major_swing_low_px",
+    "rally_from_major_low_pct",
+    "major_swing_high_px",
+    "pullback_from_major_high_pct",
+    "recent_swings_7d",
+    "avg_swing_amp_7d_pct",
+)
 
 
 def sort_ts_rows(rows: list) -> list:

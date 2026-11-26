@@ -78,7 +78,7 @@ from providers.order_status_ssot import (
 _GEOM_ANCHOR_KEYS: frozenset[str] = frozenset({
     "poc_px", "val_px", "vah_px",
     "low_24h", "high_24h", "low_7d", "high_7d",
-    "swing_low_px", "swing_high_px", "major_swing_low_px",
+    "swing_low_px", "swing_high_px", "major_swing_low_px", "major_swing_high_px",
     "prior_6h_low_px", "recent_1h_low_px", "bottom_structure_6h",
     "low_15m", "high_15m", "recent_tape_15m",
 })

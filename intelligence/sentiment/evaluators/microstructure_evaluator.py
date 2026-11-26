@@ -41,6 +41,7 @@ from intelligence.macro_sentiment_ssot import (
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     CLOSED_EQUITY_QUOTE_AGE_MIN,
+    OPTIONAL_7D_SWING_METRIC_KEYS,
     apply_short_trend_item,
     compute_7d_range_metrics,
     is_unseeded_kalman_state,
@@ -1602,7 +1603,7 @@ def enrich_cross_venue_trends(
                         entry.pop("span_7d_hours", None)
                     entry.pop("_partial_7d_span_ms", None)
                     continue
-                for k_7d_opt in ("major_swing_low_px", "rally_from_major_low_pct", "recent_swings_7d", "avg_swing_amp_7d_pct"):
+                for k_7d_opt in OPTIONAL_7D_SWING_METRIC_KEYS:
                     entry.pop(k_7d_opt, None)
                 entry.update(compute_7d_range_metrics(vals, decimals=dec_7d))
                 if 0.0 <= w_span_ms < 5 * 86400 * 1000:
@@ -1638,8 +1639,8 @@ def sync_sibling_symbol_telemetry(
         "low_24h", "high_24h", "pos_24h_pct", "dd_24h_high_pct", "bounce_24h_low_pct", "span_24h_pct",
         "low_7d", "high_7d", "pos_7d_pct", "dd_7d_high_pct", "bounce_7d_low_pct", "span_7d_pct",
         "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct", "recent_tape_15m",
-        "swing_low_px", "swing_high_px", "major_swing_low_px",
-        "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
+        "swing_low_px", "swing_high_px", "major_swing_low_px", "major_swing_high_px",
+        "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct", "pullback_from_major_high_pct",
         "poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "va_hold_min", "vp_source",
         "session_vwap_px", "dist_vs_session_vwap_pct", "session_vwap_sigma_pct", "session_vwap_z", "session_vwap_anchor", "session_extremes", "session_extremes_ref_ms",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",

@@ -1528,12 +1528,18 @@ class PretradeStructural7dStage(PretradePillarCollectorBase):
                 ),
             ]
             if m7d.get("swing_low_px") is not None and m7d.get("swing_high_px") is not None:
-                maj_sfx = (
-                    f", major_low=${m7d.get('major_swing_low_px')}"
-                    f"(rally={fmt_signed(m7d.get('rally_from_major_low_pct'))}%)"
-                    if m7d.get("rally_from_major_low_pct") is not None and m7d.get("major_swing_low_px") is not None
-                    else ""
-                )
+                maj_parts = []
+                if m7d.get("rally_from_major_low_pct") is not None and m7d.get("major_swing_low_px") is not None:
+                    maj_parts.append(
+                        f"major_low=${m7d.get('major_swing_low_px')}"
+                        f"(rally={fmt_signed(m7d.get('rally_from_major_low_pct'))}%)"
+                    )
+                if m7d.get("pullback_from_major_high_pct") is not None and m7d.get("major_swing_high_px") is not None:
+                    maj_parts.append(
+                        f"major_high=${m7d.get('major_swing_high_px')}"
+                        f"(pb={fmt_signed(m7d.get('pullback_from_major_high_pct'))}%)"
+                    )
+                maj_sfx = f", {', '.join(maj_parts)}" if maj_parts else ""
                 hist_sfx = ""
                 if isinstance(m7d.get("recent_swings_7d"), list) and m7d["recent_swings_7d"]:
                     amp_s = (
