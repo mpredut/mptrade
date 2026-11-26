@@ -219,6 +219,41 @@ _LH_ROW_RE = re.compile(
     re.MULTILINE,
 )
 _SEC2_CRYPTO_BW_ROW_RE = re.compile(r"^\s*\|\s*([A-Z0-9]+)\s*\|\s*\$([0-9,]+\.?\d*)\s*\|", re.MULTILINE)
+_SCORECARD_OUTCOME_RE = re.compile(
+    r"AI Decision Scorecard \([^,]+,\s*(?:last\s*(\d+)/(\d+)|n=(\d+))\)(?:\s*\[[^\]]+\])?:\s*(\d+)W/(\d+)BE/(\d+)L\b"
+)
+_VENUE_LIVE_REC_RE = re.compile(
+    r"Total\s+([A-Za-z0-9]+)\s+Portfolio Value:\s*\$[0-9,]+\.\d+\s*[A-Z]+\s*\([^)]*live_reconciled=\$([0-9,]+\.\d+)"
+)
+_RECENT_FILL_LINE_RE = re.compile(
+    r"^\s*\*\s+([A-Za-z0-9_]+)\s+Last Action=[^:]+:(.*)$",
+    re.MULTILINE,
+)
+_RO_LAST_BUY_RE = re.compile(r"\bLast BUY=(?:[0-9.]+\s*@\s*)?([0-9.]+)\b")
+_RO_LAST_SELL_RE = re.compile(r"\bLast SELL=(?:[0-9.]+\s*@\s*)?([0-9.]+)\b")
+_RO_AVG_COST_RE = re.compile(r"\bavg_cost=([0-9.]+)\b")
+_RO_LIFO_AVG_RE = re.compile(r"\blifo_avg=([0-9.]+)\b")
+_RO_LIFO_PNL_RE = re.compile(r"Sub-Cycle LIFO Realized PnL=([+-]?)\$([0-9,]+\.\d+)")
+_POS_LIFO_PNL_RE = re.compile(r"\blifo_realized_pnl=([+-]?)\$([0-9,]+\.\d+)")
+_DOMAIN_AGE_PAIR_RE = re.compile(
+    r"\b(prices|orderbook)_newest=([0-9.]+)([smh])[^\n]*?\b\1_oldest=([0-9.]+)([smh])"
+)
+_AGE_UNIT_SEC: dict[str, float] = {"s": 1.0, "m": 60.0, "h": 3600.0}
+_DVOL_RE = re.compile(r"\b(BTC|ETH)_DVOL=([0-9.]+)%")
+_OPTIONS_RV_VRP_RE = re.compile(r"\b(BTC|ETH)_Options\(([^)]+)\)")
+_RV_ITEM_RE = re.compile(r"\bRV=([0-9.]+)%")
+_VRP_ITEM_RE = re.compile(r"\bVRP=([+-]?[0-9.]+)%")
+_BENCH_EQ_PX_RE = re.compile(r"\b(SPY|QQQ)=\$([0-9,]+\.?\d*)")
+_VP_SEC_LVN_RE = re.compile(
+    r"vol_profile\(POC=([0-9.]+)\[[^\]]+\],\s*sec_POC=([0-9.]+),\s*LVN=([0-9.]+)"
+)
+_SIBLING_HDR_RE = re.compile(
+    r"^\s*\*\s+([A-Za-z0-9_]+)\s+\(sibling venue:\s*([A-Za-z0-9_]+)=\$([0-9,]+\.?\d*)\s*\[([+-]?[0-9.]+)%\]\):\s*Price=\$?([0-9,]+\.?\d*)",
+    re.MULTILINE,
+)
+_KALMAN_PAIR_RE = re.compile(
+    r"\bkalman_vel=([+-]?[0-9.]+)[^\n]*?\bkinematics\([^)]*\bkalman_z=([+-]?[0-9.]+)\)"
+)
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
@@ -1721,6 +1756,7 @@ def audit_rendered_prompt_text(
         open_order_ids=open_order_ids,
     )
     _audit_prompt_calibration_and_breadth(violations, prompt_text)
+    _audit_prompt_section1_parity_and_structure(violations, prompt_text, sec3_items)
     _audit_prompt_numeric_hygiene(violations, prompt_text)
     return violations
 
@@ -2438,6 +2474,251 @@ def _audit_prompt_calibration_and_breadth(
                             f"BTC_vol_share={btc_s:.2f}% + Alt_vol_share={alt_s:.2f}% = {btc_s + alt_s:.2f}% > 100%",
                         )
                     )
+
+
+def _audit_prompt_section1_parity_and_structure(
+    violations: list[InvariantViolation],
+    prompt_text: str,
+    sec3_items: Sequence[tuple[str, float, str]],
+) -> None:
+    """Validate Scorecard/Binance/RecentFills parity and Sections 0/2/3/4 domain-age, options VRP, VP LVN, Kalman & disjointness."""
+    sec1_body = prompt_text.split("### 2.", 1)[0]
+
+    # 1. Scorecard W + BE + L == n_shown (and last K/N obeys K <= N)
+    if (m_sc := _SCORECARD_OUTCOME_RE.search(sec1_body)) is not None:
+        last_k = safe_nonneg_int(m_sc.group(1), default=None) if m_sc.group(1) else None
+        last_n = safe_nonneg_int(m_sc.group(2), default=None) if m_sc.group(2) else None
+        exact_n = safe_nonneg_int(m_sc.group(3), default=None) if m_sc.group(3) else None
+        w_n = safe_nonneg_int(m_sc.group(4), default=0)
+        be_n = safe_nonneg_int(m_sc.group(5), default=0)
+        l_n = safe_nonneg_int(m_sc.group(6), default=0)
+        exp_n = last_k if last_k is not None else exact_n
+        if exp_n is not None and (w_n + be_n + l_n) != exp_n:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                    "Scorecard.outcome_sum",
+                    f"{w_n}W+{be_n}BE+{l_n}L={w_n + be_n + l_n} != reported count={exp_n}",
+                )
+            )
+        if last_k is not None and last_n is not None and last_k > last_n:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                    "Scorecard.window_bounds",
+                    f"last {last_k}/{last_n} has window count > total count",
+                )
+            )
+
+    # 2. Total <Venue> Portfolio Value live_reconciled vs Portfolio Risk Engine venues(<venue>=...)
+    if (m_nav := _NAV_LINE_RE.search(sec1_body)) is not None:
+        v_map_s1 = {vk.lower(): _parse_money(vv) for vk, vv in _VENUE_VAL_RE.findall(m_nav.group(5))}
+        for m_vlr in _VENUE_LIVE_REC_RE.finditer(sec1_body):
+            ven_lbl = m_vlr.group(1).lower()
+            ven_amt = v_map_s1.get(ven_lbl)
+            live_amt = _parse_money(m_vlr.group(2))
+            if ven_amt is not None and live_amt is not None and abs(ven_amt - live_amt) > 0.10:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                        f"Section1.VenueReconciled:{ven_lbl}",
+                        f"venues({ven_lbl})=${ven_amt:.2f} != Total {m_vlr.group(1)} live_reconciled=${live_amt:.2f}",
+                    )
+                )
+
+    # 3. Recent_Fills vs Live Tradable Spot Instruments anchor parity (unique-venue symbols)
+    pos_anchors_by_sym: dict[str, dict[str, float]] = {}
+    pos_sym_counts: dict[str, int] = {}
+    for m_inst in _SEC3C_INST_RE.finditer(sec1_body):
+        sym_i, rest_i = m_inst.group(2).upper(), m_inst.group(3)
+        if "free_" not in rest_i or "limits(" not in rest_i:
+            continue
+        pos_sym_counts[sym_i] = pos_sym_counts.get(sym_i, 0) + 1
+        anc_d: dict[str, float] = {}
+        for k_a, pat_a in (
+            ("avg_cost", _AVG_COST_PNL_RE),
+            ("last_buy_px", _POS_LAST_BUY_RE),
+            ("last_sell_px", _POS_LAST_SELL_RE),
+            ("lifo_avg", _POS_LIFO_AVG_RE),
+        ):
+            if (m_a := pat_a.search(rest_i)) is not None:
+                if (av := safe_pos_float(m_a.group(1), default=None)) is not None:
+                    anc_d[k_a] = av
+        if (m_lp := _POS_LIFO_PNL_RE.search(rest_i)) is not None:
+            if (lp_mag := _parse_money(m_lp.group(2))) is not None:
+                anc_d["lifo_pnl"] = (-lp_mag) if m_lp.group(1) == "-" else lp_mag
+        pos_anchors_by_sym[sym_i] = anc_d
+
+    for m_ro in _RECENT_FILL_LINE_RE.finditer(sec1_body):
+        sym_r, body_r = m_ro.group(1).upper(), m_ro.group(2)
+        if pos_sym_counts.get(sym_r, 0) != 1:
+            continue
+        p_anc = pos_anchors_by_sym.get(sym_r) or {}
+        for fld_lbl, ro_pat, pos_k in (
+            ("last_buy_px", _RO_LAST_BUY_RE, "last_buy_px"),
+            ("last_sell_px", _RO_LAST_SELL_RE, "last_sell_px"),
+            ("avg_cost", _RO_AVG_COST_RE, "avg_cost"),
+            ("lifo_avg", _RO_LIFO_AVG_RE, "lifo_avg"),
+        ):
+            if pos_k in p_anc and (m_rf := ro_pat.search(body_r)) is not None:
+                rv = safe_pos_float(m_rf.group(1), default=None)
+                pv = p_anc[pos_k]
+                if rv is not None and abs(rv - pv) > max(1e-4, pv * 1e-4):
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                            f"RecentFillsParity:{sym_r}:{fld_lbl}",
+                            f"Recent_Fills {fld_lbl}={rv:g} != Tradable Position {fld_lbl}={pv:g}",
+                        )
+                    )
+        if "lifo_pnl" in p_anc and (m_rlp := _RO_LIFO_PNL_RE.search(body_r)) is not None:
+            if (rlp_mag := _parse_money(m_rlp.group(2))) is not None:
+                rlp_v = (-rlp_mag) if m_rlp.group(1) == "-" else rlp_mag
+                if abs(rlp_v - p_anc["lifo_pnl"]) > 0.05:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+                            f"RecentFillsParity:{sym_r}:lifo_pnl",
+                            f"Recent_Fills lifo_pnl={rlp_v:.2f} != Tradable Position lifo_pnl={p_anc['lifo_pnl']:.2f}",
+                        )
+                    )
+
+    # 4. Section 0 Domain Age Ordering (newest <= oldest)
+    for m_da in _DOMAIN_AGE_PAIR_RE.finditer(sec1_body):
+        dom_n = m_da.group(1)
+        new_s = safe_nonneg_float(m_da.group(2), default=None)
+        old_s = safe_nonneg_float(m_da.group(4), default=None)
+        if new_s is not None and old_s is not None:
+            new_sec = new_s * _AGE_UNIT_SEC.get(m_da.group(3), 1.0)
+            old_sec = old_s * _AGE_UNIT_SEC.get(m_da.group(5), 1.0)
+            if new_sec > old_sec + 2.0:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"Section0.DomainAgeOrder:{dom_n}",
+                        f"{dom_n}_newest={m_da.group(2)}{m_da.group(3)} > {dom_n}_oldest={m_da.group(4)}{m_da.group(5)}",
+                    )
+                )
+
+    # 5. Section 2 Options VRP Identity (VRP == DVOL - RV) and SPY/QQQ vs Long_Horizon now: parity
+    dvol_by_coin: dict[str, float] = {}
+    for m_dv in _DVOL_RE.finditer(prompt_text):
+        if (dv_v := safe_pos_float(m_dv.group(2), default=None)) is not None:
+            dvol_by_coin[m_dv.group(1)] = dv_v
+    for m_op in _OPTIONS_RV_VRP_RE.finditer(prompt_text):
+        coin_o, body_o = m_op.group(1), m_op.group(2)
+        if coin_o in dvol_by_coin:
+            m_rv, m_vrp = _RV_ITEM_RE.search(body_o), _VRP_ITEM_RE.search(body_o)
+            if m_rv is not None and m_vrp is not None:
+                rv_v = safe_pos_float(m_rv.group(1), default=None)
+                vrp_v = safe_float(m_vrp.group(1), default=None)
+                if rv_v is not None and vrp_v is not None:
+                    exp_vrp = dvol_by_coin[coin_o] - rv_v
+                    if abs(exp_vrp - vrp_v) > 0.3:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                                f"Options.{coin_o}_VRP",
+                                f"{coin_o}_Options VRP={fmt_signed(vrp_v, 1)}% != DVOL({dvol_by_coin[coin_o]:.1f}%)-RV({rv_v:.1f}%)={fmt_signed(exp_vrp, 1)}%",
+                            )
+                        )
+    bench_eq_px: dict[str, float] = {}
+    for m_beq in _BENCH_EQ_PX_RE.finditer(prompt_text):
+        if (bp_v := _parse_money(m_beq.group(2))) is not None and bp_v > 0.0:
+            bench_eq_px.setdefault(m_beq.group(1), bp_v)
+    if bench_eq_px:
+        for m_lh in _LH_ROW_RE.finditer(prompt_text):
+            lh_s = m_lh.group(1).upper()
+            if lh_s in bench_eq_px:
+                now_lh = _parse_money(m_lh.group(9))
+                ref_b = bench_eq_px[lh_s]
+                if now_lh is not None and abs(now_lh - ref_b) / ref_b > 0.01:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                            f"LongHorizon.{lh_s}_vs_Sec2",
+                            f"Long_Horizon {lh_s} now={now_lh:g} diverges >1% from Section 2 {lh_s}=${ref_b:g}",
+                        )
+                    )
+
+    # 6. Section 3 vol_profile LVN ordering, Kalman vel/z sign parity, sibling venue header math, and Sec3/Sec4 disjointness
+    seen_s3: set[str] = set()
+    for sym, _, rest in sec3_items:
+        sym_u = sym.upper()
+        if sym_u in seen_s3:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                    f"Section3.Duplicate:{sym}",
+                    f"symbol {sym} rendered more than once in Section 3",
+                )
+            )
+        seen_s3.add(sym_u)
+        if (m_lvn := _VP_SEC_LVN_RE.search(rest)) is not None:
+            poc_v = safe_pos_float(m_lvn.group(1), default=None)
+            sec_v = safe_pos_float(m_lvn.group(2), default=None)
+            lvn_v = safe_pos_float(m_lvn.group(3), default=None)
+            if poc_v is not None and sec_v is not None and lvn_v is not None:
+                lo_p, hi_p = min(poc_v, sec_v), max(poc_v, sec_v)
+                if abs(sec_v - poc_v) <= 1e-12 or lvn_v < lo_p * 0.999 or lvn_v > hi_p * 1.001:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                            f"{sym}:vol_profile_LVN",
+                            f"vol_profile LVN={lvn_v:g} inconsistent with [POC={poc_v:g}, sec_POC={sec_v:g}]",
+                        )
+                    )
+        if (m_km := _KALMAN_PAIR_RE.search(rest)) is not None:
+            kv = safe_float(m_km.group(1), default=None)
+            kz = safe_float(m_km.group(2), default=None)
+            if kv is not None and kz is not None and kv * kz < -1e-4:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"{sym}:kalman_sign",
+                        f"kalman_vel={kv:g} has opposite sign to kalman_z={kz:g}",
+                    )
+                )
+
+    for m_sib in _SIBLING_HDR_RE.finditer(prompt_text):
+        main_s, sib_s = m_sib.group(1), m_sib.group(2)
+        sib_px = _parse_money(m_sib.group(3))
+        rep_sp = safe_float(m_sib.group(4), default=None)
+        main_px = _parse_money(m_sib.group(5))
+        if sib_px is not None and main_px is not None and main_px > 0.0 and rep_sp is not None:
+            exp_sp = ((sib_px - main_px) / main_px) * 100.0
+            if abs(exp_sp - rep_sp) > 0.15:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"{main_s}:sibling_header:{sib_s}",
+                        f"sibling header delta={fmt_signed(rep_sp, 2)}% != expected {fmt_signed(exp_sp, 2)}% ({sib_s}={sib_px:g}, {main_s}={main_px:g})",
+                    )
+                )
+
+    if "### 4. MARKET BELLWETHERS" in prompt_text:
+        sec4_body = prompt_text.split("### 4. MARKET BELLWETHERS", 1)[1]
+        seen_s4: set[str] = set()
+        for m_bw4 in _SEC4_BW_ROW_RE.finditer(sec4_body):
+            bw_s = m_bw4.group(1)
+            bw_u = bw_s.upper()
+            if bw_u in seen_s4:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"Section4.Duplicate:{bw_s}",
+                        f"bellwether {bw_s} rendered more than once in Section 4",
+                    )
+                )
+            seen_s4.add(bw_u)
+            if bw_u in seen_s3:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"Section3_4_Overlap:{bw_s}",
+                        f"symbol {bw_s} rendered in BOTH Section 3 tradable cards AND Section 4 observe-only bellwethers",
+                    )
+                )
 
 
 def _audit_prompt_numeric_hygiene(

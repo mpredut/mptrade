@@ -1394,8 +1394,13 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 first_unassessed = _strip_headline_publisher_suffix(
                     str(fresh_unassessed_hs[0].get("title") or "")
                 ).strip()
+                snippet = (
+                    f"{first_unassessed[:90].rsplit(' ', 1)[0]}..."
+                    if len(first_unassessed) > 90
+                    else first_unassessed
+                )
                 gt_cur["live_unassessed_high_sev_note"] = (
-                    f"UNASSESSED_FRESH_HIGH_SEV ({len(fresh_unassessed_hs)} headline(s) arrived after shield eval: {first_unassessed[:90]})"
+                    f"UNASSESSED_FRESH_HIGH_SEV ({len(fresh_unassessed_hs)} headline(s) arrived after shield eval: {snippet})"
                 )
 
     def collect(

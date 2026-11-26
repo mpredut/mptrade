@@ -820,10 +820,11 @@ def _format_sre_and_fleet_section(
         if stopped_hbs:
             hb_keys = [k for k in hb_keys if k not in stopped_names]
             stopped_hb_note = f" (disk heartbeats for stopped processes: {stopped_hbs})"
+    state_files_s = _format_compact_kv_value(sensors.state_files) if sensors.state_files else "none"
     lines = [
         "### 1. FUNCTIONAL SYSTEM TELEMETRY, HEARTBEATS & WATCHDOG STATES:",
         f"- Active Heartbeats: {hb_keys}{stopped_hb_note}",
-        f"- Watchdog & Runtime State Files: {sensors.state_files}",
+        f"- Watchdog & Runtime State Files: {state_files_s}",
         f"\n### 2. LOG ANOMALIES & GUARD VETOES / PERSISTENT UNRESOLVED ERRORS (PAST {lookback_hours:g}H):",
         f"- Scanned Logs: {logs.total_scanned_files}",
         f"- Error Count: {logs.error_count}",
@@ -870,7 +871,7 @@ def _format_sre_and_fleet_section(
         cfg_audit = sv.get("config_audit") if isinstance(sv.get("config_audit"), dict) else {}
         cfg_issues = cfg_audit.get("issues") or []
         cfg_summary = (
-            f"ISSUES DETECTED: {cfg_issues}"
+            f"ISSUES DETECTED: {_format_compact_kv_value(cfg_issues)}"
             if cfg_issues
             else f"OK (verified {cfg_audit.get('checked_files', [])})"
         )
@@ -885,7 +886,8 @@ def _format_sre_and_fleet_section(
             f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
             f"- Configuration Files Audit: {cfg_summary}"
             + (
-                f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): {sv['resource_watchdog_offenders']}"
+                f"\n- Sustained High-Resource Processes (.resource_watchdog_state.json): "
+                f"{_format_compact_kv_value(sv['resource_watchdog_offenders'])}"
                 if sv.get("resource_watchdog_offenders")
                 else ""
             )
@@ -904,7 +906,7 @@ def _format_sre_and_fleet_section(
                 cat_status = f"OK ({len(cat.get('configured_models') or [])} configured in {cat.get('available_count', 0)} agy models)"
             new_str = f" | NEW_MODEL_FAMILIES: {new_fams}" if new_fams else ""
             rec_upd = cat.get("recommended_config_updates") if isinstance(cat.get("recommended_config_updates"), dict) else {}
-            upd_str = f" | AUTO_CONFIG_UPDATES: {rec_upd}" if rec_upd else ""
+            upd_str = f" | AUTO_CONFIG_UPDATES: {_format_compact_kv_value(rec_upd)}" if rec_upd else ""
             lines.append(f"- LLM Model Catalog & Standalone Binaries: [{bin_str}] | configured_models={cat_status}{new_str}{upd_str}")
     return lines
 

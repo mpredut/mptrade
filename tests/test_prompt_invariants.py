@@ -1967,6 +1967,154 @@ def test_symmetric_sell_locked_base_and_replace_cap_invariants() -> None:
     assert sec1_text.index("[hyperliquid] HYPEUSDC:") < sec1_text.index("[binance] BTCUSDC:")
 
 
+def test_cycle18_sre_no_raw_python_dicts_and_unassessed_word_boundary() -> None:
+    """Verify auto_technical_repair formats watchdog/state/config dicts cleanly and unassessed headlines truncate cleanly."""
+    from types import SimpleNamespace
+    from botcore import topic_spec
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    sensors = SimpleNamespace(
+        evaluated_at_ts=1_795_713_000.0,
+        active_heartbeats={"tradeall.heartbeat": 12.0},
+        state_files={"resource_watchdog_state.json": {"offenders": 1, "rss_mb": 1269}},
+        fleet_processes=[{"name": "tradeall", "is_running": True, "heartbeat_fresh": True}],
+        system_and_vpn={
+            "load_avg": [1.2, 1.1, 1.0],
+            "mem_used_pct": 55.0,
+            "mem_avail_mb": 2400.0,
+            "disk_used_pct": 65.0,
+            "disk_free_gb": 10.0,
+            "vpn_interface": "wgpia0",
+            "vpn_tunnel_up": True,
+            "internet_healthy": True,
+            "default_route_present": True,
+            "dns_servers": ["127.0.0.53"],
+            "vpn_outage_active": False,
+            "config_audit": {"checked_files": ["procs.conf"], "issues": [{"file": "config.env", "issue": "stale_key"}]},
+            "resource_watchdog_offenders": [
+                {
+                    "key": "1621659:226304488",
+                    "command": "python intelligence/globaltelemetry_collector.py",
+                    "reasons": ["RSS 1269 MB"],
+                    "consecutive_high": 3,
+                }
+            ],
+            "llm_catalog_audit": {
+                "agy_models_ok": True,
+                "configured_models": ["gemini-4"],
+                "available_count": 27,
+                "binary_versions": {"agy": "1.5.18"},
+                "recommended_config_updates": {"AI_EXECUTOR_MODEL": "gemini-4-pro"},
+            },
+        },
+    )
+    logs = LogEventSummary(total_scanned_files=16, error_count=0, warning_count=0)
+    tr_prompt = build_supervisor_prompt(sensors, logs=logs, spec=topic_spec("auto_technical_repair"), compact_rules=False)
+    assert audit_rendered_prompt_text(tr_prompt) == []
+    assert "{'" not in tr_prompt.split("LIVE TELEMETRY SNAPSHOT:", 1)[1]
+    assert "RSS 1269 MB" in tr_prompt
+    assert "AI_EXECUTOR_MODEL=gemini-4-pro" in tr_prompt
+
+    long_title = (
+        "Russian lawmakers propose up to five years in prison for sharing photos and videos of drone strike aftermath"
+    )
+    gt_cur: dict[str, object] = {"ts": 1000.0, "summary": "Calm", "headlines_digest": ""}
+    valid_news = [{"title": long_title, "is_high_severity": True, "first_seen_ts": 1200.0, "age_min": 5.0}]
+    MacroAndNewsSensorsCollector._reconcile_geopolitical_deescalation(
+        gt_cur,
+        valid_news,
+        valid_news,
+        set(),
+        cache_dir="cachedb",
+        now_ts=1500.0,
+        allow_network=False,
+        persist=False,
+        read_json_fn=None,
+    )
+    note = str(gt_cur.get("live_unassessed_high_sev_note") or "")
+    assert "of dron)" not in note
+    assert note.endswith("...)")
+
+
+def test_cycle18_section1_parity_scorecard_and_structure_options_invariants() -> None:
+    """Validate Scorecard, Binance reconciled, RecentFills parity, domain ages, options VRP, LVN, Kalman, sibling & disjointness."""
+    clean_c18 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 0. CLOCK & SNAPSHOT: 2026-11-26 19:10:03 EET (Thu)\n"
+        "- Snapshot Domain Ages:\n"
+        "  * Live: prices_newest=8.6s, prices_oldest=9.5s, orderbook_newest=7.2s, orderbook_oldest=20.6s\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$10,000.00, invested=$2,000.00, free_cash=$8,000.00 (80.0%), "
+        "venues(binance=$6,000.00, hyperliquid=$4,000.00)\n"
+        "  * Total Binance Portfolio Value: $6,110.00 USDC (snapshot_age=5.0m, live_reconciled=$6,000.00 USDC)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$4,000.00, hyperliquid USDC=$4,000.00\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.033333 ($2000.00 USD), px=60000.0, avg_cost=59000.0 (pnl_vs_cost=+1.69%), "
+        "last_buy_px=59000.0 (pnl_vs_last_buy=+1.69%), last_sell_px=61000.0 (chg_vs_last_sell=-1.64%), "
+        "lifo_avg=59000.0 (pnl_vs_lifo=+1.69%), lifo_realized_pnl=+$45.20, limits(max_buy=$2000.0, max_sell=$2000.0)\n"
+        "  * AI Decision Scorecard (48h, last 5/7): 2W/0BE/3L, avg=-1.50%, net=-$20\n"
+        "  * BTCUSDC Last Action=BUY (by=AI): Last BUY=0.033333 @ 59000.0 (age=2.0h, by=AI) | "
+        "Last SELL=0.01 @ 61000.0 (age=10.0h, by=AI) | avg_cost=59000.0 | lifo_avg=59000.0 | Sub-Cycle LIFO Realized PnL=+$45.20\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- US Equities, Futures & Macro Rates Benchmarks: SPY=$716.70 (+0.23% 24h) | QQQ=$633.93 (-0.23% 24h) | "
+        "BTC_DVOL=51.9%/ETH_DVOL=65.5% | ETH_Options(RV=79.8%, VRP=-14.3%, PC_OI=0.55)\n"
+        "  * Multi-Month & Annual Structure (3y / 36m lookback):\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | SPY | +5.1% | -6.9% | -6.8% | [$629.28..$781.62] (57.4%) | [$453.34..$781.62] (80.2%) | -5.4% | -2.2% | 23-11:453.3->now:716.7 |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: vol_profile(POC=59500.0[+0.84%], sec_POC=60800.0, LVN=60100.0, VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=50.0%) | "
+        "kalman_vel=+0.00767 | kinematics(vel_90s=+0.0500%/m, kalman_z=+0.21)\n"
+        "  * HYPEUSDC (sibling venue: HYPEUSD=$60.47 [+0.05%]): Price=$60.4425\n"
+        "    - Trend: kalman_vel=-0.02638 | kinematics(vel_5m=-0.0178%/m, kalman_z=-0.37)\n"
+        "### 4. MARKET BELLWETHERS (OBSERVE-ONLY):\n"
+        "  | Symbol | Price | 15m | 1h | 6h | 24h | Pos24h | Context | Flow & Deriv |\n"
+        "  |---|---|---|---|---|---|---|---|---|\n"
+        "  | ETHUSDC | $1,692.86 | +0.24% | +0.17% | -0.02% | +2.19% | 64.0% | - | taker_ratio=1.25 |\n"
+    )
+    assert audit_rendered_prompt_text(clean_c18) == []
+
+    bad_c18 = (
+        clean_c18
+        .replace("prices_newest=8.6s, prices_oldest=9.5s", "prices_newest=25.0s, prices_oldest=9.5s")
+        .replace("live_reconciled=$6,000.00 USDC", "live_reconciled=$5,500.00 USDC")
+        .replace("last 5/7): 2W/0BE/3L", "last 5/4): 2W/0BE/4L")
+        .replace("Last BUY=0.033333 @ 59000.0", "Last BUY=0.033333 @ 57500.0")
+        .replace("Sub-Cycle LIFO Realized PnL=+$45.20", "Sub-Cycle LIFO Realized PnL=+$12.00")
+        .replace("VRP=-14.3%", "VRP=-5.0%")
+        .replace("now:716.7 |", "now:680.0 |")
+        .replace("LVN=60100.0", "LVN=61500.0")
+        .replace("kalman_z=+0.21", "kalman_z=-0.85")
+        .replace("HYPEUSD=$60.47 [+0.05%]", "HYPEUSD=$60.47 [+2.50%]")
+        + "  | BTCUSDC | $60,000.00 | +0.00% | +0.00% | +0.00% | +0.00% | 50.0% | - | taker_ratio=1.00 |\n"
+    )
+    viols = audit_rendered_prompt_text(bad_c18)
+    subjs = {v.subject for v in viols}
+    codes = {v.code for v in viols}
+    assert {
+        "PROMPT_SECTION1_PARITY_AND_SCORECARD_MATH",
+        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+    }.issubset(codes)
+    assert {
+        "Scorecard.outcome_sum",
+        "Scorecard.window_bounds",
+        "Section1.VenueReconciled:binance",
+        "RecentFillsParity:BTCUSDC:last_buy_px",
+        "RecentFillsParity:BTCUSDC:lifo_pnl",
+        "Section0.DomainAgeOrder:prices",
+        "Options.ETH_VRP",
+        "LongHorizon.SPY_vs_Sec2",
+        "BTCUSDC:vol_profile_LVN",
+        "BTCUSDC:kalman_sign",
+        "HYPEUSDC:sibling_header:HYPEUSD",
+        "Section3_4_Overlap:BTCUSDC",
+    }.issubset(subjs)
+
+
+
 
 
 
