@@ -710,4 +710,221 @@ def test_cycle11_12_acute_geo_escalation_gateway_min_snapshot_and_equity_ob_prec
         assert len(frac) <= 4, f"{k}={rgnt_ob[k]} has >4 decimals"
 
 
+def test_cycle13_closed_equity_pruning_open_order_wall_notes_and_plain_venue_specs() -> None:
+    """Verify Cycle 13 fixes:
+    1. Closed-market equities prune bottom_structure_6h, kalman_vel_z, and elapsed 3h/6h/12h horizons
+       in both EquityRthSessionPolicy and CrossMarketContextEvaluator while preserving 24h/7d/slope_2_5h
+       (and preserving 3h/6h/12h when market closed <180m ago).
+    2. Open-limit-orders table surfaces blocking wall_queue_pos + wall details in Note when front_run is absent
+       (symmetrically for BUY and SELL) without cluttering FRONT_OF_* orders.
+    3. Venue Specs table and inline limits emit plain decimals (no scientific notation 1e-05/1e-08),
+       and audit_snapshot_invariants / audit_rendered_prompt_text validate all rows & stale closed-equity leaks.
+    """
+    from intelligence.sentiment.evaluators.asset_session_policy import EquityRthSessionPolicy
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_open_limit_orders_table,
+        _format_tradable_position_line,
+        _format_venue_specs_table,
+    )
+
+    # 1a. Closed holiday/overnight equity (quote_age_min=751.2m = 12.5h) prunes intraday, bottom_6h, kalman_vel_z, 3h/6h/12h.
+    pol = EquityRthSessionPolicy()
+    holiday_entry = {
+        "price": 0.90,
+        "quote_age_min": 751.2,
+        "chg_15m_pct": 0.1,
+        "chg_1h_pct": -0.2,
+        "chg_3h_pct": -0.25,
+        "chg_6h_pct": 3.69,
+        "chg_12h_pct": 12.5,
+        "chg_24h_pct": 12.5,
+        "chg_7d_pct": -1.1,
+        "slope_2_5h": -0.00025,
+        "kalman_vel": -0.12,
+        "kalman_vel_std": 0.04,
+        "kalman_vel_z": -2.78,
+        "kalman_trend": -1,
+        "bottom_structure_6h": "FRESH_6H_LOW_TEST",
+        "prior_6h_low_px": 0.9023,
+        "recent_1h_low_px": 0.90,
+        "higher_low_vs_prior_pct": 0.5,
+        "reclaim_above_prior_low_pct": 0.2,
+    }
+    holiday_m24 = dict(holiday_entry)
+    pol.prune_stale_short_metrics(holiday_entry, holiday_m24, [], 1_800_000_000.0, post_rth_series_replaced=True)
+    for pruned_k in (
+        "chg_15m_pct", "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct",
+        "kalman_vel", "kalman_vel_std", "kalman_vel_z", "kalman_trend",
+        "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px",
+        "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
+    ):
+        assert pruned_k not in holiday_entry, f"expected {pruned_k} pruned from entry"
+        assert pruned_k not in holiday_m24, f"expected {pruned_k} pruned from m24"
+    assert holiday_entry["chg_24h_pct"] == 12.5
+    assert holiday_entry["chg_7d_pct"] == -1.1
+    assert holiday_entry["slope_2_5h"] == pytest.approx(-0.00025)
+
+    # 1b. Recently closed equity (45m ago) prunes 15m/1h/bottom_6h/kalman_vel_z but keeps 3h/6h/12h RTH changes.
+    recent_closed = {
+        "price": 151.3,
+        "quote_age_min": 45.0,
+        "chg_1h_pct": 0.4,
+        "chg_3h_pct": 1.87,
+        "chg_6h_pct": 2.33,
+        "chg_12h_pct": 3.24,
+        "kalman_vel_z": -0.69,
+        "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+        "recent_1h_low_px": 150.0,
+        "prior_6h_low_px": 149.0,
+    }
+    pol.prune_stale_short_metrics(recent_closed, {}, [], 1_800_000_000.0, post_rth_series_replaced=True)
+    assert "chg_1h_pct" not in recent_closed and "kalman_vel_z" not in recent_closed and "bottom_structure_6h" not in recent_closed
+    assert recent_closed["chg_3h_pct"] == 1.87 and recent_closed["chg_6h_pct"] == 2.33 and recent_closed["chg_12h_pct"] == 3.24
+
+    # 1c. Cross-market equity bellwethers also prune elapsed 3h/6h/12h & bottom_structure_6h.
+    cmc = build_cross_market_context(
+        {
+            "ANT_US_EQ": {
+                "price": 84.29,
+                "quote_age_min": 751.2,
+                "chg_3h_pct": 1.97,
+                "chg_6h_pct": -0.49,
+                "chg_12h_pct": 7.8,
+                "chg_24h_pct": 4.59,
+                "bottom_structure_6h": "HIGHER_LOW_DOUBLE_BOTTOM",
+                "prior_6h_low_px": 81.955,
+                "recent_1h_low_px": 84.1,
+            }
+        },
+        {},
+    )
+    ant_bw = cmc["equity_bellwethers"]["ANT_US_EQ"]
+    assert "chg_3h_pct" not in ant_bw and "chg_6h_pct" not in ant_bw and "chg_12h_pct" not in ant_bw
+    assert "bottom_structure_6h" not in ant_bw and "recent_1h_low_px" not in ant_bw
+    assert ant_bw["chg_24h_pct"] == 4.59
+
+    # 1d. Snapshot invariant catches leaked closed-equity stale keys in both prices_and_trends and equity_bellwethers.
+    stale_snap = {
+        "prices_and_trends": {
+            "RGNT_US_EQ": {"price": 0.90, "quote_age_min": 751.2, "chg_6h_pct": 3.69, "bottom_structure_6h": "FRESH_6H_LOW_TEST"}
+        },
+        "portfolio_summary": {
+            "cross_market_context": {
+                "equity_bellwethers": {"ANT_US_EQ": {"price": 84.29, "quote_age_min": 751.2, "chg_6h_pct": -0.49}}
+            }
+        },
+    }
+    stale_vs = [v for v in audit_snapshot_invariants(stale_snap) if v.code == "CLOSED_EQUITY_STALE_METRICS"]
+    assert len(stale_vs) == 2
+
+    # 2. PortfolioPromptViewEvaluator preserves wall_queue_pos and open limit orders table surfaces blocking
+    #    wall_queue_pos + wall px/usd symmetrically when front_run is absent.
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_portfolio_prompt_view
+
+    raw_oo_list = [
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "price": 59680.0,
+            "qty": 0.01508,
+            "filled_qty": 0.0,
+            "order_id": "10976647800",
+            "actor": "AI",
+            "age": "13.3h",
+            "dist_from_spot_pct": -1.81,
+            "fill_prob_1h_pct": 14.1,
+            "wall_queue_pos": "DEEP_PASSIVE_BID",
+            "bid_wall_ahead_px": 60711.36,
+            "bid_wall_ahead_usd": 440480.0,
+        },
+        {
+            "venue": "binance",
+            "symbol": "ARBUSDC",
+            "side": "BUY",
+            "price": 0.1125,
+            "qty": 2666.6,
+            "filled_qty": 0.0,
+            "order_id": "568650889",
+            "actor": "AI",
+            "age": "8.8h",
+            "dist_from_spot_pct": -0.18,
+            "fill_prob_1h_pct": 98.4,
+            "wall_queue_pos": "FRONT_OF_BID_WALL",
+        },
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPEUSDC",
+            "side": "SELL",
+            "price": 63.0,
+            "qty": 10.0,
+            "filled_qty": 0.0,
+            "order_id": "999",
+            "actor": "AI",
+            "age": "1.0h",
+            "dist_from_spot_pct": 2.5,
+            "fill_prob_1h_pct": 12.0,
+            "wall_queue_pos": "FAR_ABOVE_ASK_WALL",
+            "ask_wall_ahead_px": 61.5,
+            "ask_wall_ahead_usd": 1250000.0,
+        },
+    ]
+    pv_oo = evaluate_portfolio_prompt_view({"open_limit_orders": raw_oo_list}, asset_scope="crypto")
+    oo_lines = "\n".join(_format_open_limit_orders_table(pv_oo["clean_open_limit_orders"]))
+    assert "DEEP_PASSIVE_BID(wall=60711.36/$440.5K)" in oo_lines
+    assert "FAR_ABOVE_ASK_WALL(wall=61.5/$1.25M)" in oo_lines
+    assert "FRONT_OF_BID_WALL" not in oo_lines
+
+    # 3. Venue Specs table & inline limits emit plain decimals (0.00001 / 0.00000001) and audit catches sci-notation too.
+    vspec_lines = "\n".join(
+        _format_venue_specs_table(
+            [
+                {
+                    "venue": "binance",
+                    "disp_symbol": "BTCUSDC",
+                    "fee_tier": "STANDARD",
+                    "maker_bps": 10.0,
+                    "taker_bps": 10.0,
+                    "min_notional_usd": 5.0,
+                    "limit_items": [("min_qty=", 1e-05), ("step=", 1e-05), ("tick=", 0.01)],
+                },
+                {
+                    "venue": "kraken",
+                    "disp_symbol": "HYPEUSD",
+                    "fee_tier": "TIER_0",
+                    "maker_bps": 22.0,
+                    "taker_bps": 37.0,
+                    "min_notional_usd": 1.0,
+                    "limit_items": [("min_qty=", 0.06), ("step=", 1e-08), ("tick=", 0.01)],
+                },
+            ]
+        )
+    )
+    assert "1e-05" not in vspec_lines and "1e-08" not in vspec_lines
+    assert "| 0.00001 | 0.00001 | 0.01 |" in vspec_lines
+    assert "| 0.06 | 0.00000001 | 0.01 |" in vspec_lines
+    pos_line = _format_tradable_position_line(
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "price": 60000.0,
+            "free_base": 0.01,
+            "value_usd": 600.0,
+            "free_quote": 1000.0,
+            "min_qty": 1e-05,
+            "step_size": 1e-05,
+            "tick_size": 0.01,
+        },
+        max_usd=2000.0,
+        min_usd=10.0,
+        include_static_specs=True,
+    )
+    assert "min_qty=0.00001, step=0.00001" in pos_line and "1e-05" not in pos_line
+    sci_bad_t212 = "    | t212 | RGNT_US_EQ | T212_ZERO_COMM | 0 (0/0) | $1 | 1e-05 | 1e-05 | 0.01 |"
+    sci_codes = {v.code for v in audit_rendered_prompt_text(sci_bad_t212)}
+    assert "PROMPT_VENUE_PRECISION" in sci_codes
+
+
+
 

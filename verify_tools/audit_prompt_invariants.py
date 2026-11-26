@@ -37,6 +37,9 @@ from instrument_registry import (
     disabled_registry_symbols,
     observe_only_registry_symbols,
 )
+from intelligence.sentiment.evaluators.price_series_evaluator import (
+    stale_closed_equity_metric_keys,
+)
 from providers.ai_survival_guard import (
     _collect_canceled_order_ids,
     _extract_intent_exec_price,
@@ -76,7 +79,7 @@ _OB_IMB_RE = re.compile(
     r"ob_imbalance=([0-9.]+)\s*\(bid_depth=\$([0-9.,]+[KMBkmb]?),\s*ask_depth=\$([0-9.,]+[KMBkmb]?)\)"
 )
 _VENUE_SPEC_ROW_RE = re.compile(
-    r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|\s*([0-9.]+)\s*\|$",
+    r"^\s*\|\s*([a-z0-9_]+)\s*\|\s*([A-Za-z0-9_]+)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*([0-9.eE+-]+)\s*\|\s*([0-9.eE+-]+)\s*\|\s*([0-9.eE+-]+)\s*\|$",
     re.MULTILINE,
 )
 _OPEN_ORDER_ROW_RE = re.compile(
@@ -93,7 +96,7 @@ _OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
 _BID_WALL_RE = re.compile(r"(?:bid_wall|est_bid_zone)=([0-9.]+)\s*\(")
 _ASK_WALL_RE = re.compile(r"(?:ask_wall|est_ask_zone)=([0-9.]+)\s*\(")
 _LIMITS_RE = re.compile(r"limits\(([^)]+)\)")
-_LIMIT_NUM_RE = re.compile(r"\b(min_qty|step|tick)=([0-9.]+)")
+_LIMIT_NUM_RE = re.compile(r"\b(min_qty|step|tick)=([0-9.eE+-]+)")
 _LIMIT_CAP_RE = re.compile(r"\b(max_buy|max_sell)=\$([0-9,.]+)")
 _PX_FIELD_RE = re.compile(r"\bpx=([0-9.]+)")
 
@@ -344,6 +347,28 @@ def audit_snapshot_invariants(
                     f"live price={px:g} below major_low={maj_lo:g}",
                 )
             )
+        if has_equity_suffix(str(sym)):
+            if leaked_eq := [k_s for k_s in stale_closed_equity_metric_keys(pinfo.get("quote_age_min")) if pinfo.get(k_s) is not None]:
+                violations.append(
+                    InvariantViolation(
+                        "CLOSED_EQUITY_STALE_METRICS",
+                        str(sym),
+                        f"quote_age_min={pinfo.get('quote_age_min')} leaked stale keys: {', '.join(leaked_eq)}",
+                    )
+                )
+
+    cmc_bw = (ps.get("cross_market_context") or {}) if isinstance(ps.get("cross_market_context"), Mapping) else {}
+    eq_bw_map = cmc_bw.get("equity_bellwethers") if isinstance(cmc_bw.get("equity_bellwethers"), Mapping) else {}
+    for bw_sym, bw_info in eq_bw_map.items():
+        if isinstance(bw_info, Mapping) and has_equity_suffix(str(bw_sym)):
+            if leaked_bw := [k_s for k_s in stale_closed_equity_metric_keys(bw_info.get("quote_age_min")) if bw_info.get(k_s) is not None]:
+                violations.append(
+                    InvariantViolation(
+                        "CLOSED_EQUITY_STALE_METRICS",
+                        f"bellwether:{bw_sym}",
+                        f"quote_age_min={bw_info.get('quote_age_min')} leaked stale keys: {', '.join(leaked_bw)}",
+                    )
+                )
 
     gw_min_snap = safe_nonneg_float(gateway_min_usd, default=0.0) or 0.0
     if gw_min_snap > 0.0:

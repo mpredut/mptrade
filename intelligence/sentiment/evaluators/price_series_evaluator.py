@@ -2625,9 +2625,41 @@ CLOSED_EQUITY_INTRADAY_KEYS: Tuple[str, ...] = (
     "gradient_recent",
     "kalman_vel",
     "kalman_vel_std",
+    "kalman_vel_z",
     "kalman_trend",
+    "bottom_structure_6h",
+    "prior_6h_low_px",
+    "recent_1h_low_px",
+    "reclaim_above_prior_low_pct",
+    "higher_low_vs_prior_pct",
 )
 CLOSED_EQUITY_QUOTE_AGE_MIN: float = 30.0
+CLOSED_EQUITY_HORIZON_AGE_SPECS: Tuple[Tuple[str, float], ...] = (
+    ("chg_3h_pct", 180.0),
+    ("chg_6h_pct", 360.0),
+    ("chg_12h_pct", 720.0),
+)
+
+
+def stale_closed_equity_metric_keys(quote_age_min: Any) -> Tuple[str, ...]:
+    """Return intraday/bottom/Kalman keys (>30m closed) plus horizon deltas whose entire window fell after market close."""
+    q_age = safe_nonneg_float(quote_age_min, default=None)
+    if q_age is None or q_age <= CLOSED_EQUITY_QUOTE_AGE_MIN:
+        return ()
+    return (
+        *CLOSED_EQUITY_INTRADAY_KEYS,
+        *(k_h for k_h, hor_min in CLOSED_EQUITY_HORIZON_AGE_SPECS if q_age >= hor_min),
+    )
+
+
+def prune_closed_equity_stale_metrics(*targets: Optional[Dict[str, Any]], quote_age_min: Any) -> None:
+    """Prune stale closed-market equity intraday, bottom-structure, Kalman, and elapsed multi-hour keys in place."""
+    if not (stale_keys := stale_closed_equity_metric_keys(quote_age_min)):
+        return
+    for tgt in targets:
+        if isinstance(tgt, dict):
+            for k_s in stale_keys:
+                tgt.pop(k_s, None)
 _SHORT_SLOPE_OVERRIDE_KEYS: Tuple[str, ...] = (
     "kalman_vel",
     "kalman_vel_std",

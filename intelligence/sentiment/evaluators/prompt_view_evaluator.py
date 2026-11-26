@@ -91,7 +91,7 @@ _PX_LOCAL_3B_KEYS: frozenset[str] = frozenset({
 
 _DUP_OPEN_ORDER_KEYS: frozenset[str] = frozenset({
     "orderId", "origQty", "executedQty", "clientOrderId",
-    "client_order_id", "created_ts", "age_min", "wall_queue_pos",
+    "client_order_id", "created_ts", "age_min",
 })
 
 _CMC_LABEL_KEYS: frozenset[str] = frozenset({

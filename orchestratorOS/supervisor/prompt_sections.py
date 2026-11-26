@@ -1888,7 +1888,8 @@ def _format_tradable_position_line(
     for lim_pfx, lim_val in pv["limit_items"]:
         if not include_static_specs and lim_pfx in ("min_qty=", "step=", "tick="):
             continue
-        lim_parts.append(f"{lim_pfx}{lim_val}")
+        disp_lim = _fmt_plain_float(lim_val) if lim_pfx in ("min_qty=", "step=", "tick=") else lim_val
+        lim_parts.append(f"{lim_pfx}{disp_lim}")
     if lim_parts:
         t_extra += f", limits({', '.join(lim_parts)})"
     fb_val, val_usd = pv["free_base"], pv["value_usd"]
@@ -1941,9 +1942,9 @@ def _format_venue_specs_table(
         leg_bps = max(maker_bps, taker_bps)
         lim_map = {pfx: val for pfx, val in (pv.get("limit_items") or ())}
         min_not = f"${pv['min_notional_usd']:g}" if pv.get("min_notional_usd") is not None else "-"
-        min_q = str(lim_map.get("min_qty=", "-"))
-        step_v = str(lim_map.get("step=", "-"))
-        tick_v = str(lim_map.get("tick=", "-"))
+        min_q = _fmt_plain_float(lim_map["min_qty="]) if "min_qty=" in lim_map else "-"
+        step_v = _fmt_plain_float(lim_map["step="]) if "step=" in lim_map else "-"
+        tick_v = _fmt_plain_float(lim_map["tick="]) if "tick=" in lim_map else "-"
         out.append(
             f"    | {pv.get('venue', '-')} | {pv.get('disp_symbol', '-')} | {pv.get('fee_tier', 'STANDARD')} | "
             f"{leg_bps:g} ({maker_bps:g}/{taker_bps:g}) | {min_not} | {min_q} | {step_v} | {tick_v} |"
@@ -2098,6 +2099,16 @@ def _format_open_limit_orders_table(
                 else None
             )
             notes.append(f"front_run={fr_px}(RR={rr_fr:.2f}x)" if rr_fr is not None else f"front_run={fr_px}")
+        elif (wq := str(o.get("wall_queue_pos") or "").strip().upper()) and not wq.startswith("FRONT_OF_"):
+            w_pfx = "ask" if str(side).strip().upper() == "SELL" else "bid"
+            w_px = safe_pos_float(o.get(f"{w_pfx}_wall_ahead_px"), default=None)
+            w_usd = safe_pos_float(o.get(f"{w_pfx}_wall_ahead_usd"), default=None)
+            if w_px is not None and w_usd is not None:
+                notes.append(f"{wq}(wall={_fmt_plain_float(w_px)}/{format_compact_usd(w_usd)})")
+            elif w_px is not None:
+                notes.append(f"{wq}(wall={_fmt_plain_float(w_px)})")
+            else:
+                notes.append(wq)
         note_s = "; ".join(notes) if notes else "-"
         plan_col = f" {plan_by_order_idx.get(o_idx, '-')} |" if has_linked else ""
         out.append(

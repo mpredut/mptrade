@@ -25,8 +25,6 @@ from intelligence.macro_sentiment_ssot import (
     parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
-    CLOSED_EQUITY_INTRADAY_KEYS,
-    CLOSED_EQUITY_QUOTE_AGE_MIN,
     STALE_SHORT_24H_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     compute_24h_price_metrics,
@@ -34,6 +32,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     override_series_tail_close,
     pct_delta,
     prepend_older_non_diverged_points,
+    prune_closed_equity_stale_metrics,
     restore_rth_metric_anchors,
     sort_ts_rows,
     strip_off_rth_flat_poller_tail,
@@ -598,11 +597,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     ) -> None:
         if not isinstance(entry, dict):
             return
-        q_age_min = safe_nonneg_float(entry.get("quote_age_min"), default=None)
-        if q_age_min is not None and q_age_min > CLOSED_EQUITY_QUOTE_AGE_MIN:
-            for k_closed in CLOSED_EQUITY_INTRADAY_KEYS:
-                m24.pop(k_closed, None)
-                entry.pop(k_closed, None)
+        prune_closed_equity_stale_metrics(m24, entry, quote_age_min=entry.get("quote_age_min"))
         if post_rth_series_replaced:
             return
         if not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
