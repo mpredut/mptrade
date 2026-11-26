@@ -1562,6 +1562,7 @@ def evaluate_ai_calibration_feedback(
     lookback_days: float = 7.0,
     scope: str = "all",
     newly_resolved_out: Optional[dict[str, str]] = None,
+    fee_resolver: Optional[Callable[[str, str, str], Optional[float]]] = None,
 ) -> dict[str, Any]:
     """Compute 0ms closed-loop BUY/SELL trade-plan calibration and per-venue execution TCA for Section 3C."""
     eff_now = resolve_now_ts(now_ts)
@@ -1626,6 +1627,7 @@ def evaluate_ai_calibration_feedback(
                 side=side,
                 ts_s=ref_ts,
                 px=px,
+                fee_resolver=fee_resolver,
                 include_slippage=True,
             )
         )

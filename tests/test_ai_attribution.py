@@ -1563,3 +1563,154 @@ def test_critical_path_aware_trade_plans_and_fee_adjusted_reload_scorecard():
     assert sc_unm["count"] == 1 and sc_unm["unmatched_sells"] == 2
     assert ", excl_unmatched_sells=2" in format_ai_decision_scorecard_line(sc_unm)
 
+
+def test_cross_section_coherence_futures_cash_close_lead_live_calibration_fees_and_sibling_agg_spot_cvd(tmp_path):
+    """Verify Futures_Lead since-cash-close anchor, live fee_resolver in calibration TCA, and cross-venue sibling agg_spot_cvd reconciliation."""
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroBenchmarksSnapshotCollector
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import compute_futures_premarket_lead
+    from intelligence.sentiment.evaluators.microstructure_evaluator import reconcile_sibling_flow_and_liq_regimes
+    from providers.ai_survival_guard import evaluate_ai_calibration_feedback
+
+    now_s = 1_795_676_000.0
+    cash_close_ts = int(now_s - 6 * 3600)
+    fut_now_ts = int(now_s - 600)
+
+    # 1. MacroBenchmarksSnapshotCollector computes exact since_cash_close_pct for ES=F/NQ=F vs SPY/QQQ close;
+    #    FuturesPremarketLeadEvaluator uses it instead of subtracting 6h-shifted 24h rolling windows.
+    def _mock_yahoo_holiday(url, timeout=3.5, headers=None):
+        if "/SPY?" in url:
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 716.70, "regularMarketChangePercent": 0.23, "marketState": "CLOSED"},
+                        "timestamp": [cash_close_ts - 3600, cash_close_ts],
+                        "indicators": {"quote": [{"open": [715.0, 716.0], "high": [717.0, 717.5], "low": [714.5, 715.5], "close": [715.2, 716.70], "volume": [1000, 1200]}]},
+                    }]
+                }
+            }
+        if "/QQQ?" in url:
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 633.93, "regularMarketChangePercent": -0.23, "marketState": "CLOSED"},
+                        "timestamp": [cash_close_ts - 3600, cash_close_ts],
+                        "indicators": {"quote": [{"open": [635.0, 634.5], "high": [636.0, 635.0], "low": [633.0, 633.2], "close": [635.1, 633.93], "volume": [1000, 1200]}]},
+                    }]
+                }
+            }
+        if "/ES%3DF?" in url or "/ES=F?" in url:
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 7221.5, "regularMarketChangePercent": 0.36, "marketState": "REGULAR"},
+                        "timestamp": [cash_close_ts - 3600, cash_close_ts, fut_now_ts],
+                        "indicators": {"quote": [{"open": [7200.0, 7215.0, 7220.0], "high": [7216.0, 7222.0, 7225.0], "low": [7198.0, 7210.0, 7218.0], "close": [7210.0, 7215.0, 7221.5], "volume": [500, 600, 700]}]},
+                    }]
+                }
+            }
+        if "/NQ%3DF?" in url or "/NQ=F?" in url:
+            # NQ=F is +0.49% 24h vs QQQ -0.23% 24h (naive diff +0.72%), but only +0.10% since QQQ closed at cash_close_ts!
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"regularMarketPrice": 26227.0, "regularMarketChangePercent": 0.49, "marketState": "REGULAR"},
+                        "timestamp": [cash_close_ts - 3600, cash_close_ts, fut_now_ts],
+                        "indicators": {"quote": [{"open": [26150.0, 26200.0, 26210.0], "high": [26210.0, 26230.0, 26240.0], "low": [26140.0, 26190.0, 26205.0], "close": [26180.0, 26200.0, 26227.0], "volume": [500, 600, 700]}]},
+                    }]
+                }
+            }
+        return {}
+
+    snap = MacroBenchmarksSnapshotCollector().collect(
+        cachedb_dir=str(tmp_path), now_ts=now_s, allow_network=True, persist=False, fetch_fn=_mock_yahoo_holiday
+    )
+    assert snap is not None
+    assert snap["items"]["NQ=F"]["since_cash_close_pct"] == pytest.approx(0.10, abs=0.01)
+    assert snap["items"]["ES=F"]["since_cash_close_pct"] == pytest.approx(0.09, abs=0.01)
+    assert "futures_lead_pct" not in snap
+
+    # Genuine +0.65% futures rally since cash close IS reported accurately
+    snap_gap = {
+        "items": {
+            "QQQ": {"price": 633.93, "chg_24h_pct": -0.23, "market_state": "CLOSED", "last_bar_ts": cash_close_ts},
+            "NQ=F": {"price": 26370.0, "chg_24h_pct": 0.49, "since_cash_close_pct": 0.65, "last_bar_ts": fut_now_ts},
+        }
+    }
+    gap_res = compute_futures_premarket_lead(snap_gap)
+    assert gap_res["futures_lead_pct"] == pytest.approx(0.65)
+    assert gap_res["futures_lead_regime"] == "FUTURES_PREMARKET_GAP_UP"
+
+    # 2. evaluate_ai_calibration_feedback honors live persisted fee_resolver (7.5bps Binance VIP0_BNB, 22bps Kraken PRO_LIVE)
+    cal_intents = [
+        {
+            "intent_id": "fee_b1",
+            "timestamp": now_s - 3600.0,
+            "decision": "BUY",
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "order_type": "LIMIT",
+            "limit_price": 60000.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 600.0,
+            "execution_payload": {"orderId": "fb1", "status": "FILLED", "avg_fill_price": 60000.0, "executedQty": "0.01"},
+        },
+        {
+            "intent_id": "fee_k1",
+            "timestamp": now_s - 1800.0,
+            "decision": "BUY",
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "order_type": "LIMIT",
+            "limit_price": 60.0,
+            "status": "EXECUTED",
+            "clamped_notional_usd": 600.0,
+            "execution_payload": {"orderId": "fk1", "status": "FILLED", "avg_fill_price": 60.0, "executedQty": "10.0"},
+        },
+    ]
+    live_fee_fn = lambda v, s, ot: {"binance": 15.0, "kraken": 44.0}.get(v)
+    cal = evaluate_ai_calibration_feedback(
+        cal_intents, now_ts=now_s, live_prices={"BTCUSDC": 60500.0, "HYPEUSD": 60.5}, scope="crypto", fee_resolver=live_fee_fn
+    )
+    assert cal["venue_tca"]["binance"]["avg_leg_fee_bps"] == pytest.approx(7.5)
+    assert cal["venue_tca"]["kraken"]["avg_leg_fee_bps"] == pytest.approx(22.0)
+
+    # 3. Cross-venue sibling agg_spot_cvd_15m reconciles Hyperliquid + Kraken + Binance USDT without double-counting and stays idempotent
+    micro = {
+        "HYPEUSDC": {
+            "venue": "hyperliquid",
+            "ob_mid_price": 60.9555,
+            "bid_depth_usd": 10_000_000.0,
+            "ask_depth_usd": 9_000_000.0,
+            "spot_cvd_15m_usd": -169_700.0,
+            "spot_vol_15m_usd": 482_100.0,
+            "spot_cvd_source": "real_spot",
+            "agg_spot_cvd_15m_usd": -252_500.0,
+            "agg_spot_vol_15m_usd": 702_400.0,
+            "agg_spot_cvd_source": "hyperliquid+bn_usdt",
+        },
+        "HYPEUSD": {
+            "venue": "kraken",
+            "ob_mid_price": 60.94,
+            "bid_depth_usd": 1_940_000.0,
+            "ask_depth_usd": 748_000.0,
+            "spot_cvd_15m_usd": -18_600.0,
+            "spot_vol_15m_usd": 71_500.0,
+            "spot_cvd_source": "real_spot",
+            "agg_spot_cvd_15m_usd": -101_400.0,
+            "agg_spot_vol_15m_usd": 292_000.0,
+            "agg_spot_cvd_source": "kraken+bn_usdt",
+        },
+    }
+    pt = {"HYPEUSDC": {"price": 60.9555, "chg_15m_pct": -0.46}, "HYPEUSD": {"price": 60.94, "chg_15m_pct": -0.51}}
+    reconcile_sibling_flow_and_liq_regimes(micro, pt)
+    reconcile_sibling_flow_and_liq_regimes(micro, pt)  # Idempotency check
+    assert micro["HYPEUSDC"]["spot_cvd_15m_usd"] == pytest.approx(-169_700.0)
+    assert micro["HYPEUSD"]["spot_cvd_15m_usd"] == pytest.approx(-18_600.0)
+    assert micro["HYPEUSDC"]["agg_spot_cvd_15m_usd"] == pytest.approx(-271_100.0)
+    assert micro["HYPEUSD"]["agg_spot_cvd_15m_usd"] == pytest.approx(-271_100.0)
+    assert micro["HYPEUSDC"]["agg_spot_vol_15m_usd"] == pytest.approx(773_900.0)
+    assert micro["HYPEUSD"]["agg_spot_vol_15m_usd"] == pytest.approx(773_900.0)
+    assert micro["HYPEUSDC"]["agg_spot_cvd_source"] == "hyperliquid+kraken+bn_usdt"
+    assert micro["HYPEUSD"]["agg_spot_cvd_source"] == "hyperliquid+kraken+bn_usdt"
+
+

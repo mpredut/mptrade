@@ -346,6 +346,7 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             if not isinstance(fut, dict) or not isinstance(cash, dict):
                 continue
             fut_24h, cash_24h = safe_float(fut.get("chg_24h_pct"), default=None), safe_float(cash.get("chg_24h_pct"), default=None)
+            fut_since_cash = safe_float(fut.get("since_cash_close_pct"), default=None)
             fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
             fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
             cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
@@ -369,7 +370,10 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             if cash_live_extended:
                 any_cash_live_trading = True
                 continue
-            if fut_globex is not None and abs(fut_globex) >= 0.25:
+            if fut_since_cash is not None:
+                if abs(fut_since_cash) >= 0.25:
+                    out[lead_key] = round(fut_since_cash, 2) + 0.0
+            elif fut_globex is not None and abs(fut_globex) >= 0.25:
                 out[lead_key] = round(fut_globex, 2) + 0.0
             elif fut_24h is not None and cash_24h is not None:
                 diff_v = round(fut_24h - cash_24h, 2) + 0.0

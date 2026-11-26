@@ -1820,6 +1820,57 @@ def reconcile_sibling_flow_and_liq_regimes(
                     enrich_microstructure_cvd(m_s, p_arg)
                     if m_s.get("liq_magnet_bias") is not None and isinstance(p_arg, dict):
                         m_s.update(compute_liquidation_clusters(p_arg, m_s, symbol=s_k))
+        real_spot_by_venue: Dict[str, Tuple[str, Dict[str, Any], float, Optional[float]]] = {}
+        for s_k, m_s in non_div:
+            if m_s.get("spot_cvd_source") != "real_spot":
+                continue
+            loc_c = safe_float(m_s.get("spot_cvd_15m_usd"), default=None)
+            if loc_c is None:
+                continue
+            v_s = mkt_api.infer_symbol_venue(s_k, explicit_venue=m_s.get("venue"), fallback_venue="t212")
+            if v_s and v_s not in real_spot_by_venue:
+                real_spot_by_venue[v_s] = (s_k, m_s, loc_c, safe_nonneg_float(m_s.get("spot_vol_15m_usd"), default=None))
+        if len(real_spot_by_venue) >= 2:
+            expected_local_src = "+".join(real_spot_by_venue.keys())
+            already_reconciled = all(
+                str(item[1].get("agg_spot_cvd_source") or "").strip()
+                in (expected_local_src, f"{expected_local_src}+bn_usdt")
+                for item in real_spot_by_venue.values()
+            )
+            if not already_reconciled:
+                ext_cvd = 0.0
+                ext_vol = 0.0
+                ext_tag = ""
+                for v_s, (_, m_s, loc_c, loc_v) in real_spot_by_venue.items():
+                    raw_agg_src = str(m_s.get("agg_spot_cvd_source") or "").strip()
+                    raw_agg_c = safe_float(m_s.get("agg_spot_cvd_15m_usd"), default=None)
+                    if raw_agg_c is not None and raw_agg_src in (f"{v_s}+bn_usdt", "usdc+usdt"):
+                        ext_cvd = raw_agg_c - loc_c
+                        raw_agg_v = safe_nonneg_float(m_s.get("agg_spot_vol_15m_usd"), default=None)
+                        if raw_agg_v is not None:
+                            ext_vol = max(0.0, raw_agg_v - (loc_v or 0.0))
+                        ext_tag = "bn_usdt"
+                        break
+                tot_agg_cvd = round(sum(item[2] for item in real_spot_by_venue.values()) + ext_cvd, 0)
+                has_any_vol = any(item[3] is not None for item in real_spot_by_venue.values()) or ext_vol > 0.0
+                tot_agg_vol = (
+                    round(sum((item[3] or 0.0) for item in real_spot_by_venue.values()) + ext_vol, 0)
+                    if has_any_vol
+                    else None
+                )
+                src_parts = list(real_spot_by_venue.keys()) + (
+                    [ext_tag] if ext_tag and ext_tag not in real_spot_by_venue else []
+                )
+                tot_agg_src = "+".join(src_parts)
+                for s_k, m_s, _, _ in real_spot_by_venue.values():
+                    m_s["agg_spot_cvd_15m_usd"] = tot_agg_cvd
+                    if tot_agg_vol is not None:
+                        m_s["agg_spot_vol_15m_usd"] = tot_agg_vol
+                    m_s["agg_spot_cvd_source"] = tot_agg_src
+                    s_p = casefold_get(pt_map, s_k)
+                    enrich_microstructure_cvd(
+                        m_s, s_p if isinstance(s_p, dict) else (prim_p_dict if isinstance(prim_p_dict, dict) else None)
+                    )
         agg_b = sum(safe_nonneg_float(m_s.get("bid_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
         agg_a = sum(safe_nonneg_float(m_s.get("ask_depth_usd"), 0.0) or 0.0 for _, m_s in non_div)
         agg_tot = agg_b + agg_a

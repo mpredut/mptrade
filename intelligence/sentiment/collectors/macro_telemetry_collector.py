@@ -447,6 +447,11 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 }
                 if globex_session_chg is not None:
                     item_entry["globex_session_chg_pct"] = globex_session_chg
+                if (cash_lbl := {"ES=F": "SPY", "NQ=F": "QQQ"}.get(label)) and isinstance((cash_it := items.get(cash_lbl)), dict) and len(pts) >= 2:
+                    if (cash_bar_ts := safe_pos_float(cash_it.get("last_bar_ts"), default=None)) is not None and pts[-1][0] > cash_bar_ts + 300.0:
+                        ref_cash_pt = min(pts, key=lambda p: abs(p[0] - cash_bar_ts))
+                        if abs(ref_cash_pt[0] - cash_bar_ts) <= 1800.0 and ref_cash_pt[1] > 0.0:
+                            item_entry["since_cash_close_pct"] = round(((px - ref_cash_pt[1]) / ref_cash_pt[1]) * 100.0, 2) + 0.0
                 if len(pts) >= 2:
                     last_bar_ts = pts[-1][0]
                     raw_quote_ts = (
@@ -1693,6 +1698,7 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                     lookback_days=7.0,
                     scope=scope,
                     newly_resolved_out=newly_resolved_plans,
+                    fee_resolver=sc_fee_resolver,
                 )
                 if ai_cal.get("filled_total", 0) > 0 or ai_cal.get("venue_tca"):
                     snapshot.portfolio_summary["ai_calibration_feedback"] = ai_cal
