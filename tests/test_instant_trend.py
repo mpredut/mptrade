@@ -972,6 +972,11 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
                 self.iter_copies += 1
                 return super().__iter__()
 
+            def __getitem__(self, idx):
+                if isinstance(idx, slice):
+                    self.iter_copies += 1
+                return super().__getitem__(idx)
+
         trend_file = os.path.join(self.tmp, "cache_short_trend_single_snap.json")
         mgr = cm.CacheShortTrendManager(["BTCUSDT"], trend_file, data_sync_mode="producer")
         self.addCleanup(mgr.shutdown)
@@ -1499,18 +1504,18 @@ class TestIncrementalTrendBufferAnd24TrendPersistence(TempDirTestCase):
         self.assertEqual(c24_null.cache, {})
 
         # bapi_trades delegates directly to CacheFactory without a duplicate module singleton
-        prev_inst = cm.CacheFactory._instances.get("BinanceTrade")
+        prev_inst = cm.CacheFactory._instances.get("BinanceOrderFilled")
         try:
             self.assertFalse(hasattr(bapi_trades, "cache_trade_manager"))
-            cm.CacheFactory._instances["BinanceTrade"] = tm
-            self.assertIs(bapi_trades.init_cache_trade_manager(), tm)
-            cm.CacheFactory.remove("BinanceTrade")
-            self.assertNotIn("BinanceTrade", cm.CacheFactory._instances)
+            cm.CacheFactory._instances["BinanceOrderFilled"] = om
+            self.assertIs(bapi_trades.init_cache_trade_manager(), om)
+            cm.CacheFactory.remove("BinanceOrderFilled")
+            self.assertNotIn("BinanceOrderFilled", cm.CacheFactory._instances)
         finally:
             if prev_inst is not None:
-                cm.CacheFactory._instances["BinanceTrade"] = prev_inst
+                cm.CacheFactory._instances["BinanceOrderFilled"] = prev_inst
             else:
-                cm.CacheFactory._instances.pop("BinanceTrade", None)
+                cm.CacheFactory._instances.pop("BinanceOrderFilled", None)
 
     def test_audit38_jsonl_non_dict_lines_get_price_validation_and_pricewindow_coercion(self):
         """Audit #38: non-dict JSONL lines in Cache365/SparsePrice, get_price invalid/future row refresh, and PriceWindow coercion."""

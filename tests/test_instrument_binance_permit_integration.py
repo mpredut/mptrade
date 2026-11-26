@@ -236,7 +236,7 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
 
         self.assertEqual(observed["result"]["orderId"], 501)
         self.assertEqual(observed["low_level"].call_args.args[2], 2.0)
-        self.assertEqual(observed["client"].calls[0][1]["quantity"], 2.0)
+        self.assertEqual(observed["client"].calls[0][1]["quantity"], "2")
         self.assertEqual(len(observed["issued"]), 1)
         self.assertIs(
             observed["low_level"].call_args.kwargs["cache_permit"],
@@ -342,7 +342,7 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["orderId"], 503)
-        self.assertEqual(client.calls[0][1]["quantity"], 0.5)
+        self.assertEqual(client.calls[0][1]["quantity"], "0.5")
 
     def test_monitor_order_replace_buy_with_subtick_price_and_permit_succeeds_without_double_scaling(self):
         ctx = {"regime": "bear"}
@@ -369,4 +369,4 @@ class InstrumentBinancePermitIntegrationTest(TempDirTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["orderId"], 501)
         self.assertEqual(float(client.calls[0][1]["price"]), 98.89)
-        self.assertEqual(client.calls[0][1]["quantity"], 1.5)
+        self.assertEqual(client.calls[0][1]["quantity"], "1.5")

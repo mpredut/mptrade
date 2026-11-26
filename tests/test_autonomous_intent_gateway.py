@@ -988,8 +988,8 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert "risk_score=0.96 | summary=Headline shock" in prompt
     assert "CONTRARIAN DIP ACCUMULATION (SCALE-IN)" in prompt
     assert "DUAL EXECUTION MODE — IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK" in prompt
-    assert "do NOT sell in the first few minutes after a bot fill unless structure genuinely breaks down" in prompt
-    assert "priced as close as possible to the current live market price" in prompt
+    assert "do NOT sell minutes after a bot fill unless structure genuinely breaks down" in prompt
+    assert "right at live BBO (`best_bid` for BUY / `best_ask` for SELL)" in prompt
     assert '"order_type": "MARKET" | "LIMIT"' in prompt
     assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
 

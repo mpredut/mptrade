@@ -1285,7 +1285,15 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                                 all_entries = raw_entries
                             else:
                                 slice_offset = min(a for a, _, _, _ in pending)
-                                all_entries = list(raw_entries) if slice_offset == 0 else list(raw_entries[slice_offset:])
+                                all_entries = (
+                                    list(raw_entries)
+                                    if slice_offset == 0
+                                    else (
+                                        raw_entries[slice_offset:]
+                                        if isinstance(raw_entries, list)
+                                        else list(raw_entries[slice_offset:])
+                                    )
+                                )
             for a, b, clamped, w_key in pending:
                 dyn = self._eval_and_persist_window_slice(
                     c24_sym,
