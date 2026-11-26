@@ -814,6 +814,8 @@ class CacheManagerInterface(ABC):
                     v = safe_nonneg_int(v, default=None)
                     if v is None:
                         continue
+                elif safe_pos_float(v, default=None) is None:
+                    continue
                 out[s] = v
             return out
 

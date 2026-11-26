@@ -379,10 +379,15 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     def _resolve_remote_query_start_time(self, symbol: str, fallback_ft):
         if self._is_account_cache():
-            return min(
-                self._rest_sync_cursor_per_symbol.get(symbol, fallback_ft),
-                fallback_ft,
-            )
+            fb_i = safe_pos_int(fallback_ft, default=None)
+            cur_i = safe_pos_int(self._rest_sync_cursor_per_symbol.get(symbol), default=None)
+            if cur_i is not None and fb_i is not None:
+                return min(cur_i, fb_i)
+            if cur_i is not None:
+                return cur_i
+            if fb_i is not None:
+                return fb_i
+            return self.fallback_time_default
         return fallback_ft
 
     def _on_symbol_remote_sync_completed(
@@ -776,7 +781,7 @@ class CacheTradeManager(CacheAccountManagerBase):
                 clean_items[k_canon] = merged_v
             clean_fetchtime = {}
             for k, v in loaded["fetchtime"].items():
-                v_f = safe_nonneg_float(v, default=None)
+                v_f = safe_pos_float(v, default=None)
                 k_canon_ft = cls._canonical_snapshot_symbol(k, venue=venue) or str(k)
                 if v_f is not None and (not clean_items or k_canon_ft in clean_items):
                     clean_fetchtime[k_canon_ft] = max(clean_fetchtime.get(k_canon_ft, 0.0), v_f)
@@ -3126,9 +3131,9 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                     else:
                         items_out[sym_k] = [dict(r) for r in sym_orders.values() if isinstance(r, dict)]
             ft_out = {
-                str(k): safe_nonneg_int(v, default=0) or 0
+                str(k): ft_i
                 for k, v in raw_ft.items()
-                if clean_scalar_str(k) is not None
+                if clean_scalar_str(k) is not None and (ft_i := safe_pos_int(v, default=None)) is not None
             }
             if items_out:
                 return items_out, ft_out
@@ -3414,9 +3419,9 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 norm for r in rows if (norm := self.normalize_open_order_row(r)) is not None
             ]
         ft_clean = {
-            str(k): safe_nonneg_int(v, default=0) or 0
+            str(k): ft_i
             for k, v in ft.items()
-            if clean_scalar_str(k) is not None
+            if clean_scalar_str(k) is not None and (ft_i := safe_pos_int(v, default=None)) is not None
         }
         sym_ver = self._parse_symbol_verified_ts(loaded, cleaned_items, ft_clean, ver_ts)
         with self.lock:
@@ -3473,6 +3478,8 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
     def _save_state_to_file_impl(self) -> bool:
         def _save_locked() -> bool:
             with self.lock:
+                if self._is_file_newer_than_memory_locked():
+                    return False
                 payload = {
                     "items": {k: [dict(r) for r in v] for k, v in self.cache.items()},
                     "fetchtime": dict(self.fetchtime_per_symbol),
@@ -3563,6 +3570,9 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         Single-order WS deltas are NOT complete book snapshots, so they must NEVER advance
         either venue-wide ``verified_ts`` or per-symbol ``symbol_verified_ts``.
         """
+        ach = _cm_override("account_cache_health", account_cache_health)
+        if self.read_only and not ach.is_writer_enabled():
+            return False
         if not isinstance(order_item, dict) or clean_scalar_str(symbol) is None:
             return False
         eff_now_ms = resolve_now_ms(now_ms)
@@ -3627,11 +3637,12 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
             ft = loaded.get("fetchtime") if isinstance(loaded.get("fetchtime"), dict) else {}
             prev_ver = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
             ft_prev = {
-                str(k): safe_nonneg_int(v, default=0) or 0
+                str(k): ft_i
                 for k, v in ft.items()
-                if clean_scalar_str(k) is not None
+                if clean_scalar_str(k) is not None and (ft_i := safe_pos_int(v, default=None)) is not None
             }
             sym_ver = cls._parse_symbol_verified_ts(loaded, items, ft_prev, prev_ver)
+            ft = ft_prev
             for sym_key, raw_list in (orders_by_symbol or {}).items():
                 if clean_scalar_str(sym_key) is None or not isinstance(raw_list, (list, tuple)):
                     continue
@@ -3681,9 +3692,9 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 continue
             items_out[sym_k] = [dict(r) for r in rows if isinstance(r, dict)]
         ft_out = {
-            str(k): safe_nonneg_int(v, default=0) or 0
+            str(k): ft_i
             for k, v in raw_ft.items()
-            if clean_scalar_str(k) is not None
+            if clean_scalar_str(k) is not None and (ft_i := safe_pos_int(v, default=None)) is not None
         }
         ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
         sym_ver = cls._parse_symbol_verified_ts(data, items_out, ft_out, ver_ts)
@@ -5792,19 +5803,31 @@ def request_venue_account_refresh(
     if bal_bridge is None and not want_oo:
         return False
     now_mono = _monotonic_time()
+    bal_key = v_norm
+    oo_key = f"{v_norm}:open_orders"
     with _venue_refresh_lock:
-        last_t = _venue_refresh_last_ts.get(v_norm, 0.0)
-        if last_t > 0.0 and (now_mono - last_t) < _VENUE_EVENT_REFRESH_MIN_GAP_SEC:
+        last_bal = _venue_refresh_last_ts.get(bal_key, 0.0)
+        last_oo = _venue_refresh_last_ts.get(oo_key, 0.0)
+        do_bal = bal_bridge is not None and (
+            last_bal <= 0.0 or (now_mono - last_bal) >= _VENUE_EVENT_REFRESH_MIN_GAP_SEC
+        )
+        do_oo = want_oo and (
+            last_oo <= 0.0 or (now_mono - last_oo) >= _VENUE_EVENT_REFRESH_MIN_GAP_SEC
+        )
+        if not do_bal and not do_oo:
             return False
-        _venue_refresh_last_ts[v_norm] = now_mono
+        if do_bal:
+            _venue_refresh_last_ts[bal_key] = now_mono
+        if do_oo:
+            _venue_refresh_last_ts[oo_key] = now_mono
 
     def _run_refresh() -> None:
-        if bal_bridge is not None:
+        if do_bal and bal_bridge is not None:
             try:
                 bal_bridge.sync_venue_once(v_norm)
             except Exception as exc:
                 log(f"[balances_cache] event-driven {v_norm} refresh failed: {exc}")
-        if want_oo and oo_bridge is not None:
+        if do_oo and oo_bridge is not None:
             try:
                 oo_bridge.sync_venue_once(v_norm)
             except Exception as exc:

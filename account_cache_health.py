@@ -262,18 +262,23 @@ def _record_cache_version(
     with _writer_lock:
         if not _writer_enabled:
             return False
+        prev_pub = exact_pos_int(_writer_state.get("published_at_ms"), default=0) or 0
         if do_sync:
-            _writer_state[sync_field] = timestamp
+            prev_sync = exact_pos_int(_writer_state.get(sync_field), default=0) or 0
+            eff_sync_ms = max(prev_sync, timestamp)
+            _writer_state[sync_field] = eff_sync_ms
             # Publication time describes this atomic write, while the conservative
-            # synchronization timestamp remains the first request start of the cycle.
-            _writer_state["published_at_ms"] = resolve_now_ms()
+            # synchronization timestamp remains the monotonic high-water mark.
+            _writer_state["published_at_ms"] = max(prev_pub, resolve_now_ms())
         else:
-            _writer_state["published_at_ms"] = timestamp
+            _writer_state["published_at_ms"] = max(prev_pub, timestamp)
         _writer_state[version_field] = version
         if binance_stream:
             v_entry = _ensure_venue_entry_locked("binance")
             if do_sync:
-                v_entry[f"{binance_stream}_sync_at_ms"] = timestamp
+                v_sync_key = f"{binance_stream}_sync_at_ms"
+                prev_v_sync = exact_pos_int(v_entry.get(v_sync_key), default=0) or 0
+                v_entry[v_sync_key] = max(prev_v_sync, timestamp)
             v_entry[f"{binance_stream}_version"] = version
         return _publish_locked()
 

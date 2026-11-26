@@ -872,5 +872,36 @@ def test_multi_venue_pre_submit_gate_blocks_buy_and_fails_open_on_sell(tmp_path,
     assert bn_prov.placed[0][4] is None
 
 
+def test_record_successful_sync_and_persisted_version_are_monotonic(tmp_path):
+    """Invariant: out-of-order record_successful_sync / record_persisted_version calls must never regress Binance sync or published timestamps."""
+    marker = str(tmp_path / "cache_account_health.json")
+    t0_ms = 1_900_000_100_000
+    started_ms = t0_ms - 5_000
+
+    health.disable_writer()
+    with patch.object(health, "_pid_started_at_ms", return_value=started_ms):
+        health.enable_writer(path=marker, pid=4321, now_ms=t0_ms)
+    try:
+        assert health.record_successful_sync("BinanceOrderFilled", "ord-v2", now_ms=t0_ms + 10_000)
+        assert health.record_successful_sync("BinanceTrade", "trd-v2", now_ms=t0_ms + 12_000)
+        # Out-of-order older sync timestamps must NOT move order_sync_at_ms, trade_sync_at_ms, or venues.binance.* backwards.
+        assert health.record_successful_sync("BinanceOrderFilled", "ord-v3", now_ms=t0_ms - 60_000)
+        assert health.record_successful_sync("BinanceTrade", "trd-v3", now_ms=t0_ms - 60_000)
+        # Older persisted-version timestamp must NOT regress published_at_ms either.
+        before_doc = json.loads(Path(marker).read_text(encoding="utf-8"))
+        assert health.record_persisted_version("BinanceOrderFilled", "ord-v4", now_ms=t0_ms - 120_000)
+        after_doc = json.loads(Path(marker).read_text(encoding="utf-8"))
+
+        assert after_doc["order_sync_at_ms"] == t0_ms + 10_000
+        assert after_doc["trade_sync_at_ms"] == t0_ms + 12_000
+        assert after_doc["venues"]["binance"]["filled_orders_sync_at_ms"] == t0_ms + 10_000
+        assert after_doc["venues"]["binance"]["trades_sync_at_ms"] == t0_ms + 12_000
+        assert after_doc["order_cache_version"] == "ord-v4"
+        assert after_doc["published_at_ms"] >= before_doc["published_at_ms"]
+    finally:
+        health.disable_writer()
+
+
+
 
 

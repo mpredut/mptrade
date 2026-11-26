@@ -1883,6 +1883,148 @@ def test_trades_stream_per_symbol_fetchtime_coherence_invariant():
     ) == []
 
 
+def test_nonpositive_fetchtimes_dropped_across_account_cache_readers_and_cursors(tmp_path):
+    """Invariant: zero/null/malformed fetchtimes must never pollute account cache dicts, spoof venue coverage, or trigger epoch-0 REST scans."""
+    import json
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+
+    # 1. load_sanitized_trade_snapshot strips zero/negative/null fetchtime entries.
+    tr_path = acct_dir / "cache_trade_kraken.json"
+    tr_path.write_text(
+        json.dumps({
+            "items": {"HYPEUSD": [], "SPCXxUSD": []},
+            "fetchtime": {"HYPEUSD": 0, "SPCXxUSD": 1_795_760_000_000, "BADUSD": None},
+        }),
+        encoding="utf-8",
+    )
+    san = cacheaccount.CacheTradeManager.load_sanitized_trade_snapshot(str(tr_path), venue="kraken")
+    assert san["fetchtime"] == {"SPCXxUSD": 1_795_760_000_000.0}
+
+    # 2. read_venue_filled_orders_snapshot & read_all_venues_filled_orders drop non-positive fetchtimes (no false covered venue).
+    fo_path = acct_dir / "cache_order_filled_hyperliquid.json"
+    fo_path.write_text(
+        json.dumps({
+            "items": {},
+            "fetchtime": {"HYPEUSDC": 0, "SOLUSDC": None, "BAD": "nan"},
+        }),
+        encoding="utf-8",
+    )
+    fo_items, fo_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+        str(fo_path), venue="hyperliquid", allow_legacy=False, allow_trade_fallback=False
+    )
+    assert fo_items == {} and fo_ft == {}
+    _, covered_fo, ft_by_v = cacheaccount.CacheOrderFilledManager.read_all_venues_filled_orders(
+        str(acct_dir), allow_legacy=False, allow_trade_fallback=False
+    )
+    assert "hyperliquid" not in covered_fo and "hyperliquid" not in ft_by_v
+
+    # 3. CacheOrderOpenManager snapshot readers/writers drop non-positive fetchtimes (no false covered venue).
+    oo_path = acct_dir / "cache_order_open_hyperliquid.json"
+    oo_path.write_text(
+        json.dumps({
+            "items": {},
+            "fetchtime": {"HYPEUSDC": 0, "SOLUSDC": None, "BAD": -5},
+            "verified_ts": None,
+        }),
+        encoding="utf-8",
+    )
+    oo_items, oo_ft, oo_ver, oo_sver = cacheaccount.CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(
+        str(oo_path)
+    )
+    assert oo_items == {} and oo_ft == {} and oo_ver == 0.0 and oo_sver == {}
+    _, covered_oo, _ = cacheaccount.CacheOrderOpenManager.read_all_venues_open_orders(str(acct_dir))
+    assert "hyperliquid" not in covered_oo
+
+    # 4. _hydrate_fetchtimes_from_mapping_locked & _resolve_remote_query_start_time reject 0/None/corrupt cursors.
+    mgr = object.__new__(cacheaccount.CacheOrderFilledManager)
+    mgr.symbols = ["BTCUSDC", "ETHUSDC"]
+    mgr.fallback_time_default = 1_790_000_000_000
+    mgr._hydrate_fetchtimes_from_mapping_locked({
+        "fetchtime": {"BTCUSDC": 0, "ETHUSDC": 1_795_760_000_000, "BAD": None, "STR": "corrupt"},
+        "rest_sync_cursor": {"BTCUSDC": 0, "ETHUSDC": 1_795_759_999_000, "BAD": False},
+    })
+    assert mgr.fetchtime_per_symbol == {"ETHUSDC": 1_795_760_000_000}
+    assert mgr._rest_sync_cursor_per_symbol == {"ETHUSDC": 1_795_759_999_000}
+    # Even if an external mutation injects 0 or None, _resolve_remote_query_start_time never crashes or returns 0.
+    mgr._rest_sync_cursor_per_symbol["BTCUSDC"] = 0
+    assert mgr._resolve_remote_query_start_time("BTCUSDC", None) == 1_790_000_000_000
+    assert mgr._resolve_remote_query_start_time("BTCUSDC", 1_795_760_000_000) == 1_795_760_000_000
+    assert mgr._resolve_remote_query_start_time("ETHUSDC", 1_795_760_000_000) == 1_795_759_999_000
+
+
+def test_open_order_stale_overwrite_readonly_ws_guard_and_refresh_escalation(tmp_path, monkeypatch):
+    """Cross-check: CacheOrderOpenManager refuses stale overwrites and read-only WS mutations, and request_venue_account_refresh does not drop include_open_orders escalation."""
+    from types import SimpleNamespace
+    import account_cache_health
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    oo_path = acct_dir / "cache_order_open_binance.json"
+    t0 = 1_795_760_000.0
+    t0_ms = int(t0 * 1000)
+
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path),
+        {"BTCUSDC": [{"orderId": "101", "side": "BUY", "price": 60000.0, "origQty": 0.01, "status": "NEW", "timestamp": t0_ms - 5_000}]},
+        now_ms=t0_ms,
+        verified_ts=t0,
+    )
+    stale_mgr = cacheaccount.CacheOrderOpenManager(15.0, ["BTCUSDC"], str(oo_path), read_only=False, venue="binance")
+    ro_mgr = cacheaccount.CacheOrderOpenManager(15.0, ["BTCUSDC"], str(oo_path), read_only=True, venue="binance")
+
+    # 1. Read-only consumer refuses WS open-order mutation when writer is disabled.
+    monkeypatch.setattr(account_cache_health, "is_writer_enabled", lambda: False)
+    assert ro_mgr.apply_ws_order_update("BTCUSDC", "remove", {"orderId": "101"}, now_ms=t0_ms + 5_000) is False
+    assert len(ro_mgr.cache["BTCUSDC"]) == 1
+
+    # 2. Newer snapshot written to disk at t0 + 20s must not be overwritten by stale_mgr still at t0.
+    t1 = t0 + 20.0
+    t1_ms = int(t1 * 1000)
+    cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
+        str(oo_path),
+        {"BTCUSDC": []},
+        now_ms=t1_ms,
+        verified_ts=t1,
+    )
+    assert stale_mgr.save_state_to_file() is False
+    disk_items, _, disk_ver, _ = cacheaccount.CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(str(oo_path))
+    assert disk_items["BTCUSDC"] == []
+    assert disk_ver == pytest.approx(t1, abs=1e-3)
+
+    # 3. request_venue_account_refresh: balance-only refresh followed within <1s by fill with include_open_orders=True
+    #    must still execute the open_orders refresh instead of dropping it behind the balance debounce window.
+    calls: list[tuple[str, str]] = []
+    mono_now = [100.0]
+    monkeypatch.setattr(cacheaccount, "_monotonic_time", lambda: mono_now[0])
+    monkeypatch.setattr(account_cache_health, "is_writer_enabled", lambda: True)
+    monkeypatch.setattr(cacheaccount, "_venue_refresh_last_ts", {})
+    monkeypatch.setattr(
+        cacheaccount,
+        "_venue_balances_bridge",
+        SimpleNamespace(sync_venue_once=lambda v: calls.append(("bal", v)) or True),
+    )
+    monkeypatch.setattr(
+        cacheaccount,
+        "_venue_open_orders_bridge",
+        SimpleNamespace(sync_venue_once=lambda v: calls.append(("open", v)) or True),
+    )
+
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=False, blocking=True) is True
+    assert calls == [("bal", "hyperliquid")]
+
+    mono_now[0] = 100.2  # < 1.0s debounce gap
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, blocking=True) is True
+    assert calls == [("bal", "hyperliquid"), ("open", "hyperliquid")]
+
+    # Repeat include_open_orders=True within 1.0s is cleanly debounced for both streams.
+    mono_now[0] = 100.4
+    assert cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, blocking=True) is False
+    assert calls == [("bal", "hyperliquid"), ("open", "hyperliquid")]
+
+
+
 
 
 
