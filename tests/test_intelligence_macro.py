@@ -3116,4 +3116,54 @@ def test_pass3_crypto_scope_xstock_news_and_local_real_spot_cvd_sync(tmp_path):
     assert btc_cross_abs["cvd_regime"] == "spot_absorbing"
     assert btc_cross_abs["spot_perp_flow_regime"] == "INSTITUTIONAL_SPOT_ABSORPTION_SQUEEZE"
 
+def test_pass4_polymarket_bettor_clickbait_filter_and_90m_corporate_risk_decay(tmp_path):
+    """Pass 4 live crypto prompt audit regressions:
+    1. Polymarket prediction-market clickbait ('Crypto Bettors Think/Bet/Expect...') is filtered out while
+       straight credit headlines remain eligible.
+    2. Corporate-risk rank elevation decays after 90m (5400s), matching is_high_severity freshness semantics,
+       on both crypto and equities scopes so aged (>90m) stories do not stay pinned ahead of fresh breaking news.
+    """
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.collectors.macro_telemetry_collector import harvest_macro_and_news_sensors
+
+    polymarket_spam = (
+        "Anthropic\u2019s Potential Bond Issue Could Reportedly Be Rated Junk \u2014 "
+        "Here\u2019s When Crypto Bettors Think It Could Go Bankrupt"
+    )
+    straight_credit = "Anthropic's Potential Bond Issue Could Reportedly Be Rated Junk"
+    assert is_excluded_reference_news_item(polymarket_spam) is True
+    assert is_excluded_reference_news_item("Crypto bettors expect Fed cut in December") is True
+    assert is_excluded_reference_news_item(straight_credit) is False
+
+    now_ts = 1795684500.0
+    aged_spcx_risk = "SpaceX grounded by FAA investigation after launch pad anomaly"
+    fresh_oil_shock = "Explosion occurs at oil facility in Thailand's Bangkok"
+    fresh_nvda_news = "Nvidia announces new data center chip roadmap"
+    aged_nvda_risk = "Nvidia faces SEC subpoena over export compliance"
+    news_payload = {
+        "items": [
+            {"title": polymarket_spam, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 1800.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": aged_spcx_risk, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 7200.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": fresh_oil_shock, "source": "Al Jazeera", "first_seen_ts": now_ts - 1500.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": aged_nvda_risk, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 7200.0, "is_high_severity": False, "matched_keywords": []},
+            {"title": fresh_nvda_news, "source": "Yahoo! Finance: SPCX NVDA News", "first_seen_ts": now_ts - 600.0, "is_high_severity": False, "matched_keywords": []},
+        ]
+    }
+    (tmp_path / "news_feed_collect.json").write_text(json.dumps(news_payload), encoding="utf-8")
+
+    # Crypto scope: polymarket spam excluded; fresh oil explosion ranks above aged (>90m) SpaceX corp-risk
+    _, cr_breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, persist=False, scope="crypto")
+    cr_titles = [item["title"] for item in cr_breaking]
+    assert polymarket_spam not in cr_titles
+    assert cr_titles[0] == fresh_oil_shock
+    assert all(item.get("is_corporate_risk") is None for item in cr_breaking)
+
+    # Equities scope: aged (>90m) Nvidia corp-risk decays to normal tracked-equity tier behind fresher Nvidia news
+    _, eq_breaking = harvest_macro_and_news_sensors(str(tmp_path), now_ts, persist=False, scope="equities")
+    eq_titles = [item["title"] for item in eq_breaking]
+    assert polymarket_spam not in eq_titles
+    assert eq_titles[0] == fresh_nvda_news
+    assert all(item.get("is_corporate_risk") is None for item in eq_breaking)
+
+
 

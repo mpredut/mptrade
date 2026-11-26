@@ -1144,6 +1144,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 **item,
                 "matched_keywords": clean_kws,
                 "is_high_severity": False if (is_stale_sev or (raw_kws and not clean_kws)) else item_high_sev,
+                "_is_stale_sev": is_stale_sev,
                 "_aged_high_sev_context": was_valid_aged_sev,
             }
             merged_dup = False
@@ -1168,6 +1169,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     merged_ts = safe_pos_float(exist_entry.get("first_seen_ts"), default=0.0) or 0.0
                     merged_stale = merged_ts > 0.0 and now_ts > merged_ts and (now_ts - merged_ts) > 5400.0
                     exist_entry["is_high_severity"] = False if merged_stale else (e_sev or c_sev)
+                    exist_entry["_is_stale_sev"] = merged_stale
                     exist_entry["_aged_high_sev_context"] = bool((merged_stale and had_sev) or e_aged or c_aged)
                     if merged_stale and had_sev:
                         for t_dup in (c_title, e_title):
@@ -1185,7 +1187,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                 (
                     (
                         3
-                        if has_tracked_equity_corporate_risk(x.get("title"))
+                        if (not x.get("_is_stale_sev") and has_tracked_equity_corporate_risk(x.get("title")))
                         else (2 if has_tracked_equity_entity(x.get("title")) else 1)
                     )
                     if (
@@ -1199,6 +1201,7 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                         1
                         if (
                             scope_norm == "crypto"
+                            and not x.get("_is_stale_sev")
                             and has_tracked_tokenized_equity_corporate_risk(x.get("title"))
                         )
                         else (
@@ -1246,8 +1249,11 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
             )
             resolved_title = clean_title or item.get("title")
             is_corp_risk = bool(
-                (scope_norm == "equities" and has_tracked_equity_corporate_risk(resolved_title))
-                or (scope_norm == "crypto" and has_tracked_tokenized_equity_corporate_risk(resolved_title))
+                not item.get("_is_stale_sev")
+                and (
+                    (scope_norm == "equities" and has_tracked_equity_corporate_risk(resolved_title))
+                    or (scope_norm == "crypto" and has_tracked_tokenized_equity_corporate_risk(resolved_title))
+                )
             )
             breaking_news.append({
                 "title": resolved_title, "source": item.get("source"),
