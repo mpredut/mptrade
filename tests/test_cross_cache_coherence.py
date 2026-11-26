@@ -1430,7 +1430,7 @@ def test_kraken_multi_symbol_ws_fill_preserves_invalidation_and_cli_cross_cache_
     assert "kraken:health_symbol_fetchtime_missing" in err_bad
     assert "HYPEUSD" in err_bad
 
-    # After REST catch-up restores HYPEUSD, coherence passes cleanly even though retired TAOUSD still has old t0_ms fetchtime.
+    # After REST catch-up restores ONLY filled_orders, missing trades fetchtime on HYPEUSD must STILL fail coherence.
     t2_ms = t0_ms + 30_000
     cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
         str(fo_path),
@@ -1459,6 +1459,23 @@ def test_kraken_multi_symbol_ws_fill_preserves_invalidation_and_cli_cross_cache_
     )
     cacheaccount.CacheOrderOpenManager.replace_venue_open_orders_snapshot(
         str(oo_path), {"HYPEUSD": [], "SPCXxUSD": []}, now_ms=t2_ms, verified_ts=t0 + 30.0
+    )
+    rc_still_bad = audit_cli.main(["--check-cross-cache", "--scope", "crypto", "--cache-dir", str(tmp_path)])
+    err_still_bad = capsys.readouterr().err
+    assert rc_still_bad == 1
+    assert "kraken:health_symbol_fetchtime_missing" in err_still_bad
+    assert "trades items" in err_still_bad
+    assert "HYPEUSD" in err_still_bad
+
+    # After REST catch-up restores cache_trade_kraken.json as well, coherence passes cleanly even though retired TAOUSD still has old t0_ms fetchtime.
+    cacheaccount.CacheTradeManager._merge_venue_fills_snapshot_locked(
+        str(tr_path),
+        {"HYPEUSD": [f_hype], "SPCXxUSD": [f_spcx1, f_spcx2]},
+        now_ms=t2_ms,
+        is_snapshot=False,
+        touch_symbols=pairs,
+        touch_create_missing=True,
+        sanitize_venue="kraken",
     )
     rc_ok = audit_cli.main(["--check-cross-cache", "--scope", "crypto", "--cache-dir", str(tmp_path)])
     assert rc_ok == 0
@@ -1586,6 +1603,285 @@ def test_hyperliquid_rest_resync_triggers_refresh_on_same_oid_partial_fill_upgra
     assert len(fo_items["HYPEUSDC"]) == 1
     assert fo_items["HYPEUSDC"][0]["quantity"] == pytest.approx(19.33)
     assert fo_ft["HYPEUSDC"] == t2_ms
+
+
+def test_t212_and_kraken_rest_sync_trigger_account_refresh_on_partial_fill_upgrades(tmp_path, monkeypatch):
+    """T212 REST poll, Kraken REST poll, and Kraken WS REST catch-up must trigger balance/open-order refresh on same-orderId partial-fill upgrades."""
+    import sys
+    import threading
+    import types
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+
+    t0_ms = 1_795_760_000_000
+    now_ref = [t0_ms]
+    refresh_calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda v=None: now_ref[0] if v is None else int(v))
+    monkeypatch.setattr(
+        cacheaccount,
+        "request_venue_account_refresh",
+        lambda v, *, include_open_orders=False, blocking=False: refresh_calls.append((v, include_open_orders)) or True,
+    )
+    monkeypatch.setattr(cacheaccount, "_record_venue_health_sync", lambda *_a, **_kw: True)
+
+    # 1. Trading 212 REST poll loop: same-orderId partial-fill upgrade (0.4 -> 1.0, row count stays 1).
+    t212_batches = [
+        {"NVDA": [{"symbol": "NVDA", "orderId": "T212-100", "side": "BUY", "price": 120.0, "qty": 0.4, "quantity": 0.4, "status": "PARTIALLY_FILLED", "time": t0_ms - 10_000}]},
+        {"NVDA": [{"symbol": "NVDA", "orderId": "T212-100", "side": "BUY", "price": 120.0, "qty": 0.4, "quantity": 0.4, "status": "PARTIALLY_FILLED", "time": t0_ms - 10_000}]},
+        {"NVDA": [{"symbol": "NVDA", "orderId": "T212-100", "side": "BUY", "price": 120.5, "qty": 1.0, "quantity": 1.0, "status": "FILLED", "time": t0_ms + 5_000}]},
+    ]
+    t212_idx = [0]
+
+    class _FakeT212Prov:
+        @staticmethod
+        def fetch_history_fills_by_symbol(_client, *, symbols, publish_shared_cache=True):
+            i = t212_idx[0]
+            t212_idx[0] += 1
+            return t212_batches[i]
+
+    def _run_three_polls(*, sync_once_fn, **_kw):
+        for step in range(3):
+            now_ref[0] = t0_ms + step * 30_000
+            sync_once_fn()
+
+    monkeypatch.setattr(cacheaccount, "_run_account_trade_poll_loop", _run_three_polls)
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _FakeT212Prov if v == "t212" else None),
+    )
+    cacheaccount.run_t212_trade_poll_loop(
+        object(),
+        cache_file=str(acct_dir / "cache_trade_t212.json"),
+        symbols=("NVDA",),
+        poll_interval=60.0,
+        backoff_init=10.0,
+        backoff_max=120.0,
+    )
+    assert refresh_calls == [("t212", True)]
+
+    # 2. Kraken REST poll loop: same-orderId partial-fill slice upgrade (1.0 -> 2.5, filled-order row count stays 1).
+    refresh_calls.clear()
+    k_slice_1 = {"symbol": "HYPEUSD", "id": "TK-1", "orderId": "OK-1", "side": "BUY", "price": 62.0, "qty": 1.0, "quantity": 1.0, "time": t0_ms - 20_000}
+    k_slice_2 = {"symbol": "HYPEUSD", "id": "TK-2", "orderId": "OK-1", "side": "BUY", "price": 62.5, "qty": 1.5, "quantity": 1.5, "time": t0_ms + 10_000}
+    kr_batches = [
+        {"HYPEUSD": [k_slice_1]},
+        {"HYPEUSD": [k_slice_1]},
+        {"HYPEUSD": [k_slice_1, k_slice_2]},
+    ]
+    kr_idx = [0]
+
+    class _FakeKrakenProv:
+        PRIVATE_WS_URL = "wss://example.invalid"
+
+        @staticmethod
+        def fetch_ledger_fills_by_symbol(_client, *, pairs, lookback_sec):
+            i = kr_idx[0]
+            kr_idx[0] += 1
+            return kr_batches[i]
+
+        @staticmethod
+        def build_ws_own_trades_subscription(_client):
+            return "{}"
+
+        @staticmethod
+        def extract_ws_own_trades(_data, *, pairs):
+            return None
+
+        @staticmethod
+        def classify_ws_control_event(_data):
+            return ("keepalive", "")
+
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _FakeKrakenProv if v == "kraken" else None),
+    )
+    cacheaccount.run_kraken_trade_poll_loop(
+        object(),
+        cache_file=str(acct_dir / "cache_trade_kraken_poll.json"),
+        pairs=("HYPEUSD",),
+        poll_interval=30.0,
+        backoff_init=5.0,
+        backoff_max=60.0,
+        lookback_sec=3600.0,
+    )
+    assert refresh_calls == [("kraken", True)]
+
+    # 3. Kraken WS loop _merge_rest recovery: no refresh on startup seed or unchanged recovery; triggers on same-orderId slice upgrade.
+    refresh_calls.clear()
+    k_slice_3 = {"symbol": "HYPEUSD", "id": "TK-3", "orderId": "OK-1", "side": "BUY", "price": 63.0, "qty": 0.5, "quantity": 0.5, "time": t0_ms + 60_000}
+    kr_batches[:] = [
+        {"HYPEUSD": [k_slice_1]},
+        {"HYPEUSD": [k_slice_1]},
+        {"HYPEUSD": [k_slice_1, k_slice_3]},
+    ]
+    kr_idx[0] = 0
+    ws_tr_path = acct_dir / "cache_trade_kraken_ws.json"
+    ws_fo_path = acct_dir / "cache_order_filled_kraken_ws.json"
+    monkeypatch.setattr(cacheaccount, "_sibling_order_filled_path", lambda _p, _v: str(ws_fo_path))
+
+    spawned_threads: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    class _SyncThread:
+        def __init__(self, *, target, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(cacheaccount.threading, "Thread", _SyncThread)
+    stop_ev = threading.Event()
+
+    class _FakeWSApp:
+        def __init__(self, _url, *, on_open, on_message, on_error):
+            self._on_open = on_open
+            self._on_message = on_message
+            self.keep_running = True
+
+        def send(self, _payload):
+            pass
+
+        def run_forever(self, **_kw):
+            self._on_open(self)
+            # Invalidate HYPEUSD so keepalive triggers _merge_rest with unchanged fills -> no refresh.
+            cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSD", str(ws_tr_path))
+            cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSD", str(ws_fo_path))
+            now_ref[0] = t0_ms + 20_000
+            self._on_message(self, '{"event":"heartbeat"}')
+            assert refresh_calls == []
+            # Invalidate again and return same-orderId partial-fill upgrade k_slice_3 -> MUST trigger refresh.
+            cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSD", str(ws_tr_path))
+            cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSD", str(ws_fo_path))
+            now_ref[0] = t0_ms + 40_000
+            self._on_message(self, '{"event":"heartbeat"}')
+            stop_ev.set()
+
+    fake_ws_mod = types.SimpleNamespace(WebSocketApp=_FakeWSApp)
+    monkeypatch.setitem(sys.modules, "websocket", fake_ws_mod)
+    now_ref[0] = t0_ms
+    cacheaccount.run_kraken_trade_ws_loop(
+        object(),
+        cache_file=str(ws_tr_path),
+        pairs=("HYPEUSD",),
+        poll_interval=30.0,
+        backoff_init=5.0,
+        backoff_max=60.0,
+        lookback_sec=3600.0,
+        stop_event=stop_ev,
+    )
+    assert refresh_calls == [("kraken", True)]
+    assert spawned_threads == [] and real_thread is not None
+
+
+def test_trades_stream_per_symbol_fetchtime_coherence_invariant():
+    """Pure invariant: trades stream health must detect stream lag, missing per-symbol fetchtime, and per-symbol lag while respecting retired symbols and primary-stream cadence."""
+    now_s = 1_795_760_000.0
+    sync_g = 15.0
+
+    # 1. Missing HYPEUSDC fetchtime in cache_trade_hyperliquid.json while sibling SOLUSDC is fresh.
+    ev_missing = VenueCoherenceEvidence(
+        venue="hyperliquid",
+        trade_items={"HYPEUSDC": [], "SOLUSDC": []},
+        trade_latest_ft_ts=now_s - 2.0,
+        trade_sym_ft_ts={"SOLUSDC": now_s - 2.0},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"HYPEUSDC", "SOLUSDC"}),
+    )
+    v_missing = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"hyperliquid": ev_missing}, health_present=True),
+        sync_grace_sec=sync_g,
+    )
+    assert [(v.venue, v.rule) for v in v_missing] == [("hyperliquid", "health_symbol_fetchtime_missing")]
+    assert "HYPEUSDC" in v_missing[0].detail and "trades" in v_missing[0].detail
+
+    # 2. Lagging HYPEUSDC fetchtime in trades while retired OLDUSDC is ignored.
+    ev_lag = VenueCoherenceEvidence(
+        venue="hyperliquid",
+        trade_items={"HYPEUSDC": [], "SOLUSDC": [], "OLDUSDC": []},
+        trade_latest_ft_ts=now_s - 2.0,
+        trade_sym_ft_ts={"HYPEUSDC": now_s - 45.0, "SOLUSDC": now_s - 2.0, "OLDUSDC": now_s - 900.0},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"HYPEUSDC", "SOLUSDC"}),
+    )
+    v_lag = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"hyperliquid": ev_lag}, health_present=True),
+        sync_grace_sec=sync_g,
+    )
+    assert [(v.venue, v.rule) for v in v_lag] == [("hyperliquid", "health_symbol_fetchtime_lag")]
+    assert "HYPEUSDC" in v_lag[0].detail and "OLDUSDC" not in v_lag[0].detail
+
+    # 3. Stream-level trades disk lag (all symbols stale relative to health).
+    ev_stream_lag = VenueCoherenceEvidence(
+        venue="kraken",
+        trade_items={"HYPEUSD": []},
+        trade_latest_ft_ts=now_s - 50.0,
+        trade_sym_ft_ts={"HYPEUSD": now_s - 50.0},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"HYPEUSD"}),
+    )
+    v_stream_lag = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"kraken": ev_stream_lag}, health_present=True),
+        sync_grace_sec=sync_g,
+    )
+    assert [(v.venue, v.rule) for v in v_stream_lag] == [("kraken", "health_disk_lag")]
+
+    # 4. Primary-stream venue (Binance) respects TRADE_SYNC_INTERVAL_SEC + sync_grace boundary.
+    tr_cadence = cacheaccount.TRADE_SYNC_INTERVAL_SEC
+    ev_bin_ok = VenueCoherenceEvidence(
+        venue="binance",
+        trade_items={"BTCUSDC": [], "ETHUSDC": []},
+        trade_latest_ft_ts=now_s - 5.0,
+        trade_sym_ft_ts={"BTCUSDC": now_s - 5.0, "ETHUSDC": now_s - (tr_cadence + sync_g - 5.0)},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"BTCUSDC", "ETHUSDC"}),
+    )
+    assert evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"binance": ev_bin_ok}, health_present=True),
+        sync_grace_sec=sync_g,
+    ) == []
+
+    ev_bin_bad = VenueCoherenceEvidence(
+        venue="binance",
+        trade_items={"BTCUSDC": [], "ETHUSDC": []},
+        trade_latest_ft_ts=now_s - 5.0,
+        trade_sym_ft_ts={"BTCUSDC": now_s - 5.0, "ETHUSDC": now_s - (tr_cadence + sync_g + 10.0)},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"BTCUSDC", "ETHUSDC"}),
+    )
+    v_bin_bad = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"binance": ev_bin_bad}, health_present=True),
+        sync_grace_sec=sync_g,
+    )
+    assert [(v.venue, v.rule) for v in v_bin_bad] == [("binance", "health_symbol_fetchtime_lag")]
+    assert "ETHUSDC" in v_bin_bad[0].detail
+
+    # 5. Synthetic snapshot without fetchtime surface (e.g. raw jsonl without .meta) does not false-fail.
+    ev_no_surface = VenueCoherenceEvidence(
+        venue="binance",
+        trade_items={"BTCUSDC": []},
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=False,
+        health_sync_ts_by_stream={"trades": now_s - 1.0},
+        configured_symbols=frozenset({"BTCUSDC"}),
+    )
+    assert evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=now_s, venues={"binance": ev_no_surface}, health_present=True),
+        sync_grace_sec=sync_g,
+    ) == []
+
 
 
 

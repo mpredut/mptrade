@@ -42,6 +42,7 @@ from cacheaccount import (
     CacheTradeManager,
     OPEN_ORDER_SYNC_INTERVAL_SEC,
     ORDER_SYNC_INTERVAL_SEC,
+    TRADE_SYNC_INTERVAL_SEC,
     UnifiedOrderBookEvidence,
 )
 from cachepaths import (
@@ -60,7 +61,7 @@ from providers.base import MarketDataProvider
 from providers.order_id_context import extract_client_order_id
 from providers.order_ledger import OrderLedgerReader
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
-from state_io import cachedb_exists, read_json_dict, read_json_dict_recovering, read_jsonl_bucket_map
+from state_io import cachedb_exists, meta_file_path, read_json_dict, read_json_dict_recovering, read_jsonl_bucket_map
 
 _QUOTE_CASH_ASSETS: frozenset[str] = frozenset({"USD", "USDC", "USDT", "USDG", "EUR"})
 _TERMINAL_FILL_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED"})
@@ -96,6 +97,10 @@ class VenueCoherenceEvidence:
     filled_sym_ft_ts: dict[str, float] = field(default_factory=dict)
     filled_file_exists: bool = False
     trade_items: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    trade_latest_ft_ts: float = 0.0
+    trade_sym_ft_ts: dict[str, float] = field(default_factory=dict)
+    trade_file_exists: bool = False
+    trade_has_fetchtime_surface: bool = False
     balance_items: dict[str, dict[str, Any]] = field(default_factory=dict)
     balance_verified_ts: float = 0.0
     balance_file_exists: bool = False
@@ -173,6 +178,62 @@ def _is_filled_row_terminal(
     if orig_q is not None and filled_q is not None and filled_q >= orig_q * (1.0 - 1e-6):
         return True
     return False
+
+
+def _audit_stream_per_symbol_fetchtimes(
+    out: list[CoherenceViolation],
+    *,
+    venue: str,
+    stream_name: str,
+    health_ts: float,
+    items_map: Mapping[str, Any],
+    sym_ft_ts: Mapping[str, float],
+    configured_symbols: frozenset[str],
+    per_sym_lag_grace: float,
+) -> None:
+    """Verify every tracked symbol in a stream snapshot has a fresh per-symbol fetchtime."""
+    items_cf = {
+        str(k).strip().casefold(): str(k).strip()
+        for k in (items_map or {})
+        if str(k or "").strip()
+    }
+    ft_by_cf = {
+        str(k).strip().casefold(): ft_v
+        for k, ft_s in (sym_ft_ts or {}).items()
+        if str(k or "").strip() and (ft_v := safe_pos_float(ft_s, default=None)) is not None
+    }
+    if configured_symbols:
+        checked_syms = [
+            sym_s for sym_s in sorted(configured_symbols) if sym_s.casefold() in items_cf
+        ]
+    elif ft_by_cf:
+        checked_syms = sorted(items_cf.values())
+    else:
+        checked_syms = []
+    for sym_s in checked_syms:
+        sym_ft = ft_by_cf.get(sym_s.casefold(), 0.0)
+        if sym_ft <= 0.0:
+            out.append(
+                CoherenceViolation(
+                    venue=venue,
+                    rule="health_symbol_fetchtime_missing",
+                    detail=(
+                        f"{sym_s} present in {stream_name} items but missing fetchtime while "
+                        f"health {stream_name}_sync_ts={health_ts:.1f}"
+                    ),
+                )
+            )
+        elif (health_ts - sym_ft) > per_sym_lag_grace:
+            out.append(
+                CoherenceViolation(
+                    venue=venue,
+                    rule="health_symbol_fetchtime_lag",
+                    detail=(
+                        f"{sym_s} {stream_name} fetchtime={sym_ft:.1f} lags health {stream_name}_sync_ts={health_ts:.1f} "
+                        f"by {health_ts - sym_ft:.1f}s (> {per_sym_lag_grace:.1f}s)"
+                    ),
+                )
+            )
 
 
 def _evaluate_venue_coherence(
@@ -504,56 +565,51 @@ def _evaluate_venue_coherence(
                     )
                 )
 
-        # 6b. Per-symbol filled_orders fetchtime freshness parity (prevents max() from masking one invalidated symbol).
+        # 6b. Stream-level lag on trades (when fetchtime surface exists) and per-symbol fetchtime parity
+        # for both filled_orders and trades (prevents max() from masking one invalidated symbol).
         fo_h_ts = ev.health_sync_ts_by_stream.get("filled_orders", 0.0)
         if fo_h_ts > 0.0 and ev.filled_file_exists and ev.filled_latest_ft_ts > 0.0:
-            filled_items_cf = {
-                str(k).strip().casefold(): str(k).strip()
-                for k in (ev.filled_items or {})
-                if str(k or "").strip()
-            }
-            ft_by_cf = {
-                str(k).strip().casefold(): ft_v
-                for k, ft_s in (ev.filled_sym_ft_ts or {}).items()
-                if str(k or "").strip() and (ft_v := safe_pos_float(ft_s, default=None)) is not None
-            }
-            if ev.configured_symbols:
-                checked_syms = [
-                    sym_s for sym_s in sorted(ev.configured_symbols) if sym_s.casefold() in filled_items_cf
-                ]
-            elif ft_by_cf:
-                checked_syms = sorted(filled_items_cf.values())
-            else:
-                checked_syms = []
-            per_sym_lag_grace = (
-                (ORDER_SYNC_INTERVAL_SEC + sync_grace)
+            _audit_stream_per_symbol_fetchtimes(
+                out,
+                venue=v,
+                stream_name="filled_orders",
+                health_ts=fo_h_ts,
+                items_map=ev.filled_items,
+                sym_ft_ts=ev.filled_sym_ft_ts,
+                configured_symbols=ev.configured_symbols,
+                per_sym_lag_grace=(
+                    (ORDER_SYNC_INTERVAL_SEC + sync_grace)
+                    if is_primary_stream_venue(v)
+                    else sync_grace
+                ),
+            )
+
+        tr_h_ts = ev.health_sync_ts_by_stream.get("trades", 0.0)
+        if tr_h_ts > 0.0 and ev.trade_file_exists and ev.trade_has_fetchtime_surface:
+            tr_stream_grace = (
+                (TRADE_SYNC_INTERVAL_SEC + sync_grace)
                 if is_primary_stream_venue(v)
                 else sync_grace
             )
-            for sym_s in checked_syms:
-                sym_ft = ft_by_cf.get(sym_s.casefold(), 0.0)
-                if sym_ft <= 0.0:
-                    out.append(
-                        CoherenceViolation(
-                            venue=v,
-                            rule="health_symbol_fetchtime_missing",
-                            detail=(
-                                f"{sym_s} present in filled_orders items but missing fetchtime while "
-                                f"health filled_orders_sync_ts={fo_h_ts:.1f}"
-                            ),
-                        )
+            if ev.trade_latest_ft_ts <= 0.0 or (tr_h_ts - ev.trade_latest_ft_ts) > tr_stream_grace:
+                out.append(
+                    CoherenceViolation(
+                        venue=v,
+                        rule="health_disk_lag",
+                        detail=f"health reports trades_sync_ts={tr_h_ts:.1f} ahead of disk_ts={ev.trade_latest_ft_ts:.1f} by {tr_h_ts - ev.trade_latest_ft_ts:.1f}s",
                     )
-                elif (fo_h_ts - sym_ft) > per_sym_lag_grace:
-                    out.append(
-                        CoherenceViolation(
-                            venue=v,
-                            rule="health_symbol_fetchtime_lag",
-                            detail=(
-                                f"{sym_s} fetchtime={sym_ft:.1f} lags health filled_orders_sync_ts={fo_h_ts:.1f} "
-                                f"by {fo_h_ts - sym_ft:.1f}s (> {per_sym_lag_grace:.1f}s)"
-                            ),
-                        )
-                    )
+                )
+            elif ev.trade_latest_ft_ts > 0.0:
+                _audit_stream_per_symbol_fetchtimes(
+                    out,
+                    venue=v,
+                    stream_name="trades",
+                    health_ts=tr_h_ts,
+                    items_map=ev.trade_items,
+                    sym_ft_ts=ev.trade_sym_ft_ts,
+                    configured_symbols=ev.configured_symbols,
+                    per_sym_lag_grace=tr_stream_grace,
+                )
 
     return out
 
@@ -711,8 +767,10 @@ def load_account_cache_coherence_snapshot(
         # 3. Trade cache mirror
         tr_fname = CacheTradeManager.VENUE_FILENAMES.get(v_norm, "")
         tr_path = _resolve_cache_file(cachedb_dir, tr_fname) if tr_fname else ""
+        tr_exists = bool(tr_path and cachedb_exists(tr_path, include_previous=True))
         tr_items: dict[str, list[dict[str, Any]]] = {}
-        if tr_path and cachedb_exists(tr_path, include_previous=True):
+        tr_ft_raw: Optional[dict[str, Any]] = None
+        if tr_exists:
             if tr_fname.lower().endswith(".jsonl"):
                 tr_raw, _ = read_jsonl_bucket_map(tr_path)
                 tr_items = {
@@ -720,6 +778,9 @@ def load_account_cache_coherence_snapshot(
                     for sk, rows in (tr_raw or {}).items()
                     if isinstance(rows, list)
                 }
+                tr_meta = read_json_dict(meta_file_path(tr_path), default=None)
+                if isinstance(tr_meta, dict) and isinstance(tr_meta.get("fetchtime"), dict):
+                    tr_ft_raw = tr_meta["fetchtime"]
             else:
                 tr_doc = read_json_dict_recovering(tr_path, default=None, repair_files=False)
                 raw_it = tr_doc.get("items") if isinstance(tr_doc, dict) and isinstance(tr_doc.get("items"), dict) else {}
@@ -728,6 +789,15 @@ def load_account_cache_coherence_snapshot(
                     for sk, rows in raw_it.items()
                     if isinstance(rows, list)
                 }
+                if isinstance(tr_doc, dict) and isinstance(tr_doc.get("fetchtime"), dict):
+                    tr_ft_raw = tr_doc["fetchtime"]
+        tr_has_ft_surface = isinstance(tr_ft_raw, dict)
+        tr_sym_ft = {
+            str(sk).strip(): ft_s
+            for sk, ft_v in (tr_ft_raw or {}).items()
+            if str(sk or "").strip() and (ft_s := normalize_epoch_sec(ft_v, default=0.0) or 0.0) > 0.0
+        }
+        tr_latest_ft = max(tr_sym_ft.values(), default=0.0)
 
         # 4. Balances
         bal_fname = CacheBalanceManager.VENUE_FILENAMES.get(v_norm, "")
@@ -752,6 +822,10 @@ def load_account_cache_coherence_snapshot(
             filled_sym_ft_ts=fo_sym_ft,
             filled_file_exists=fo_exists,
             trade_items=tr_items,
+            trade_latest_ft_ts=tr_latest_ft,
+            trade_sym_ft_ts=tr_sym_ft,
+            trade_file_exists=tr_exists,
+            trade_has_fetchtime_surface=tr_has_ft_surface,
             balance_items=bal_items,
             balance_verified_ts=bal_ver,
             balance_file_exists=bal_exists,

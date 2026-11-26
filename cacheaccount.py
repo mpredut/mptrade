@@ -4685,6 +4685,47 @@ class _AccountTradeBridgeBase(ABC):
             t.join(timeout=max(0.05, safe_pos_float(timeout, default=0.3) or 0.3))
 
 
+def _fills_content_signature(
+    items_map: Mapping[str, Any],
+) -> dict[tuple[str, str], tuple[float, int, str]]:
+    """Build a deterministic per-(symbol, orderId) content signature across fill/order rows.
+
+    Tracks executed quantity, constituent fill count, and monotonic status so REST
+    reconciliation detects both new orders and same-orderId partial-fill or status upgrades
+    that leave row counts unchanged.
+    """
+    acc: dict[tuple[str, str], list[Any]] = {}
+    for sym_k, rows_k in (items_map or {}).items():
+        if not isinstance(rows_k, list):
+            continue
+        sym_s = str(sym_k)
+        for row in rows_k:
+            if not isinstance(row, dict):
+                continue
+            row_id = (
+                clean_order_id(extract_order_id(row, default=None))
+                or clean_scalar_str(row.get("id") if row.get("id") is not None else row.get("tid"))
+                or ""
+            )
+            raw_qty = extract_executed_qty(row, default=None)
+            if raw_qty is None:
+                raw_qty = row.get("qty") if row.get("qty") is not None else row.get("sz")
+            qty_f = safe_nonneg_float(raw_qty, default=0.0) or 0.0
+            fids = row.get("_fillIds")
+            fill_cnt = len(fids) if isinstance(fids, list) and fids else 1
+            st_u = clean_upper_scalar(row.get("status")) or ""
+            key = (sym_s, row_id)
+            prev = acc.get(key)
+            if prev is None:
+                acc[key] = [qty_f, fill_cnt, st_u]
+            else:
+                prev[0] += qty_f
+                prev[1] += fill_cnt
+                if st_u:
+                    prev[2] = merge_monotonic_fill_row_status(prev[2], st_u) if prev[2] else st_u
+    return {k: (round(v[0], 10), v[1], v[2]) for k, v in acc.items()}
+
+
 class _HyperliquidAccountTradeBridge:
     """Channel bridge attaching ``userFills`` persistence onto a shared Hyperliquid WebSocket stream."""
 
@@ -4826,24 +4867,7 @@ class _HyperliquidAccountTradeBridge:
                         allow_trade_fallback=False,
                     )
 
-                    def _fill_sig(items_map: Mapping[str, Any]) -> dict[tuple[str, str], tuple[float, int]]:
-                        sig: dict[tuple[str, str], tuple[float, int]] = {}
-                        for sym_k, rows_k in (items_map or {}).items():
-                            if not isinstance(rows_k, list):
-                                continue
-                            for row in rows_k:
-                                if not isinstance(row, dict):
-                                    continue
-                                oid_s = clean_order_id(extract_order_id(row, default=None)) or ""
-                                qty_f = round(
-                                    safe_nonneg_float(extract_executed_qty(row, default=0.0), default=0.0) or 0.0,
-                                    10,
-                                )
-                                fids = row.get("_fillIds")
-                                sig[(str(sym_k), oid_s)] = (qty_f, len(fids) if isinstance(fids, list) else 0)
-                        return sig
-
-                    before_sig = _fill_sig(before_items)
+                    before_sig = _fills_content_signature(before_items)
                     CacheTradeManager.merge_venue_fills_snapshot(
                         fills_file,
                         fills_by_sym,
@@ -4862,7 +4886,7 @@ class _HyperliquidAccountTradeBridge:
                         touch_create_missing=True,
                     )
                     after_items = merged_fo.get("items") if isinstance(merged_fo, dict) else {}
-                    if _fill_sig(after_items or {}) != before_sig:
+                    if _fills_content_signature(after_items or {}) != before_sig:
                         request_venue_account_refresh("hyperliquid", include_open_orders=True)
                     if len(ok_syms) == len(symbols):
                         _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
@@ -4982,6 +5006,8 @@ def run_kraken_trade_poll_loop(
     if (kr_prov_cls := MarketDataProvider.resolve_venue_provider_class("kraken")) is None:
         raise RuntimeError("Kraken provider class is not registered")
 
+    prev_fills_sig: list[Optional[tuple[str, dict[tuple[str, str], tuple[float, int, str]]]]] = [None]
+
     def _sync_once() -> dict:
         by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
             client, pairs=pairs, lookback_sec=lookback_sec
@@ -5000,8 +5026,9 @@ def run_kraken_trade_poll_loop(
             indent=1,
             force_save=True,
         )
+        merged_fo = None
         try:
-            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+            merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
                 _sibling_order_filled_path(cache_file, "kraken"),
                 by_sym,
                 venue="kraken",
@@ -5016,6 +5043,19 @@ def run_kraken_trade_poll_loop(
         except Exception:
             pass
         _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
+        sig_src, sig_items = (
+            ("fo", merged_fo.get("items") or {})
+            if isinstance(merged_fo, dict)
+            else ("tr", merged.get("items") or {})
+        )
+        cur_sig = (sig_src, _fills_content_signature(sig_items))
+        if (
+            prev_fills_sig[0] is not None
+            and prev_fills_sig[0][0] == sig_src
+            and cur_sig[1] != prev_fills_sig[0][1]
+        ):
+            request_venue_account_refresh("kraken", include_open_orders=True)
+        prev_fills_sig[0] = cur_sig
         return merged
 
     _run_account_trade_poll_loop(
@@ -5111,12 +5151,27 @@ def run_kraken_trade_ws_loop(
         next_rest_sync_ms[0] = resolve_now_ms() + math.trunc(rest_backoff_sec[0] * 1000)
         return rest_backoff_sec[0]
 
-    def _merge_rest(err_label: Optional[str] = None, *, now_ms: Optional[int] = None) -> Optional[dict]:
+    def _merge_rest(
+        err_label: Optional[str] = None,
+        *,
+        now_ms: Optional[int] = None,
+        trigger_refresh: bool = True,
+    ) -> Optional[dict]:
         try:
             by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
             eff_ms = resolve_now_ms(now_ms)
+            fo_path = _sibling_order_filled_path(cache_file, "kraken")
+            before_sig: Optional[dict[tuple[str, str], tuple[float, int, str]]] = None
+            if trigger_refresh:
+                before_fo_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+                    fo_path,
+                    venue="kraken",
+                    allow_legacy=False,
+                    allow_trade_fallback=False,
+                )
+                before_sig = _fills_content_signature(before_fo_items)
             merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
                 cache_file,
                 by_sym,
@@ -5128,9 +5183,10 @@ def run_kraken_trade_ws_loop(
                 indent=1,
                 force_save=True,
             )
+            merged_fo = None
             try:
-                CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                    _sibling_order_filled_path(cache_file, "kraken"),
+                merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                    fo_path,
                     by_sym,
                     venue="kraken",
                     now_ms=eff_ms,
@@ -5144,6 +5200,12 @@ def run_kraken_trade_ws_loop(
             except Exception:
                 pass
             _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
+            if (
+                before_sig is not None
+                and isinstance(merged_fo, dict)
+                and _fills_content_signature(merged_fo.get("items") or {}) != before_sig
+            ):
+                request_venue_account_refresh("kraken", include_open_orders=True)
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
             rest_backoff_sec[0] = 0.0
             next_rest_sync_ms[0] = 0
@@ -5156,7 +5218,7 @@ def run_kraken_trade_ws_loop(
             return None
 
     # Initial REST seed: if rate-limited, defer WS token call until backoff clears instead of double-hitting Kraken.
-    seed_ok = _merge_rest("REST seed failed") is not None
+    seed_ok = _merge_rest("REST seed failed", trigger_refresh=False) is not None
     if not seed_ok and _is_rate_limit_err(last_err_text[0]):
         _bump_backoff(last_err_text[0])
         log(f"[kraken_cache][ws] rate-limited on seed; cooling down {backoff_cur[0]:g}s before WS connect")
@@ -5409,7 +5471,7 @@ def run_t212_trade_poll_loop(
     if (t212_prov_cls := MarketDataProvider.resolve_venue_provider_class("t212")) is None:
         raise RuntimeError("T212 provider class is not registered")
 
-    prev_total_fills = [-1]
+    prev_fills_sig: list[Optional[tuple[str, dict[tuple[str, str], tuple[float, int, str]]]]] = [None]
 
     def _sync_once() -> dict:
         by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
@@ -5427,8 +5489,9 @@ def run_t212_trade_poll_loop(
             indent=1,
             force_save=True,
         )
+        merged_fo = None
         try:
-            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+            merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
                 _sibling_order_filled_path(cache_file, "t212"),
                 by_sym,
                 venue="t212",
@@ -5443,10 +5506,19 @@ def run_t212_trade_poll_loop(
         except Exception:
             pass
         _record_venue_health_sync("t212", "trades", now_ms=eff_ms)
-        cur_total = sum(len(v) for v in (merged.get("items") or {}).values() if isinstance(v, list))
-        if prev_total_fills[0] >= 0 and cur_total > prev_total_fills[0]:
+        sig_src, sig_items = (
+            ("fo", merged_fo.get("items") or {})
+            if isinstance(merged_fo, dict)
+            else ("tr", merged.get("items") or {})
+        )
+        cur_sig = (sig_src, _fills_content_signature(sig_items))
+        if (
+            prev_fills_sig[0] is not None
+            and prev_fills_sig[0][0] == sig_src
+            and cur_sig[1] != prev_fills_sig[0][1]
+        ):
             request_venue_account_refresh("t212", include_open_orders=True)
-        prev_total_fills[0] = cur_total
+        prev_fills_sig[0] = cur_sig
         return merged
 
     _run_account_trade_poll_loop(
