@@ -2137,7 +2137,7 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     """Verify:
     1. DEV CI/CLI Regression FAILED and all BOT/FLEET/SERVICE RESTART subjects NEVER send emails
        (via send_email, mailer CLI, or NotificationServer even if routed to an error topic).
-    2. offline/runners/run_dev_regression.sh routes DEV CI Regression FAILED to ntfy_server_topic.
+    2. offline/runners/run_dev_regression.sh routes DEV CI Regression FAILED to ntfy_error_topic.
     3. kraken_xstock_watch no longer acts as a secondary active-pair supervisor, and its IPO
        maybe_start_bot path always notifies with email=False."""
     import json
@@ -2198,13 +2198,13 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     srv._send_ntfy("\U0001f916 BOT RESTARTED on SPCXxUSD (unexpected exit)", "detail", "high", "ntfy-error-test")
     assert emailed == []
 
-    # 2. run_dev_regression.sh routes failure notification to $(ntfy_server_topic) and passes bash -n
+    # 2. run_dev_regression.sh routes failure notification to $(ntfy_error_topic) and passes bash -n
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     reg_sh = os.path.join(repo_root, "offline", "runners", "run_dev_regression.sh")
     reg_txt = open(reg_sh, encoding="utf-8").read()
     assert '"DEV CI Regression FAILED"' in reg_txt
     fail_lines = [ln for ln in reg_txt.splitlines() if '"DEV CI Regression FAILED"' in ln]
-    assert len(fail_lines) == 1 and '"$(ntfy_server_topic)"' in fail_lines[0]
+    assert len(fail_lines) == 1 and '"$(ntfy_error_topic)"' in fail_lines[0]
     assert subprocess.run(["bash", "-n", reg_sh], capture_output=True, text=True, check=False).returncode == 0
 
     # 3. kraken_xstock_watch secondary supervisor role is retired; IPO autostart notifies with email=False
