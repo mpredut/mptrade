@@ -94,8 +94,8 @@ def test_long_horizon_configurable_months_zigzag_live_recalc_and_chart_zoom() ->
     assert recalc["low_52w"] == 55000.0
     assert recalc["pos_52w_pct"] == 0.0
     assert recalc["ytd_pct"] < ev_18m["ytd_pct"]
-    recalc_ext = recalculate_long_horizon_with_live_price(ev_18m, 60800.0, live_low=59500.0, live_high=135000.0)
-    assert recalc_ext["low_52w"] == 59500.0 and recalc_ext["low_horizon"] == 59500.0
+    recalc_ext = recalculate_long_horizon_with_live_price(ev_18m, 60800.0, live_low=58000.0, live_high=135000.0)
+    assert recalc_ext["low_52w"] == 58000.0 and recalc_ext["low_horizon"] == 58000.0
     assert recalc_ext["high_52w"] == 135000.0 and recalc_ext["high_horizon"] == 135000.0
     assert 0.0 < recalc_ext["pos_52w_pct"] < 10.0
 

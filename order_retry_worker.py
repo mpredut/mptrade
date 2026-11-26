@@ -492,9 +492,9 @@ def _process_retry_claim(mkt, r, symbol, provider_name, now, stats):
             mkt, symbol, client_order_id, provider_name=provider_name
         )
         if reconciliation_state == _RECONCILE_FOUND:
-            stats["succeeded"] += 1
-            stats["reconciled"] += 1
-            _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name)
+            if _complete_reconciled_order(mkt, r, existing_order, now, provider_name=provider_name):
+                stats["succeeded"] += 1
+                stats["reconciled"] += 1
             return
         if reconciliation_state == _RECONCILE_NOT_FOUND:
             absence_reliable, not_found_reason = _is_not_found_absence_reliable(mkt, r, symbol, provider_name, now)

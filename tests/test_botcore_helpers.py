@@ -1406,4 +1406,19 @@ def test_profit_diff_pct_sell_denominator_matches_pnl_and_guard_probe():
     assert len(g_prof_flags) == 1
     assert "margin=-33.06%" in g_prof_flags[0]["reason"]
 
+    # Sub-1e-4 G_PROF reference prices render as plain decimals without scientific notation
+    micro_probe = probe_deterministic_guards(
+        "PEPEUSDC",
+        "SELL",
+        0.000048,
+        venue="binance",
+        margins={"default": 1.15, "binance": 1.15, "default_sell_reference": "average"},
+        opposite_fill_px=0.00005,
+        allow_disk_cache=False,
+    )
+    micro_g_prof = [f for f in micro_probe["flags"] if f.get("guard") == "G_PROF"]
+    assert len(micro_g_prof) == 1
+    assert "ref=0.00005)" in micro_g_prof[0]["reason"]
+    assert "e-05" not in micro_g_prof[0]["reason"].lower()
+
 

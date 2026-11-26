@@ -371,13 +371,20 @@ def evaluate_symbol_long_horizon(
 def recalculate_long_horizon_with_live_price(
     item: Mapping[str, Any],
     live_price: Optional[float],
+    *,
+    live_low: Optional[float] = None,
+    live_high: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Recalculate long-horizon percentages and range positions against live spot price without disk I/O."""
+    """Recalculate long-horizon percentages and range positions against live spot and intraday extremes without disk I/O."""
     out = dict(item)
     px = safe_pos_float(live_price, default=None)
     if px is None:
         return out
     out["live_price"] = round(px, 6)
+    lo_f = safe_pos_float(live_low, default=None)
+    hi_f = safe_pos_float(live_high, default=None)
+    lo_bound = min(px, lo_f) if lo_f is not None else px
+    hi_bound = max(px, hi_f) if hi_f is not None else px
     if (ytd_r := safe_pos_float(item.get("ytd_ref"), default=None)) is not None:
         out["ytd_pct"] = _pct_chg(px, ytd_r)
     if (r30 := safe_pos_float(item.get("ref_30d"), default=None)) is not None:
@@ -391,8 +398,8 @@ def recalculate_long_horizon_with_live_price(
     if (l52 := safe_pos_float(item.get("low_52w"), default=None)) is not None and (
         h52 := safe_pos_float(item.get("high_52w"), default=None)
     ) is not None:
-        eff_l52 = min(l52, px)
-        eff_h52 = max(h52, px)
+        eff_l52 = min(l52, lo_bound)
+        eff_h52 = max(h52, hi_bound)
         out["low_52w"] = round(eff_l52, 6)
         out["high_52w"] = round(eff_h52, 6)
         out["pos_52w_pct"] = _range_pos(px, eff_l52, eff_h52)
@@ -400,8 +407,8 @@ def recalculate_long_horizon_with_live_price(
     if (lhor := safe_pos_float(item.get("low_horizon"), default=None)) is not None and (
         hhor := safe_pos_float(item.get("high_horizon"), default=None)
     ) is not None:
-        eff_lh = min(lhor, px)
-        eff_hh = max(hhor, px)
+        eff_lh = min(lhor, lo_bound)
+        eff_hh = max(hhor, hi_bound)
         out["low_horizon"] = round(eff_lh, 6)
         out["high_horizon"] = round(eff_hh, 6)
         out["pos_horizon_pct"] = _range_pos(px, eff_lh, eff_hh)
@@ -453,15 +460,28 @@ def format_long_horizon_section_lines(
             if pt_map and not (sym_s in pt_map or canonical_base_asset(sym_s) == "BTC" or is_tok):
                 continue
         live_px = None
-        if isinstance(pt_map.get(sym_s), Mapping):
-            live_px = safe_pos_float(pt_map[sym_s].get("price"), default=None)
+        live_lo = None
+        live_hi = None
+        pt_entry = pt_map.get(sym_s)
+        if isinstance(pt_entry, Mapping):
+            live_px = safe_pos_float(pt_entry.get("price"), default=None)
+            lo_cands = [
+                v for k in ("low_15m", "low_24h", "low_7d")
+                if (v := safe_pos_float(pt_entry.get(k), default=None)) is not None
+            ]
+            hi_cands = [
+                v for k in ("high_15m", "high_24h", "high_7d")
+                if (v := safe_pos_float(pt_entry.get(k), default=None)) is not None
+            ]
+            live_lo = min(lo_cands) if lo_cands else None
+            live_hi = max(hi_cands) if hi_cands else None
         if live_px is None and ex_map:
             live_px = safe_pos_float(ex_map.get(sym_s), default=None) or safe_pos_float(
                 ex_map.get(sym_s.upper()), default=None
             )
             if live_px is None and not is_eq and not is_tok:
                 live_px = safe_pos_float(ex_map.get(canonical_base_asset(sym_s)), default=None)
-        rec = recalculate_long_horizon_with_live_price(item, live_px)
+        rec = recalculate_long_horizon_with_live_price(item, live_px, live_low=live_lo, live_high=live_hi)
         selected.append((sym_s, rec))
 
     if not selected:

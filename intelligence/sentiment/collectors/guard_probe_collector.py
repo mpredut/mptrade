@@ -194,11 +194,16 @@ def probe_deterministic_guards(
         prof_pct = safe_pos_float(m.get(ven_s), default=None) or safe_pos_float(m.get("default"), default=1.15) or 1.15
         diff_pct = profit_diff_pct(side_u, px_f, ref_px)
         if diff_pct < prof_pct:
+            ref_lbl = (
+                f"{ref_px:.8f}".rstrip("0").rstrip(".")
+                if (0.0 < abs(ref_px) < 1e-4 or abs(ref_px) >= 1e6)
+                else f"{ref_px:g}"
+            )
             flags.append({
                 "guard": "G_PROF",
                 "action": "VETO",
                 "scale": 0.0,
-                "reason": f"margin={fmt_signed(diff_pct)}%<{prof_pct:.2f}%(ref={ref_px:g})",
+                "reason": f"margin={fmt_signed(diff_pct)}%<{prof_pct:.2f}%(ref={ref_lbl})",
             })
             min_scale = 0.0
 
