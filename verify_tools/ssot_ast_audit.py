@@ -64,6 +64,7 @@ _FORBIDDEN_MANUAL_CONCAT_SUFFIXES = frozenset({
 })
 _CACHE_FILE_PREFIXES = (
     "cache_ohlc_24h_",
+    "cache_ohlc_bars_",
     "cache_24_price_",
     "cache_365_price_",
     "cache_sparse_price_",

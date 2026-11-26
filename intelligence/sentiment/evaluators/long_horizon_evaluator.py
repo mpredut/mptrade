@@ -256,8 +256,9 @@ def evaluate_symbol_long_horizon(
     now_ts: Optional[float] = None,
     live_price: Optional[float] = None,
     source: str = "",
+    include_bars: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """Compute multi-month/annual structural anchors, ZigZag swings, and compact zoom bars for one symbol."""
+    """Compute multi-month/annual structural anchors, ZigZag swings, and optional embedded zoom bars for one symbol."""
     all_bars = _normalize_daily_bars(daily_bars)
     if len(all_bars) < 2:
         return None
@@ -304,13 +305,7 @@ def evaluate_symbol_long_horizon(
     span_days = max(1, round((all_bars[-1][0] - window_bars[0][0]) / _MS_PER_DAY))
 
     swings = compute_zigzag_swings(window_bars, threshold_pct=15.0 if eff_months >= 12 else 10.0, max_pivots=8)
-    weekly_bars = aggregate_weekly_bars(window_bars)
-    recent_daily = [
-        [round(b[0], 0), round(b[1], 6), round(b[2], 6), round(b[3], 6), round(b[4], 6), round(b[5], 2)]
-        for b in window_bars[-90:]
-    ]
-
-    return {
+    result: Dict[str, Any] = {
         "symbol": str(symbol).strip(),
         "source": str(source or ""),
         "months": eff_months,
@@ -343,9 +338,14 @@ def evaluate_symbol_long_horizon(
         "ma200": ma200,
         "vs_ma200_pct": _pct_chg(cur_px, ma200),
         "swings": swings,
-        "weekly_bars": weekly_bars,
-        "recent_daily_bars": recent_daily,
     }
+    if include_bars:
+        result["weekly_bars"] = aggregate_weekly_bars(window_bars)
+        result["recent_daily_bars"] = [
+            [round(b[0], 0), round(b[1], 6), round(b[2], 6), round(b[3], 6), round(b[4], 6), round(b[5], 2)]
+            for b in window_bars[-90:]
+        ]
+    return result
 
 
 def recalculate_long_horizon_with_live_price(
@@ -591,6 +591,7 @@ def _parse_ym_bound_ms(raw: Optional[str], *, is_end: bool = False) -> Optional[
 def render_ascii_chart_view(
     item: Mapping[str, Any],
     *,
+    daily_bars: Optional[Sequence[Sequence[Any]]] = None,
     start_ym: Optional[str] = None,
     end_ym: Optional[str] = None,
     months: Optional[int] = None,
@@ -600,15 +601,19 @@ def render_ascii_chart_view(
 ) -> str:
     """Render an exact ASCII price chart and OHLC summary for any chosen slice within the stored long-horizon bars."""
     tf = str(timeframe or "1w").strip().lower()
-    raw_bars = item.get("recent_daily_bars") if tf == "1d" else item.get("weekly_bars")
-    if not isinstance(raw_bars, list) or not raw_bars:
-        raw_bars = item.get("weekly_bars") or item.get("recent_daily_bars") or []
-    bars = _normalize_daily_bars(raw_bars) if tf == "1d" else [
-        [safe_pos_float(b[0], 0.0) or 0.0, safe_pos_float(b[1], 0.0) or 0.0, safe_pos_float(b[2], 0.0) or 0.0,
-         safe_pos_float(b[3], 0.0) or 0.0, safe_pos_float(b[4], 0.0) or 0.0, safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0]
-        for b in raw_bars
-        if isinstance(b, (list, tuple)) and len(b) >= 5
-    ]
+    if daily_bars:
+        norm_daily = _normalize_daily_bars(daily_bars)
+        bars = norm_daily if tf == "1d" else aggregate_weekly_bars(norm_daily)
+    else:
+        raw_bars = item.get("recent_daily_bars") if tf == "1d" else item.get("weekly_bars")
+        if not isinstance(raw_bars, list) or not raw_bars:
+            raw_bars = item.get("weekly_bars") or item.get("recent_daily_bars") or []
+        bars = _normalize_daily_bars(raw_bars) if tf == "1d" else [
+            [safe_pos_float(b[0], 0.0) or 0.0, safe_pos_float(b[1], 0.0) or 0.0, safe_pos_float(b[2], 0.0) or 0.0,
+             safe_pos_float(b[3], 0.0) or 0.0, safe_pos_float(b[4], 0.0) or 0.0, safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0]
+            for b in raw_bars
+            if isinstance(b, (list, tuple)) and len(b) >= 5
+        ]
     if not bars:
         return f"No long-horizon bars available for {item.get('symbol', '?')}."
 

@@ -2414,6 +2414,8 @@ def test_ssot_p3_durability_tier_cachedb_root_generation_tx_ws_watchdog_and_ast1
     assert cachepaths.is_financial_critical_path("rtrade_pairs_state.json") is True
     assert cachepaths.resolve_durability_policy("cache_sparse_price_BTCUSDC.jsonl").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
     assert cachepaths.resolve_durability_policy("cache_365_price_BTCUSDC.jsonl").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
+    assert cachepaths.resolve_durability_policy("cache_ohlc_bars_1d_BTCUSDC.json").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
+    assert cachepaths.resolve_durability_policy("cache_ohlc_bars_4h_SPCXxUSD.json").tier is cachepaths.DurabilityTier.ARCHIVE_DURABLE
     assert cachepaths.resolve_durability_policy("cacheManager.heartbeat").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
     assert cachepaths.resolve_durability_policy("orderbook_depth_BTCUSDC.json").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY
     assert cachepaths.resolve_durability_policy("priceanalysis.json").tier is cachepaths.DurabilityTier.EPHEMERAL_TELEMETRY

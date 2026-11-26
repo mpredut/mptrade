@@ -92,6 +92,8 @@ CACHE_365_PRICE_PREFIX = "cache_365_price_"
 CACHE_365_PRICE_EXT = ".jsonl"
 CACHE_OHLC_24H_PREFIX = "cache_ohlc_24h_"
 CACHE_OHLC_24H_EXT = ".json"
+CACHE_OHLC_BARS_PREFIX = "cache_ohlc_bars_"
+CACHE_OHLC_BARS_EXT = ".json"
 CYCLE_STATE_PREFIX = ".state_"
 CYCLE_STATE_EXT = ".json"
 
@@ -180,6 +182,18 @@ def cache_365_price_filename(symbol: object, *, ext: str = CACHE_365_PRICE_EXT, 
 def cache_ohlc_24h_filename(symbol: object, *, preserve_case: bool = False) -> str:
     """Return canonical on-disk filename for a 24h 5m OHLCV series (`cache_ohlc_24h_<SYM>.json`)."""
     return f"{CACHE_OHLC_24H_PREFIX}{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_OHLC_24H_EXT}"
+
+
+def cache_ohlc_bars_filename(
+    symbol: object,
+    timeframe: str = "1d",
+    *,
+    preserve_case: bool = False,
+) -> str:
+    """Return canonical on-disk filename for a persistent OHLCV bar archive (`cache_ohlc_bars_<TF>_<SYM>.json`)."""
+    tf_raw = clean_scalar_str(timeframe) or "1d"
+    tf_norm = tf_raw if tf_raw == "1M" else tf_raw.lower()
+    return f"{CACHE_OHLC_BARS_PREFIX}{tf_norm}_{_clean_cache_symbol(symbol, preserve_case=preserve_case)}{CACHE_OHLC_BARS_EXT}"
 
 
 def price_cache_filename_variants(symbol: object, builder_fn, *extra_symbols: object) -> tuple[str, ...]:
@@ -441,6 +455,7 @@ DURABILITY_POLICY_EPHEMERAL_TELEMETRY = DurabilityPolicy(
 _ARCHIVE_DURABLE_PREFIXES: tuple[str, ...] = (
     CACHE_SPARSE_PRICE_PREFIX,
     CACHE_365_PRICE_PREFIX,
+    CACHE_OHLC_BARS_PREFIX,
     "cache_price_sparse_",
     "cache_price_",
     "cache_365price_",

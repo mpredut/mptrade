@@ -8,7 +8,14 @@ from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 from botcore import topic_spec
-from cachepaths import CACHE_LONG_HORIZON_FILENAME, OPERATOR_REGIME_NOTE_FILENAME, resolve_cachedb_filepath
+from cachepaths import (
+    CACHE_LONG_HORIZON_FILENAME,
+    OPERATOR_REGIME_NOTE_FILENAME,
+    DurabilityTier,
+    cache_ohlc_bars_filename,
+    resolve_cachedb_filepath,
+    resolve_durability_policy,
+)
 from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
 from intelligence.sentiment.collectors.long_horizon_collector import (
     collect_long_horizon_snapshot,
@@ -26,7 +33,13 @@ from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_pr
 from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
 from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
 from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
-from intelligence.sentiment.evaluators.prompt_invariants_evaluator import audit_rendered_prompt_text
+from verify_tools.audit_prompt_invariants import audit_rendered_prompt_text
+from providers.ohlc_bar_archive import (
+    load_ohlc_archive_bars,
+    load_ohlc_bar_archive,
+    plan_incremental_bar_fetch,
+    upsert_ohlc_bar_archive,
+)
 from verify_tools.chart_view import main as chart_view_main
 
 
@@ -277,11 +290,21 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     assert "Operator_Note" not in warm_after
     assert audit_rendered_prompt_text(warm_after) == []
 
-    # Verify CLI chart_view works end-to-end on persisted snapshot
+    # Verify CLI chart_view works end-to-end on persisted snapshot and full multi-year 1d archive
+    assert "weekly_bars" not in snap_lh["items"]["BTCUSDC"]
+    assert "recent_daily_bars" not in snap_lh["items"]["BTCUSDC"]
+    assert snap_lh["items"]["BTCUSDC"]["bar_archive"] == cache_ohlc_bars_filename("BTCUSDC", "1d")
+
     rc = chart_view_main(["BTCUSDC", "--months", "12", "--cache-dir", cache_dir])
     assert rc == 0
     captured = capsys.readouterr().out
     assert "=== BTCUSDC (1w," in captured
+
+    # Full multi-year daily zoom (--tf 1d) reads directly from cache_ohlc_bars_1d_BTCUSDC.json (>90d ago!)
+    rc_1d = chart_view_main(["BTCUSDC", "--tf", "1d", "--from", "2025-07", "--to", "2025-09", "--cache-dir", cache_dir])
+    assert rc_1d == 0
+    cap_1d = capsys.readouterr().out
+    assert "=== BTCUSDC (1d, 2025-07-01 .. 2025-09-30" in cap_1d
 
 
 def test_cycle2_unactionable_wall_trapped_suppression_equities_live_lh_and_cycle_anchors_g1() -> None:
@@ -518,3 +541,208 @@ def test_cycle2_unactionable_wall_trapped_suppression_equities_live_lh_and_cycle
     )
     eq_warm_new = build_supervisor_prompt(eq_sensors_t3, LogEventSummary(0, 0, 0), spec=topic_spec("auto_sharetrade_executor"), compact_rules=True, delta_plan=eq_p3)
     assert "Trading212 Active Cycle Cost & Drawdown Anchors [NEW]:" in eq_warm_new
+
+
+def test_persistent_ohlc_bar_archive_incremental_refresh_extend_kraken_and_multi_tf(tmp_path: Path) -> None:
+    """Verify durable OHLCV archive never re-fetches persisted history, extends on larger horizon,
+    accumulates Kraken past 720d, resists offline fallback downgrade, and is multi-timeframe ready."""
+    from urllib.parse import parse_qs, urlparse
+
+    cache_dir = str(tmp_path / "cachedb")
+    os.makedirs(os.path.join(cache_dir, "prices"), exist_ok=True)
+    os.makedirs(os.path.join(cache_dir, "macro"), exist_ok=True)
+
+    # 1. SSOT path naming & ARCHIVE_DURABLE policy (incl. mixed-case xStock & sub-daily Option 3 prep)
+    assert cache_ohlc_bars_filename("BTCUSDC", "1d") == "cache_ohlc_bars_1d_BTCUSDC.json"
+    assert cache_ohlc_bars_filename("SPCXxUSD", "1d") == "cache_ohlc_bars_1d_SPCXxUSD.json"
+    assert cache_ohlc_bars_filename("BTCUSDC", "4h") == "cache_ohlc_bars_4h_BTCUSDC.json"
+    assert resolve_durability_policy(cache_ohlc_bars_filename("BTCUSDC", "1d")).tier is DurabilityTier.ARCHIVE_DURABLE
+
+    # 2. Full initial backfill for 18m (Binance BTCUSDC + Yahoo NVDA_US_EQ), then incremental 6h refresh
+    t0 = datetime(2026, 11, 20, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+    start_3y = datetime(2023, 5, 1, tzinfo=timezone.utc)
+    n_seed_days = (datetime(2026, 11, 20, tzinfo=timezone.utc) - start_3y).days + 1
+    all_bn_rows = [
+        [
+            int((start_3y + timedelta(days=i)).timestamp() * 1000.0),
+            f"{50000.0 + i * 20.0:.2f}",
+            f"{50500.0 + i * 20.0:.2f}",
+            f"{49500.0 + i * 20.0:.2f}",
+            f"{50200.0 + i * 20.0:.2f}",
+            "1200.0",
+        ]
+        for i in range(n_seed_days)
+    ]
+    bn_calls: List[Dict[str, int]] = []
+    yahoo_ranges: List[str] = []
+
+    def _fake_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = timeout
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        if "binance.com" in url:
+            lim = int(qs["limit"][0])
+            end_ms = int(qs["endTime"][0])
+            bn_calls.append({"limit": lim, "endTime": end_ms})
+            eligible = [r for r in all_bn_rows if r[0] <= end_ms]
+            return eligible[-lim:]
+        if "finance.yahoo.com" in url:
+            rng = qs["range"][0]
+            yahoo_ranges.append(rng)
+            n_bars = 22 if rng == "1mo" else 600
+            base_dt = datetime(2026, 11, 20, tzinfo=timezone.utc) - timedelta(days=n_bars)
+            ts_list = [int((base_dt + timedelta(days=i)).timestamp()) for i in range(n_bars)]
+            closes = [120.0 + i * 0.1 for i in range(n_bars)]
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"symbol": "NVDA"},
+                        "timestamp": ts_list,
+                        "indicators": {"quote": [{"open": closes, "high": closes, "low": closes, "close": closes, "volume": [1000.0] * n_bars}]},
+                    }]
+                }
+            }
+        return {}
+
+    snap1 = collect_long_horizon_snapshot(
+        cache_dir,
+        months=18,
+        symbols=["BTCUSDC", "NVDA_US_EQ"],
+        now_ts=t0,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert snap1 is not None
+    assert len(bn_calls) == 1 and bn_calls[0]["limit"] >= 700
+    assert yahoo_ranges == ["5y"]
+    arch_btc_1 = load_ohlc_bar_archive(cache_dir, "BTCUSDC", "1d")
+    assert arch_btc_1 is not None and arch_btc_1["bar_count"] >= 700
+
+    # Second run 1 day later -> strictly incremental tail fetch (no full re-fetch, no volume double-counting!)
+    bn_calls.clear()
+    yahoo_ranges.clear()
+    t1 = t0 + 86400.0
+    extra_day_dt = start_3y + timedelta(days=len(all_bn_rows))
+    all_bn_rows.append([int(extra_day_dt.timestamp() * 1000.0), "76500.0", "77000.0", "76000.0", "76800.0", "1500.0"])
+    snap2 = collect_long_horizon_snapshot(
+        cache_dir,
+        months=18,
+        symbols=["BTCUSDC", "NVDA_US_EQ"],
+        now_ts=t1,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert snap2 is not None
+    assert len(bn_calls) == 1 and bn_calls[0]["limit"] <= 12
+    assert yahoo_ranges == ["1mo"]
+    arch_btc_2 = load_ohlc_bar_archive(cache_dir, "BTCUSDC", "1d")
+    assert arch_btc_2 is not None and arch_btc_2["bar_count"] == arch_btc_1["bar_count"] + 1
+    # Overlapping day volume was replaced, NOT summed (1200.0, not 2400.0)
+    assert arch_btc_2["bars"][-2][5] == 1200.0
+    assert arch_btc_2["bars"][-1][5] == 1500.0
+
+    # 3. Expanding horizon (18m -> 36m) fetches ONLY older prefix + tiny tail, never re-fetches persisted middle
+    bn_calls.clear()
+    snap3 = collect_long_horizon_snapshot(
+        cache_dir,
+        months=36,
+        symbols=["BTCUSDC"],
+        now_ts=t1,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert snap3 is not None and snap3["months"] == 36
+    assert len(bn_calls) == 2
+    assert bn_calls[0]["endTime"] < arch_btc_2["first_ts_ms"]
+    assert bn_calls[1]["limit"] <= 12
+    arch_btc_3 = load_ohlc_bar_archive(cache_dir, "BTCUSDC", "1d")
+    assert arch_btc_3 is not None and arch_btc_3["bar_count"] == len(all_bn_rows)
+
+    # Next 36m run returns immediately to tiny incremental fetch
+    bn_calls.clear()
+    collect_long_horizon_snapshot(
+        cache_dir,
+        months=36,
+        symbols=["BTCUSDC"],
+        now_ts=t1 + 6 * 3600.0,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert len(bn_calls) == 1 and bn_calls[0]["limit"] <= 12
+
+    # 4. Short-history asset & Kraken >720d persistence + offline fallback protection
+    kraken_start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    kraken_seed = _make_daily_bars(kraken_start, [20.0 + i * 0.05 for i in range(720)])
+    t_k = (kraken_start + timedelta(days=750)).timestamp()
+    upsert_ohlc_bar_archive(
+        cache_dir,
+        "TAOUSD",
+        kraken_seed,
+        timeframe="1d",
+        source="kraken:TAOUSD",
+        requested_from_ms=int((kraken_start - timedelta(days=365)).timestamp() * 1000),
+        now_ts=t_k,
+    )
+    # Subsequent incremental fetch adds newer days without losing older bars -> >720 days preserved
+    newer_kraken = _make_daily_bars(kraken_start + timedelta(days=718), [60.0 + i for i in range(32)])
+    merged_k = upsert_ohlc_bar_archive(
+        cache_dir,
+        "TAOUSD",
+        newer_kraken,
+        timeframe="1d",
+        source="kraken:TAOUSD",
+        requested_from_ms=int((kraken_start - timedelta(days=365)).timestamp() * 1000),
+        now_ts=t_k,
+    )
+    assert merged_k is not None and merged_k["bar_count"] == 750
+    plan_k = plan_incremental_bar_fetch(
+        merged_k,
+        needed_start_ms=int((kraken_start - timedelta(days=300)).timestamp() * 1000),
+        now_ms=int((t_k + 86400.0) * 1000),
+        timeframe="1d",
+    )
+    assert plan_k.mode == "incremental"
+
+    # Offline local_sparse fallback NEVER overwrites authoritative exchange OHLCV bars
+    sparse_override = [[merged_k["bars"][-1][0], 1.0]]
+    after_fb = upsert_ohlc_bar_archive(
+        cache_dir,
+        "TAOUSD",
+        sparse_override,
+        timeframe="1d",
+        source="local_sparse",
+        incoming_is_fallback=True,
+        now_ts=t_k,
+    )
+    assert after_fb is not None
+    assert after_fb["source"] == "kraken:TAOUSD"
+    assert after_fb["bars"][-1][4] == merged_k["bars"][-1][4]
+
+    # 5. Option 3 multi-timeframe readiness: 4h archive coexists independently from 1d archive
+    t_4h_base = int(datetime(2026, 11, 20, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    bars_4h = [[t_4h_base + i * 4 * 3600 * 1000, 60000.0, 60500.0, 59800.0, 60200.0 + i * 10, 250.0] for i in range(12)]
+    doc_4h = upsert_ohlc_bar_archive(
+        cache_dir,
+        "BTCUSDC",
+        bars_4h,
+        timeframe="4h",
+        source="binance:BTCUSDC",
+        requested_from_ms=t_4h_base,
+        now_ts=t_4h_base / 1000.0 + 48 * 3600,
+    )
+    assert doc_4h is not None and doc_4h["timeframe"] == "4h" and doc_4h["interval_min"] == 240
+    assert len(load_ohlc_archive_bars(cache_dir, "BTCUSDC", "4h")) == 12
+    assert len(load_ohlc_archive_bars(cache_dir, "BTCUSDC", "1d")) == len(all_bn_rows)
+    plan_4h = plan_incremental_bar_fetch(
+        doc_4h,
+        needed_start_ms=t_4h_base,
+        now_ms=t_4h_base + 52 * 3600 * 1000,
+        timeframe="4h",
+        overlap_bars=3,
+    )
+    assert plan_4h.mode == "incremental"
+    assert plan_4h.interval_min == 240

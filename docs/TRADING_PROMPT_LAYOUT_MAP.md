@@ -72,7 +72,8 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |  - US Spot Crypto ETF Net Flows (daily + 5d + streak)                          [G2]  |
 |  - Multi-Month & Annual Structure (configurable AI_LONG_HORIZON_MONTHS=36):    [G2]  |
 |    | Symbol | YTD | 30d | 90d | 52w Range | 3y Range | vs MA50 | vs MA200 | Swings | |
-|    (live-recalculated from spot; on-demand zoom via verify_tools/chart_view.py)      |
+|    (backed by durable incremental cachedb/prices/cache_ohlc_bars_1d_<SYM>.json;      |
+|     live-recalculated from spot; 1w/1d zoom via verify_tools/chart_view.py)          |
 |  - Live Breaking News Feed (new headlines only on WARM turns)                  [G3]  |
 +======================================================================================+
 | ### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW):                          [G0]  |
