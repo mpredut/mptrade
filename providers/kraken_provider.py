@@ -799,9 +799,15 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
                                     f"[Kraken][LIVE] auto-converting {shortfall:.2f} {label} -> USD via {conv_pair} book "
                                     f"(ZUSD={zusd_f:.2f}, required~={req_usd:.2f}) for BUY {symbol}"
                                 )
-                                cli.add_order(conv_pair, "sell", shortfall, None, ordertype="market", validate=False)
-                                zusd_f += shortfall
-                                remaining = req_usd - zusd_f
+                                try:
+                                    cli.add_order(conv_pair, "sell", shortfall, None, ordertype="market", validate=False)
+                                    zusd_f += shortfall
+                                    remaining = req_usd - zusd_f
+                                except Exception as bucket_exc:  # noqa: BLE001
+                                    print(
+                                        f"[Kraken] {label}->USD funding conversion ({conv_pair}) before {symbol} BUY failed: {bucket_exc}"
+                                    )
+                                    continue
             except Exception as e:  # noqa: BLE001
                 print(f"[Kraken] stablecoin->USD funding conversion before {symbol} BUY failed: {e}")
         cli = self._client()

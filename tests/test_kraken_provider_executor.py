@@ -1605,3 +1605,39 @@ def test_kraken_private_nonce_cross_process_lock_and_monotonic_sequence(tmp_path
     assert len(set(seen_nonces)) == 4
     assert lock_path.exists()
 
+
+
+def test_kraken_multi_stablecoin_funding_continues_to_next_bucket_on_bucket_error(monkeypatch):
+    """If an earlier stablecoin bucket conversion fails, _execute_kraken_live_order continues to the next liquid bucket."""
+    calls: list[tuple[str, str, float]] = []
+
+    class _FakeKrakenClient:
+        def balance(self, **_kw):
+            return {"ZUSD": "10.0", "USDC": "100.0", "USDG": "100.0"}
+
+        def open_orders(self, **_kw):
+            return {}
+
+        def add_order(self, pair, side, qty, price=None, **kwargs):
+            calls.append((pair, side, float(qty)))
+            if pair == "USDCUSD":
+                raise RuntimeError("EOrder:Insufficient funds")
+            return {"txid": [f"TX-{pair}"]}
+
+    kp = KrakenProvider(client=_FakeKrakenClient())
+    monkeypatch.setattr(kp, "require_account_cache_fresh_for_submit", lambda *_a, **_kw: None)
+    monkeypatch.setattr(kp, "get_current_price", lambda _s: 50.0)
+
+    res = kp._execute_kraken_live_order(
+        "HYPEUSD",
+        "BUY",
+        "buy",
+        1.0,
+        50.0,
+        50.0,
+        ordertype="limit",
+        cl_ord_id=None,
+        post_only=True,
+    )
+    assert res == {"txid": ["TX-HYPEUSD"]}
+    assert [c[0] for c in calls] == ["USDCUSD", "USDGUSD", "HYPEUSD"]

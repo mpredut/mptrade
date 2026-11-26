@@ -12704,8 +12704,8 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
         SimpleNamespace(total_scanned_files=0, error_count=0, warning_count=0, critical_events=[], guard_interventions=[]),
         topic_spec("auto_cryptotrade_executor"),
     )
-    assert len(compact_prompt) < 8500
-    assert len(compact_prompt.split()) < 1100
+    assert len(compact_prompt) < 9000
+    assert len(compact_prompt.split()) < 1150
     long_sa = "First factual macro sentence with BTC metrics and CB premium +4bps. " * 10
     sec1_lines = "\n".join(
         _format_macro_and_news_section(

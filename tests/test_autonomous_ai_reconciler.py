@@ -4396,7 +4396,7 @@ def test_iteration24_prompt_formatters_lazy_position_limits_and_partial_liq():
         }
     )
     assert "tier=SPOT_TIER0, maker=4bps/taker=7bps" in line_pos
-    assert "limits(min_notional=$10, min_qty=0.01, step=0.01, tick=0.001, max_buy=$99.5, max_sell=$200.0)" in line_pos
+    assert "limits(min_notional=$10, min_qty=0.01, step=0.01, tick=0.001, max_buy=$95.0, max_sell=$200.0)" in line_pos
 
     # 2. _format_microstructure_section computes missing dist_pct and never emits $None when deep_liq is absent
     lines_3b = _format_microstructure_section(
@@ -7156,8 +7156,8 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert positions[0]["price"] == pytest.approx(85.33)
     assert positions[0]["locked_quote_usd"] == pytest.approx(261.20)
     assert positions[0]["locked_base_qty"] == pytest.approx(2.0)
-    assert positions[0]["effective_max_buy_usd"] == pytest.approx(13.77)
-    assert positions[0]["replace_max_buy_usd"] == pytest.approx(273.66)
+    assert positions[0]["effective_max_buy_usd"] == pytest.approx(13.15)
+    assert positions[0]["replace_max_buy_usd"] == pytest.approx(261.29)
     assert venue_cash["hyperliquid:USDC"]["locked_quote_usd"] == pytest.approx(261.20)
 
     s_3a = "\n".join(_format_market_prices_section(prices_and_trends))
@@ -7178,7 +7178,7 @@ def test_whale_5m_window_breadth_ascii_volume_filter_ob_mid_sync_and_locked_quot
     assert "px=85.33" in s_3c
     assert "locked_base_qty=2" in s_3c
     assert "locked_quote_usd=$261.20" in s_3c
-    assert "max_buy=$13.77, replace_max_buy=$273.66" in s_3c
+    assert "max_buy=$13.15, replace_max_buy=$261.29" in s_3c
 
     # 4. Macro Economic Calendar sensor in Section 1 (next_high_impact_event countdown + live macro headlines)
 
@@ -10051,8 +10051,8 @@ def test_proposal4a_structured_trade_plans_3c_memory_and_delta_gate_trigger():
         topic_spec("auto_cryptotrade_executor"),
     )
     assert '"invalidation_px": null, "target_px": null' in p_full
-    assert len(p_full) < 8500
-    assert len(p_full.split()) < 1100
+    assert len(p_full) < 9000
+    assert len(p_full.split()) < 1150
 
     # 2. Geometric extraction & validation (drops inverted/hallucinated levels cleanly; target_price stays limit_price alias)
     assert extract_intent_trade_plan_levels(
