@@ -133,26 +133,43 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 print(f"  [MISSING] {symbol} -> NO PLATFORM SUPPORT!")
 
     def _migrate_legacy_quote_series(self) -> None:
-        """Carry forward legacy quote-suffixed series (e.g. BTCUSDC -> BTC) to base watchlist keys."""
+        """Merge legacy quote-suffixed series (e.g. BTCUSDC -> BTC) into base watchlist keys."""
         if getattr(self, "read_only", False):
             return
+        max_hist = safe_pos_int(
+            getattr(self, "max_history_per_symbol", None),
+            default=MAX_PRICE_HISTORY_PER_SYMBOL,
+        )
         for sym in self.original_symbols:
-            if self.cache.get(sym):
-                continue
             legacy_key = f"{sym}{QUOTE_CURRENCY}"
-            if legacy_key != sym and legacy_key not in self.active_symbols:
-                legacy_rows = self.cache.get(legacy_key)
-                if isinstance(legacy_rows, list) and legacy_rows:
-                    self.cache[sym] = list(legacy_rows)
-                    self.cache.pop(legacy_key, None)
-                    if legacy_key in self.fetchtime_per_symbol:
-                        self.fetchtime_per_symbol.setdefault(
-                            sym, self.fetchtime_per_symbol.pop(legacy_key)
-                        )
-                    if legacy_key in self._rest_sync_cursor_per_symbol:
-                        self._rest_sync_cursor_per_symbol.setdefault(
-                            sym, self._rest_sync_cursor_per_symbol.pop(legacy_key)
-                        )
+            if legacy_key == sym or legacy_key in self.active_symbols:
+                continue
+            legacy_rows = self.cache.get(legacy_key)
+            if not isinstance(legacy_rows, list) or not legacy_rows:
+                continue
+            existing_rows = self.cache.get(sym)
+            combined = list(legacy_rows)
+            if isinstance(existing_rows, list) and existing_rows:
+                combined.extend(existing_rows)
+            by_ts: Dict[float, list] = {}
+            for row in combined:
+                if isinstance(row, (list, tuple)) and len(row) >= 2:
+                    ts_ms = self._entry_timestamp_ms(row)
+                    if ts_ms > 0:
+                        by_ts[ts_ms] = list(row)
+            merged = [by_ts[k] for k in sorted(by_ts.keys())][-max_hist:]
+            if merged:
+                self.cache[sym] = merged
+            self.cache.pop(legacy_key, None)
+            if legacy_key in self.fetchtime_per_symbol:
+                leg_ft = safe_pos_float(self.fetchtime_per_symbol.pop(legacy_key), default=None)
+                cur_ft = safe_pos_float(self.fetchtime_per_symbol.get(sym), default=None)
+                if leg_ft is not None and (cur_ft is None or leg_ft > cur_ft):
+                    self.fetchtime_per_symbol[sym] = leg_ft
+            if legacy_key in self._rest_sync_cursor_per_symbol:
+                self._rest_sync_cursor_per_symbol.setdefault(
+                    sym, self._rest_sync_cursor_per_symbol.pop(legacy_key)
+                )
 
     def _load_symbol_metadata(self):
         data = read_json_dict(

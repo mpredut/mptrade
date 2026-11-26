@@ -936,9 +936,12 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
     cache_file.write_text(
         json.dumps(
             {
-                "items": {"BTCUSDC": [[now_ms - 60000, 60000.0], [now_ms, 60500.0]]},
-                "fetchtime": {"BTCUSDC": now_ms},
-                "symbol_metadata": {"added_time": {}, "active_symbols": ["BTCUSDC"], "preferred_source": {}},
+                "items": {
+                    "BTCUSDC": [[now_ms - 180000, 59500.0], [now_ms - 120000, 60000.0]],
+                    "BTC": [[now_ms - 60000, 60400.0], [now_ms, 60500.0]],
+                },
+                "fetchtime": {"BTCUSDC": now_ms - 120000, "BTC": now_ms},
+                "symbol_metadata": {"added_time": {}, "active_symbols": ["BTC"], "preferred_source": {}},
             }
         ),
         encoding="utf-8",
@@ -954,7 +957,7 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
         read_only=False,
         data_sync_mode="producer",
     )
-    assert "BTC" in mgr.cache and len(mgr.cache["BTC"]) == 2
+    assert "BTC" in mgr.cache and [r[1] for r in mgr.cache["BTC"]] == [59500.0, 60000.0, 60400.0, 60500.0]
     assert "BTCUSDC" not in mgr.cache
 
     hb_dir = tmp_path / "cachedb" / "system" / "heartbeat"
