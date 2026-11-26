@@ -3357,7 +3357,7 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
     btc_inst.cancel_order.assert_called_once_with("rep_ord_2")
     btc_inst.place.assert_called_once()
 
-    # Urgency=HIGH also bypasses hourly micro-replace cap
+    # Urgency=HIGH on BUY no longer bypasses the hourly micro-replace cap (bypass reserved for defensive SELL)
     btc_inst.cancel_order.reset_mock()
     btc_inst.place.reset_mock()
     btc_inst.open_orders.return_value = [
@@ -3379,8 +3379,9 @@ def test_proposal4c_asymmetric_ai_circuit_breaker_and_replace_churn_cap(tmp_path
         max_mode="enforce",
         instruments_map={"BTCUSDC": btc_inst},
     )
-    assert rec_high["status"] == "EXECUTED"
-    btc_inst.place.assert_called_once()
+    assert rec_high["status"] == "REJECTED_AI_CIRCUIT_BREAKER"
+    assert "ai_hourly_replace_churn_cap" in rec_high["circuit_breaker_reason"]
+    btc_inst.place.assert_not_called()
 
 
 def test_ai_ping_pong_guard_and_scorecard_circuit_breaker(tmp_path):

@@ -168,7 +168,7 @@ def evaluate_ai_intent_circuit_breaker(
     Returns ``(allowed, adjusted_usd, reason, metrics)``.
     - Never counts deterministic ``by=BOT`` trades.
     - Protective ``SELL`` exits bypass all 24h ``BUY`` count/notional caps.
-    - ``urgency == "HIGH"``, ``cancel_bot_open_orders``, and explicit ``cancel_order_ids``
+    - ``SELL`` with ``urgency == "HIGH"``, ``cancel_bot_open_orders``, and explicit ``cancel_order_ids``
       bypass the 1h micro-replace churn cap; price moves >= ``replace_min_price_delta_pct``
       also bypass the 1h micro-replace churn cap.
     - Smoothly clamps ``BUY`` notional to remaining 24h budget when headroom >= ``min_notional_usd``.
@@ -264,7 +264,7 @@ def evaluate_ai_intent_circuit_breaker(
     if (
         replace_open
         and cap_hr_replaces > 0
-        and urgency != "HIGH"
+        and not (side == "SELL" and urgency == "HIGH")
         and not cancel_bot_open
         and not target_oids
         and hourly_replaces >= cap_hr_replaces
