@@ -75,6 +75,7 @@ from providers.order_ledger import (
 )
 from providers.order_ohlc_utils import extract_executed_qty, extract_orig_qty
 from state_io import encode_json_payload, generation_file_lock
+from state_stores.order_retry_queue import OrderRetryQueueStore
 
 
 def derive_reconcile_grace_sec(open_sync_interval_sec: float = OPEN_ORDER_SYNC_INTERVAL_SEC) -> float:
@@ -313,9 +314,39 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             == OrderLedgerState.FILLED.value
         )
 
+    _TERMINAL_OUTBOX_LIFECYCLES = frozenset({
+        "succeeded",
+        "abandoned",
+        "canceled",
+        "cancelled",
+        "filled",
+        "expired",
+        "rejected",
+        "terminal",
+        "failed",
+    })
+
     def _load_known_ai_order_ids_lc(self) -> set[str]:
         """Load lowercase venue order IDs and derived 128-bit cloids via ``providers.intent_state`` SSOT."""
         return load_known_ai_order_ids_from_cachedb(self.cachedb_dir)
+
+    def _load_active_outbox_iids_lc(self) -> Optional[set[str]]:
+        """Return lowercase ``outbox-<id>`` / ``intent_id`` tokens active in ``order_retry_queue.jsonl``, or ``None`` if absent."""
+        rows = OrderRetryQueueStore.read_records(self.cachedb_dir)
+        if rows is None:
+            return None
+        out: set[str] = set()
+        for row in rows:
+            lc_state = str(row.get("lifecycle") or row.get("status") or "").strip().lower()
+            if lc_state in self._TERMINAL_OUTBOX_LIFECYCLES:
+                continue
+            if rid := clean_order_id(row.get("id")):
+                rid_lc = rid.lower()
+                out.add(rid_lc)
+                out.add(f"outbox-{rid_lc}")
+            if riid := clean_order_id(row.get("intent_id")):
+                out.add(riid.lower())
+        return out
 
     def reconcile_once(self, *, now_ts: Optional[float] = None) -> dict[str, int]:
         """Execute one locked, network-free reconciliation pass and persist updated state."""
@@ -355,6 +386,11 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                 ev_obj = build_order_event(ev_type, ts=eff_now, src="reconciler", **kw)
                 reconciler_events.append(ev_obj)
                 return apply_order_event(orders, ev_obj, closed_out=newly_closed, recently_closed=recently_closed)
+
+            # Snapshot active retry-outbox tokens before replaying producer events so any order
+            # removed from order_retry_queue.jsonl after submission already has its SUBMITTED event
+            # visible in the journal pass below.
+            active_outbox_iids = self._load_active_outbox_iids_lc()
 
             # 1. Replay producer events via the canonical shared helper (identical to OrderLedgerReader).
             new_events, cursor = self.read_events_after_cursor(cursor)
@@ -604,8 +640,9 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                         close_ev_type, close_reason = OrderEventType.RECONCILED_FAILED.value, "absent_after_verified_grace"
                 elif state == OrderLedgerState.INTENT.value:
                     is_deferred = _parse_bool_flag(rec.get("deferred"), False)
+                    iid_clean = clean_order_id(rec.get("iid"))
                     has_corr_id = bool(
-                        clean_order_id(rec.get("iid"))
+                        iid_clean
                         or clean_order_id(rec.get("cid"))
                         or clean_order_id(rec.get("vid"))
                     )
@@ -619,6 +656,20 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
                                 OrderEventType.RECONCILED_EXPIRED.value,
                                 "anonymous_deferred_intent_stale",
                             )
+                    elif (
+                        active_outbox_iids is not None
+                        and iid_clean
+                        and iid_clean.lower().startswith("outbox-")
+                        and not rec.get("submitted")
+                        and not clean_order_id(rec.get("vid"))
+                        and ref_ts > 0.0
+                        and (eff_now - ref_ts) >= self.reconcile_grace_sec
+                        and iid_clean.lower() not in active_outbox_iids
+                    ):
+                        close_ev_type, close_reason = (
+                            OrderEventType.RECONCILED_EXPIRED.value,
+                            "absent_from_retry_outbox",
+                        )
                     elif ref_ts > 0.0 and (eff_now - ref_ts) >= self.deferred_intent_stale_sec:
                         close_ev_type, close_reason = (
                             OrderEventType.RECONCILED_EXPIRED.value,

@@ -6,7 +6,7 @@ from typing import Any, Optional, Sequence
 
 from botcore import FileLock
 from cachepaths import ORDER_RETRY_QUEUE_FILENAME, resolve_statedb_filepath, state_path
-from state_io import atomic_write_jsonl, read_tail_jsonl_dicts, read_text_lines
+from state_io import atomic_write_jsonl, read_jsonl_dicts, read_tail_jsonl_dicts, read_text_lines
 
 from .base import StateStoreBase
 
@@ -56,6 +56,16 @@ class OrderRetryQueueStore(StateStoreBase):
     def write_records_nolock(cls, queue_path: str, records: Sequence[Any]) -> None:
         """Atomically replace ``queue_path`` with JSONL ``records`` while caller holds lock."""
         atomic_write_jsonl(queue_path, list(records))
+
+    @classmethod
+    def read_records(cls, cachedb_dir: Optional[str]) -> Optional[list[dict[str, Any]]]:
+        """Return all dict records from ``order_retry_queue.jsonl``, or ``None`` when absent on disk."""
+        if not cachedb_dir:
+            return None
+        for cand in cls.candidate_paths(cachedb_dir):
+            if os.path.exists(cand):
+                return list(read_jsonl_dicts(cand))
+        return None
 
     @classmethod
     def read_tail_records(cls, cachedb_dir: Optional[str], *, limit: int = 50) -> list[dict[str, Any]]:

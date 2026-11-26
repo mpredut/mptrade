@@ -1534,3 +1534,85 @@ def test_compound_terminal_non_fill_statuses_and_ai_orphan_iid_adoption(tmp_path
     assert active[0]["iid"] == intent_id
 
 
+def test_superseded_outbox_deferred_intent_expires_once_absent_from_retry_queue(tmp_path):
+    """Deferred outbox-* GUARD_BLOCKED intents stay active while queued, then expire once consolidated/evicted from order_retry_queue.jsonl."""
+    from state_stores.order_retry_queue import OrderRetryQueueStore
+
+    cdb = str(tmp_path / "cachedb")
+    t0 = 1_795_620_000.0
+    q_path = OrderRetryQueueStore.resolve_path(cdb)
+    os.makedirs(os.path.dirname(q_path), exist_ok=True)
+    OrderRetryQueueStore.write_records_nolock(
+        q_path,
+        [
+            {
+                "id": "7032f7b37bd64dfeb7a6271fec455265",
+                "intent_id": "outbox-7032f7b37bd64dfeb7a6271fec455265",
+                "provider_name": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "SELL",
+                "qty": 10.61,
+                "lifecycle": "submit_pending",
+                "last_failure_reason": "intelligence_guard",
+            }
+        ],
+    )
+
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+    reconciler = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=False, reconcile_grace_sec=30.0)
+
+    assert writer.record_event(
+        OrderEventType.GUARD_BLOCKED,
+        venue="hyperliquid",
+        symbol="HYPEUSDC",
+        ts=t0,
+        owner="tradeall",
+        side="SELL",
+        order_type="LIMIT",
+        iid="outbox-7032f7b37bd64dfeb7a6271fec455265",
+        kind="accel_plunge_down",
+        reason="intelligence_guard",
+        qty=10.61,
+        px=57.633,
+        deferred=True,
+        src="instrument_guard",
+    )
+
+    # Still present in order_retry_queue.jsonl past reconcile_grace_sec -> remains active in orders_active.json
+    reconciler.reconcile_once(now_ts=t0 + 120.0)
+    assert any(
+        r.get("iid") == "outbox-7032f7b37bd64dfeb7a6271fec455265"
+        for r in reader.list_active_orders(apply_tail=False)
+    )
+
+    # Consolidated/evicted from order_retry_queue.jsonl without submit -> expires cleanly on next reconcile pass
+    OrderRetryQueueStore.write_records_nolock(
+        q_path,
+        [
+            {
+                "id": "f835d2062cb840c08a1a432a1a302eee",
+                "intent_id": "intent_1795673120_buy_hypeusdc",
+                "provider_name": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "qty": 8.29,
+                "lifecycle": "accepted",
+            }
+        ],
+    )
+    reconciler.reconcile_once(now_ts=t0 + 125.0)
+    assert not any(
+        r.get("iid") == "outbox-7032f7b37bd64dfeb7a6271fec455265"
+        for r in reader.list_active_orders(apply_tail=False)
+    )
+    trace = reader.trace_order("outbox-7032f7b37bd64dfeb7a6271fec455265")
+    assert any(
+        e.get("ev") == OrderEventType.RECONCILED_EXPIRED.value
+        and e.get("reason") == "absent_from_retry_outbox"
+        for e in trace["events"]
+    )
+    assert reader.list_closed_files() == []
+
+
+

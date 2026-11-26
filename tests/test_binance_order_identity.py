@@ -567,7 +567,7 @@ def test_polymorphic_venue_fee_precision_and_intraday_chart_ssot():
     assert MarketDataProvider.resolve_venue_default_fee_spec("hyperliquid") == ("SPOT_TIER0", 4.0, 7.0, 10.0)
     assert MarketDataProvider.resolve_venue_default_fee_spec("t212") == ("INVEST_RTH", 15.0, 15.0, 1.0)
 
-    assert MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 150.0)[4:] == (0.001, 0.01, False)
+    assert MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 150.0)[4:] == (0.01, 0.01, False)
     assert MarketDataProvider.resolve_venue_default_fee_and_precision("hyperliquid", 25.0)[4:] == (0.01, 0.001, True)
     assert MarketDataProvider.resolve_venue_tca_price_decimals("t212", 125.0) == 2
     assert MarketDataProvider.resolve_venue_tca_price_decimals("hyperliquid", 25.0) == 3

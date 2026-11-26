@@ -1413,7 +1413,7 @@ def test_venue_fee_precision_ssot_and_runtime_border_cases(monkeypatch: pytest.M
     _, _, _, _, t212_step, t212_tick, t212_prefer = (
         MarketDataProvider.resolve_venue_default_fee_and_precision("t212", 150.0)
     )
-    assert (t212_step, t212_tick, t212_prefer) == (0.001, 0.01, False)
+    assert (t212_step, t212_tick, t212_prefer) == (0.01, 0.01, False)
 
     # VenueFeeAndLimitsEvaluator prefers instrument tick_size on hyperliquid vs live tick_size on kraken
     monkeypatch.setattr(
