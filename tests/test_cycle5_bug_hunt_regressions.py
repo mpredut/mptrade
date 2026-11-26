@@ -533,3 +533,46 @@ def test_cycle5_llm_order_guard_classifies_kraken_xstocks_as_equities_for_decoup
     assert allowed is True
     assert scale < 1.0
     assert "absorbed" not in reason
+
+
+def test_cycle6_cache24_compact_jsonl_acquires_generation_lock_before_self_lock(tmp_path):
+    from contextlib import contextmanager
+    import cacheprice as cp_mod
+
+    order: list[str] = []
+
+    class _TrackedLock:
+        def __enter__(self):
+            order.append("self.lock")
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    @contextmanager
+    def _tracked_gen_lock():
+        order.append("gen_lock")
+        yield
+
+    mgr = cp_mod.Cache24PriceManager.__new__(cp_mod.Cache24PriceManager)
+    mgr.append_persist = True
+    mgr.filename = str(tmp_path / "cache_24h_price.jsonl")
+    mgr.lock = _TrackedLock()
+    mgr._generation_lock = _tracked_gen_lock
+    mgr._filter_fetchtimes_to_symbols = False
+    mgr.symbols = []
+    mgr.cache = {}
+    mgr.fetchtime = {}
+    mgr._jsonl_needs_compact = False
+    mgr._jsonl_trimmed_disk_rows = 0
+    mgr._last_24h_compact_mono = 0.0
+    mgr._base_compact_noop = False
+
+    # Stub CacheManagerInterface.compact_jsonl to just verify lock order.
+    orig_super = cp_mod.CacheManagerInterface.compact_jsonl
+    try:
+        cp_mod.CacheManagerInterface.compact_jsonl = lambda self: (self._generation_lock().__enter__(), True)[1]
+        assert mgr.compact_jsonl() is True
+    finally:
+        cp_mod.CacheManagerInterface.compact_jsonl = orig_super
+    assert order[:2] == ["gen_lock", "self.lock"]
