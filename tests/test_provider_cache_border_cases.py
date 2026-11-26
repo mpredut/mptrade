@@ -5614,8 +5614,19 @@ def test_wave31_kinematic_ssot_and_impulse_border_cases(tmp_path, monkeypatch):
         }
     }
     st_mgr.evaluate_full("BTCUSDC")
-    assert "vel_90s_pct_min" not in captured_mem["BTCUSDC"]
-    assert "vel_5m_pct_min" not in captured_mem["BTCUSDC"]
+    assert captured_mem["BTCUSDC"].get("vel_90s_pct_min") is None
+    assert captured_mem["BTCUSDC"].get("vel_5m_pct_min") is None
+    primary_dyn_key = pw.dynamic_window_key(222.0)
+    assert "vel_90s_pct_min" not in captured_mem["BTCUSDC"]["dynamic"][primary_dyn_key]
+    assert "vel_5m_pct_min" not in captured_mem["BTCUSDC"]["dynamic"][primary_dyn_key]
+    # Real _set_mem clears stale kinematic keys from _mem when evaluate_full emits None tombstones.
+    st_mgr._mem = {"BTCUSDC": {"vel_90s_pct_min": 0.42, "vel_5m_pct_min": 0.19}}
+    st_mgr.cache = st_mgr._mem
+    st_mgr._dirty = False
+    st_mgr._sync_symbol_cursor_from_snap = lambda _s, _snap: None
+    CacheShortTrendManager._set_mem(st_mgr, "BTCUSDC", **captured_mem["BTCUSDC"])
+    assert "vel_90s_pct_min" not in st_mgr._mem["BTCUSDC"]
+    assert "vel_5m_pct_min" not in st_mgr._mem["BTCUSDC"]
 
     # Populate 65 samples at 5s cadence (320s > 222s primary window) with a steady quadratic ramp in 9000s window.
     ramp_prices = [100.0 * math.exp(0.0004 * idx + 0.00001 * (idx ** 2)) for idx in range(65)]

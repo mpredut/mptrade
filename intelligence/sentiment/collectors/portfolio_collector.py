@@ -165,8 +165,32 @@ save_json_state = _default_save_json_state
 logger = logging.getLogger("intelligence.sentiment.portfolio_collector")
 
 _resolve_read_json_cached = resolve_read_json_cached
-FRESH_BALANCE_CACHE_MAX_AGE_SEC: float = 90.0
-FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC: float = 30.0
+FRESH_BALANCE_CACHE_SYNC_MULTIPLIER: float = 2.5
+FRESH_OPEN_ORDERS_CACHE_SYNC_MULTIPLIER: float = 4.0
+FRESH_BALANCE_CACHE_MAX_AGE_SEC: Optional[float] = None
+FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC: Optional[float] = None
+
+
+def resolve_fresh_balance_cache_max_age_sec() -> float:
+    """Derive Layer 3 balance cache freshness ceiling formulaically from ``BALANCE_SYNC_INTERVAL_SEC``."""
+    if FRESH_BALANCE_CACHE_MAX_AGE_SEC is not None:
+        return safe_pos_float(FRESH_BALANCE_CACHE_MAX_AGE_SEC, default=None) or 0.0
+    ensure_cacheprice_classes_bound()
+    base = safe_pos_float(getattr(_mc, "BALANCE_SYNC_INTERVAL_SEC", None), default=None)
+    if base is None:
+        raise ValueError("BALANCE_SYNC_INTERVAL_SEC must be a positive finite number")
+    return round(FRESH_BALANCE_CACHE_SYNC_MULTIPLIER * base, 3)
+
+
+def resolve_fresh_open_orders_cache_max_age_sec() -> float:
+    """Derive Layer 3 open-orders cache freshness ceiling formulaically from ``OPEN_ORDER_SYNC_INTERVAL_SEC``."""
+    if FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC is not None:
+        return safe_pos_float(FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC, default=None) or 0.0
+    ensure_cacheprice_classes_bound()
+    base = safe_pos_float(getattr(_mc, "OPEN_ORDER_SYNC_INTERVAL_SEC", None), default=None)
+    if base is None:
+        raise ValueError("OPEN_ORDER_SYNC_INTERVAL_SEC must be a positive finite number")
+    return round(FRESH_OPEN_ORDERS_CACHE_SYNC_MULTIPLIER * base, 3)
 
 
 def _resolve_order_cache_files() -> Tuple[Tuple[str, str], ...]:
@@ -2161,11 +2185,12 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             ven_oo_ver_ts = safe_pos_float(cached_open_verified_ts.get(v_norm), default=0.0) or 0.0
             eff_oo_ver_ts = max(sym_oo_ver_ts, ven_oo_ver_ts)
             # Cache-first on Layer 3 cache_order_open_<venue>.json for real providers when fresh (0 ms, zero REST).
+            eff_oo_max_age = resolve_fresh_open_orders_cache_max_age_sec()
             fresh_l3_open = (
                 allow_network
                 and isinstance(prov_inst, MarketDataProvider)
                 and eff_oo_ver_ts > 0.0
-                and 0.0 <= (now_ts_oo - eff_oo_ver_ts) <= FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC
+                and 0.0 <= (now_ts_oo - eff_oo_ver_ts) <= eff_oo_max_age
                 and (vs_open_key in cached_open_by_vs or ven_oo_ver_ts > 0.0 or vs_open_key in cached_open_sym_verified_ts)
             )
             if fresh_l3_open:
@@ -2182,7 +2207,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         )
                     )
                 live_open_ok_symbols.add(vs_open_key)
-                if ven_oo_ver_ts > 0.0 and 0.0 <= (now_ts_oo - ven_oo_ver_ts) <= FRESH_OPEN_ORDERS_CACHE_MAX_AGE_SEC:
+                if ven_oo_ver_ts > 0.0 and 0.0 <= (now_ts_oo - ven_oo_ver_ts) <= eff_oo_max_age:
                     live_open_ok_venues.add(v_norm)
             elif allow_network and callable(open_fn := getattr(inst, "open_orders", None)):
                 sym_open_ok = False
@@ -2284,6 +2309,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         fresh_bal_cache_obs: Dict[tuple[str, str], BalanceObservation] = {}
         fresh_bal_cache_bd: Dict[tuple[str, str], Dict[str, float]] = {}
         if raw_bal_caches:
+            eff_bal_max_age = resolve_fresh_balance_cache_max_age_sec()
             _all_c_obs, _all_c_bd = extract_balance_observations_from_caches(raw_bal_caches)
             for _raw_v, _doc in raw_bal_caches.items():
                 if not isinstance(_doc, dict):
@@ -2293,7 +2319,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 if (
                     _v_n
                     and _v_ts is not None
-                    and 0.0 <= (now_ts_oo - _v_ts) <= FRESH_BALANCE_CACHE_MAX_AGE_SEC
+                    and 0.0 <= (now_ts_oo - _v_ts) <= eff_bal_max_age
                     and isinstance(_doc.get("items"), dict)
                     and _doc.get("items")
                 ):

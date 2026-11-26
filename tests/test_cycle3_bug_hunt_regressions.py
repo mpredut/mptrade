@@ -910,3 +910,21 @@ def test_portfolio_snapshot_json_emits_single_valid_json_line(monkeypatch, capsy
     parsed = json.loads(out_lines[0])
     assert parsed["kraken_real_realized_net"] == 1.0
     assert parsed["hl"]["cash_usd"] == 100.0
+
+
+def test_portfolio_collector_formulaic_l3_freshness_avoids_spurious_rest():
+    """Layer 3 balance/open-order freshness bounds scale from cacheaccount sync intervals (covering 85s bal / 40s open)."""
+    from cacheaccount import BALANCE_SYNC_INTERVAL_SEC, OPEN_ORDER_SYNC_INTERVAL_SEC
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        FRESH_BALANCE_CACHE_SYNC_MULTIPLIER,
+        FRESH_OPEN_ORDERS_CACHE_SYNC_MULTIPLIER,
+        resolve_fresh_balance_cache_max_age_sec,
+        resolve_fresh_open_orders_cache_max_age_sec,
+    )
+
+    bal_max = resolve_fresh_balance_cache_max_age_sec()
+    oo_max = resolve_fresh_open_orders_cache_max_age_sec()
+    assert bal_max == pytest.approx(FRESH_BALANCE_CACHE_SYNC_MULTIPLIER * BALANCE_SYNC_INTERVAL_SEC)
+    assert oo_max == pytest.approx(FRESH_OPEN_ORDERS_CACHE_SYNC_MULTIPLIER * OPEN_ORDER_SYNC_INTERVAL_SEC)
+    assert bal_max >= 120.0
+    assert oo_max >= 45.0

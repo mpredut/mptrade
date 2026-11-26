@@ -1042,7 +1042,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (not self.skip_external and hasattr(self, "etf_flows_interval_sec"), "_last_etf_flows_ts", getattr(self, "etf_flows_interval_sec", 7200.0), self.update_etf_flows, (force,), 12.0, "etf_flows", "etf_flows_updated", None),
                 (not self.skip_external and bool(self._active_liquidation_collectors()), "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
-                (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 18.0, "venue_balances", "venue_balances_updated", None),
+                (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 24.0, "venue_balances", "venue_balances_updated", None),
             )
             for enabled, ts_attr, itv_sec, fn, fn_args, timeout_s, lbl, res_key, on_done_cb in scheduled_tasks:
                 if enabled:

@@ -71,6 +71,8 @@ CacheBalanceManager: Any = None
 CacheTradeManager: Any = None
 CacheAssetValueManager: Any = None
 CacheAccountManagerBase: Any = None
+BALANCE_SYNC_INTERVAL_SEC: Any = None
+OPEN_ORDER_SYNC_INTERVAL_SEC: Any = None
 
 
 _CACHEPRICE_BIND_LOCK = threading.RLock()
@@ -79,20 +81,40 @@ _CACHEPRICE_BIND_LOCK = threading.RLock()
 def ensure_cacheprice_classes_bound() -> None:
     global Cache24PriceManager, Cache365PriceManager, CacheCurrentPriceManager, CachePriceManagerBase, CacheSparsePriceManager
     global CacheShortTrendManager, CacheLongTrendManager, CacheOrderFilledManager, CacheOrderOpenManager, CacheBalanceManager, CacheTradeManager, CacheAssetValueManager
-    global CacheAccountManagerBase
-    if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheBalanceManager is not None and CacheAccountManagerBase is not None:
+    global CacheAccountManagerBase, BALANCE_SYNC_INTERVAL_SEC, OPEN_ORDER_SYNC_INTERVAL_SEC
+    if (
+        Cache24PriceManager is not None
+        and CacheShortTrendManager is not None
+        and CacheOrderFilledManager is not None
+        and CacheOrderOpenManager is not None
+        and CacheBalanceManager is not None
+        and CacheAccountManagerBase is not None
+        and BALANCE_SYNC_INTERVAL_SEC is not None
+        and OPEN_ORDER_SYNC_INTERVAL_SEC is not None
+    ):
         return
     with _CACHEPRICE_BIND_LOCK:
-        if Cache24PriceManager is not None and CacheShortTrendManager is not None and CacheOrderFilledManager is not None and CacheOrderOpenManager is not None and CacheBalanceManager is not None and CacheAccountManagerBase is not None:
+        if (
+            Cache24PriceManager is not None
+            and CacheShortTrendManager is not None
+            and CacheOrderFilledManager is not None
+            and CacheOrderOpenManager is not None
+            and CacheBalanceManager is not None
+            and CacheAccountManagerBase is not None
+            and BALANCE_SYNC_INTERVAL_SEC is not None
+            and OPEN_ORDER_SYNC_INTERVAL_SEC is not None
+        ):
             return
         load_dotenv()
         from cacheaccount import (
+            BALANCE_SYNC_INTERVAL_SEC as _BAL_SYNC_ITV,
             CacheAccountManagerBase as _CABase,
             CacheAssetValueManager as _CAV,
             CacheBalanceManager as _CBal,
             CacheOrderFilledManager as _COrdFilled,
             CacheOrderOpenManager as _COrdOpen,
             CacheTradeManager as _CTrd,
+            OPEN_ORDER_SYNC_INTERVAL_SEC as _OO_SYNC_ITV,
         )
         from cacheprice import (
             Cache24PriceManager as _C24,
@@ -123,6 +145,8 @@ def ensure_cacheprice_classes_bound() -> None:
         CacheTradeManager = _CTrd
         CacheAssetValueManager = _CAV
         CacheAccountManagerBase = _CABase
+        BALANCE_SYNC_INTERVAL_SEC = _BAL_SYNC_ITV
+        OPEN_ORDER_SYNC_INTERVAL_SEC = _OO_SYNC_ITV
         if "CompositeSymbolPriceSeriesLoader" in globals():
             CompositeSymbolPriceSeriesLoader.price_24_cls = _C24
             CompositeSymbolPriceSeriesLoader.price_365_cls = _C365

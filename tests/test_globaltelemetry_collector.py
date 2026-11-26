@@ -2102,7 +2102,7 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     assert pt_snap.source_freshness["orderbook"]["fresh"] is False
     assert pt_snap.source_freshness["short_slopes"]["age_sec"] == pytest.approx(25.0)
 
-    # 4. Zero-OI equity in Section 3B omits phantom deriv age when derivatives metrics are hidden
+    # 4. Zero-OI equity in Section 3B omits phantom deriv/flow ages when metrics are hidden, and labels active flow as rth_flow
     eq_pt = {"RGNT_US_EQ": {"price": 24.5, "trend": 0, "growth_coefficient": 0.0}}
     eq_micro = {
         "RGNT_US_EQ": {
@@ -2127,8 +2127,24 @@ def test_reverify_pass2_stale_microstructure_news_fallback_and_cross_quote_ages(
     }
     eq_lines_3b = "\n".join(_format_microstructure_section(eq_micro, eq_pt, now_ts=now_s))
     assert "ob=10.0s" in eq_lines_3b
-    assert "whale=20.0s" in eq_lines_3b
+    assert "intraday_rth_flow=N/A[no_fresh_vol_bars]" in eq_lines_3b
     assert "deriv=" not in eq_lines_3b
+    assert "whale=" not in eq_lines_3b
+    assert ", rth_flow=" not in eq_lines_3b
+    assert "rth_flow=20.0s" not in eq_lines_3b
+
+    eq_micro_with_rth_flow = {
+        "RGNT_US_EQ": {
+            **eq_micro["RGNT_US_EQ"],
+            "taker_buy_vol_usd": 15000.0,
+            "taker_sell_vol_usd": 10000.0,
+        }
+    }
+    eq_flow_lines_3b = "\n".join(_format_microstructure_section(eq_micro_with_rth_flow, eq_pt, now_ts=now_s))
+    assert "ob=10.0s" in eq_flow_lines_3b
+    assert "rth_flow=20.0s" in eq_flow_lines_3b
+    assert "deriv=" not in eq_flow_lines_3b
+    assert "whale=" not in eq_flow_lines_3b
 
     # 5. Zero-OI equity pretrade snapshot omits phantom derivatives age; sensor-only snapshot excludes synthetic macro_calendar=0.0s
     eq_dir = os.path.join(os.path.dirname(temp_cache_dir), "pass3_eq_ws", "cachedb")
