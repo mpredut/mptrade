@@ -178,7 +178,8 @@ def _partition_intents_for_audit_reconciliation(
                     item["execution_payload"] = exec_pay
                     updated = True
                     continue
-                if not needs_ts_backfill and cur_v_st in TERMINAL_CANCEL_VENUE_STATUSES:
+                is_retry_pending = _parse_bool_flag(exec_pay.get("retry_pending"), False)
+                if not needs_ts_backfill and not is_retry_pending and cur_v_st in TERMINAL_CANCEL_VENUE_STATUSES:
                     continue
                 if not needs_ts_backfill and has_fill_metrics and not is_resting_msg and cur_v_st in ("", "FILLED", "CLOSED"):
                     continue
@@ -499,6 +500,9 @@ def _apply_executed_intent_audit_record(
                 exec_pay["terminal_ts"] = rec_ts
         if is_term:
             exec_pay["reconciled_terminal"] = True
+            exec_pay.pop("retry_pending", None)
+        elif ev == "order_terminal_retry":
+            exec_pay["retry_pending"] = True
     elif ev in ("submit_accepted", "order_recovered"):
         if clean_rec_oid is not None:
             exec_pay["orderId"] = clean_rec_oid
@@ -507,10 +511,15 @@ def _apply_executed_intent_audit_record(
             exec_pay["accepted_at"] = rec_ts
         exec_pay.pop("terminal_ts", None)
         exec_pay.pop("reconciled_terminal", None)
-    elif cur_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES or (
-        _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
-        and "terminal_ts" not in exec_pay
-        and rec_ts is not None
+        exec_pay.pop("retry_pending", None)
+    elif (
+        cur_st in OPEN_WORKING_OR_EMPTY_VENUE_STATUSES
+        or _parse_bool_flag(exec_pay.get("retry_pending"), False)
+        or (
+            _parse_bool_flag(exec_pay.get("reconciled_terminal"), False)
+            and "terminal_ts" not in exec_pay
+            and rec_ts is not None
+        )
     ):
         norm_cancel = (
             v_stat
@@ -522,6 +531,9 @@ def _apply_executed_intent_audit_record(
             if rec_ts is not None:
                 exec_pay["terminal_ts"] = rec_ts
             exec_pay["reconciled_terminal"] = True
+            exec_pay.pop("retry_pending", None)
+        elif ev == "order_terminal_retry":
+            exec_pay["retry_pending"] = True
     else:
         return False
     if str(exec_pay.get("msg") or "").strip().lower() == "resting":

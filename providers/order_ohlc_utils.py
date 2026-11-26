@@ -268,6 +268,7 @@ def extract_order_fee(
     if req_explicit and (not has_asset_key or (fee > 0.0 and not fee_asset)):
         return None
 
+    base_canon = canonical_balance_asset_key(base_asset) if base_asset else ""
     base_u = clean_upper_scalar(base_asset) or ""
     quote_u = clean_upper_scalar(quote_asset) or ""
     if not fee_asset and not req_explicit and quote_u:
@@ -280,7 +281,11 @@ def extract_order_fee(
     if fee > 0.0:
         fee_quote_canon = _QUOTE_FEE_ALIASES.get(fee_asset, fee_asset)
         quote_canon = _QUOTE_FEE_ALIASES.get(quote_u, quote_u)
-        if base_u and (fee_asset == base_u or (fee_asset and same_canonical_base_asset(fee_asset, base_u))):
+        if base_u and (
+            fee_asset == base_canon
+            or fee_asset.upper() == base_u
+            or (fee_asset and same_canonical_base_asset(fee_asset, base_canon or base_u))
+        ):
             base_fee = fee
             if px > 0.0:
                 fee_in_quote = fee * px

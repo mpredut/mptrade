@@ -574,7 +574,9 @@ def cancel_existing_ai_open_orders(
                 matched_targets_lc.add(str(oid).lower())
             if coid_hit:
                 matched_targets_lc.add(str(coid).lower())
-        if is_ai_order and only_bots and targeted is None:
+        if is_ai_order and only_bots:
+            if targeted is not None and failed_order_ids is not None:
+                failed_order_ids.append(cancel_ref or "<missing_order_id>")
             continue
         if not is_ai_order and not include_bots:
             if targeted is not None and failed_order_ids is not None:

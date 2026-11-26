@@ -1042,9 +1042,21 @@ def summarize_active_ai_trade_plans(
     def _has_newer_buy_fill(ven: str, sym_s: str, after_ts: float) -> bool:
         if not ro_map or after_ts <= 0.0:
             return False
-        for cand in (sym_s, *cache_symbol_variants(sym_s, include_base=True)):
-            ro_entry = casefold_get(ro_map, cand)
+        v_norm = normalize_venue_name(ven)
+        is_eq = is_equity_venue_or_suffix(sym_s, v_norm)
+        raw_cands = (sym_s, *cache_symbol_variants(sym_s, include_base=True))
+        sym_cands = filter_candidates_by_asset_class(raw_cands, is_equity=is_eq)
+        key_cands = (*(f"{v_norm}:{cand}" for cand in sym_cands), *sym_cands) if v_norm else tuple(sym_cands)
+        for key_cand in key_cands:
+            ro_entry = casefold_get(ro_map, key_cand)
             if not isinstance(ro_entry, dict):
+                continue
+            if (
+                ":" not in key_cand
+                and v_norm
+                and ro_entry.get("venue")
+                and normalize_venue_name(ro_entry.get("venue")) != v_norm
+            ):
                 continue
             lb_entry = ro_entry.get("last_buy")
             if not isinstance(lb_entry, dict):

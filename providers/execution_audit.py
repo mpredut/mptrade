@@ -599,7 +599,7 @@ def find_order_audit_record(
                     candidates.append((ev_row, False))
             for row, is_cl in candidates:
                 adapted = ledger_row_to_audit_record(row, is_closed=is_cl)
-                if adapted is None and not is_cl:
+                if adapted is None and not is_cl and not row.get("ev"):
                     # Active snapshot rows carry state rather than ev; synthesize an order_status record.
                     st_u = clean_upper_scalar(row.get("state")) or "OPEN"
                     adapted = ledger_row_to_audit_record({**row, "ev": "STATUS", "vst": row.get("vst") or st_u}, is_closed=False)

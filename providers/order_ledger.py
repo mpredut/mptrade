@@ -183,6 +183,7 @@ _SUBMISSION_PROOF_EVENTS: frozenset[str] = frozenset({
 })
 _TRAILING_NON_NEW_EVENTS: frozenset[str] = frozenset({
     OrderEventType.ACKED.value,
+    OrderEventType.SUBMIT_UNKNOWN.value,
     OrderEventType.STATUS.value,
     OrderEventType.CANCEL_REQ.value,
     OrderEventType.CANCEL_ACK.value,
@@ -321,6 +322,7 @@ def build_order_event(
     vst: object = None,
     reason: object = None,
     deferred: Optional[bool] = None,
+    retry: Optional[bool] = None,
     src: object = None,
     key: object = None,
 ) -> dict[str, Any]:
@@ -358,6 +360,8 @@ def build_order_event(
             payload[k] = round(val_f, 8)
     if deferred is not None:
         payload["deferred"] = _parse_bool_flag(deferred, False)
+    if retry is not None and _parse_bool_flag(retry, False):
+        payload["retry"] = True
     return payload
 
 
@@ -545,6 +549,8 @@ def make_closed_summary(key: str, rec: dict[str, Any], *, closed_ts: float) -> d
         val = rec.get(k)
         if val is not None and val != "" and val != 0:
             summary[k] = val
+    if _parse_bool_flag(rec.get("retry"), False):
+        summary["retry"] = True
     return summary
 
 
@@ -597,6 +603,10 @@ def apply_order_event(
     rec["updated_ts"] = round(max(safe_pos_float(rec.get("updated_ts"), default=0.0) or 0.0, ts), 3)
     rec["events"] = (safe_nonneg_int(rec.get("events"), default=0) or 0) + 1
     rec["last_ev"] = ev
+    if _parse_bool_flag(event.get("retry"), False):
+        rec["retry"] = True
+    elif ev in {OrderEventType.ACKED.value, OrderEventType.RECOVERED.value}:
+        rec.pop("retry", None)
     if vid or ev in _SUBMISSION_PROOF_EVENTS:
         rec["submitted"] = True
 
@@ -965,7 +975,8 @@ class OrderLedgerWriter(FileOrderLedgerBase):
         fields: Optional[dict[str, Any]] = None,
     ) -> bool:
         """Mirror a legacy ``ExecutionAudit`` event into the canonical Order Ledger journal."""
-        mapped = _AUDIT_EVENT_TO_LEDGER_EVENT.get(str(audit_event or "").strip().lower())
+        audit_ev_l = str(audit_event or "").strip().lower()
+        mapped = _AUDIT_EVENT_TO_LEDGER_EVENT.get(audit_ev_l)
         if mapped is None:
             return False
         kw = fields if isinstance(fields, dict) else {}
@@ -1000,6 +1011,7 @@ class OrderLedgerWriter(FileOrderLedgerBase):
                 or kw.get("last_failure_reason")
                 or kw.get("error")
             ),
+            retry=(True if audit_ev_l == "order_terminal_retry" else None),
             src="audit_bridge",
         )
 
@@ -1027,14 +1039,17 @@ def ledger_row_to_audit_record(
     ev_out: Optional[str] = None
     status_out: Optional[str] = None
     vst_out = clean_upper_scalar(row.get("vst"))
+    is_retry_ev = _parse_bool_flag(row.get("retry"), False)
     if is_closed:
         st = clean_upper_scalar(row.get("state")) or ""
         if st == OrderLedgerState.FILLED.value:
             ev_out, status_out, vst_out = "order_terminal", "closed", vst_out or "FILLED"
         elif st == OrderLedgerState.CANCELED.value:
-            ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "CANCELED"
+            ev_out = "order_terminal_retry" if is_retry_ev else "order_terminal"
+            status_out, vst_out = "canceled", vst_out or "CANCELED"
         elif st == OrderLedgerState.EXPIRED.value:
-            ev_out, status_out, vst_out = "order_terminal", "expired", vst_out or "EXPIRED"
+            ev_out = "order_terminal_retry" if is_retry_ev else "order_terminal"
+            status_out, vst_out = "expired", vst_out or "EXPIRED"
         elif st == OrderLedgerState.REPLACED.value:
             ev_out, status_out, vst_out = "order_terminal", "canceled", vst_out or "REPLACED"
         elif st == OrderLedgerState.REJECTED.value:
@@ -1070,7 +1085,11 @@ def ledger_row_to_audit_record(
                 vst_out and (vst_out in CANCEL_OR_EXPIRE_VENUE_STATUSES or is_terminal_non_fill_venue_status(vst_out))
             )
             is_term_vst = bool(vst_out and (vst_out in TERMINAL_AUDIT_VENUE_STATUSES or is_non_fill_term))
-            ev_out = "order_terminal" if is_term_vst else "order_status"
+            ev_out = (
+                "order_terminal_retry"
+                if (is_retry_ev and is_term_vst)
+                else ("order_terminal" if is_term_vst else "order_status")
+            )
             if vst_out in {"FILLED", "CLOSED"}:
                 status_out = "closed"
             elif is_non_fill_term:
@@ -1376,7 +1395,7 @@ class OrderLedgerReader(FileOrderLedgerBase):
                 fq = safe_pos_float(row.get("fq"), default=0.0) or 0.0
                 if fq <= 0.0:
                     continue
-                sym_t = _norm_symbol(row.get("sym"), venue=v_target).upper()
+                sym_t = _norm_symbol(row.get("sym"), venue=v_target)
                 px_f = safe_pos_float(row.get("avg_px"), default=None) or safe_pos_float(row.get("px"), default=None)
                 ts_s = safe_pos_float(row.get("closed_ts") or row.get("created_ts"), default=0.0) or 0.0
                 side_t = normalize_side(row.get("side"))

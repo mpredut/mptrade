@@ -32,6 +32,7 @@ from botcore import (
     safe_pos_int,
     set_stop_event,
 )
+from instrument_registry import resolve_kraken_tokenized_pair
 from state_io import parse_json_payload
 
 
@@ -227,11 +228,16 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
-        if (raw := clean_upper_scalar(symbol)) is None or (
-            "/" in raw and any(clean_scalar_str(p) is None for p in raw.split("/"))
+        raw_clean = clean_scalar_str(symbol)
+        if raw_clean is None or (
+            "/" in raw_clean and any(clean_scalar_str(p) is None for p in raw_clean.split("/"))
         ):
             return None
-        return clean_upper_scalar(raw.replace("/", ""))
+        compact = raw_clean.replace("/", "")
+        tok_pair, is_tok = resolve_kraken_tokenized_pair(compact)
+        if is_tok and tok_pair:
+            return tok_pair
+        return clean_upper_scalar(compact)
 
     def __init__(self, symbols: Optional[list] = None, *, stale_reconnect_sec: float = 0.0):
         super().__init__()
