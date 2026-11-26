@@ -547,6 +547,21 @@ def get_topic_thread_state(
     return cid, compacted_at, is_warm
 
 
+def get_topic_turn_count(
+    topic_key: str,
+    *,
+    registry_path: Optional[str] = None,
+) -> int:
+    """Read-only cumulative turn count recorded for ``topic_key`` in the topic registry."""
+    try:
+        topic_spec(topic_key)
+    except Exception:
+        return 0
+    resolved = canonical_topic_key(topic_key)
+    _, _, entry = _load_topic_entry(resolved, registry_path)
+    return safe_nonneg_int(entry.get("turn_count"), 0) if isinstance(entry, dict) else 0
+
+
 def has_pending_ui_turn(
     topic_key: str,
     *,

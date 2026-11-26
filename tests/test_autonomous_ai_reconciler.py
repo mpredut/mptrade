@@ -10951,3 +10951,144 @@ def test_delta_gate_wakes_once_on_unassessed_acute_geo_headline() -> None:
     skip_2, rsn_2, _, _ = evaluate_crypto_executor_delta_gate(_mk_sensors(note_acute), prev_ack, now_ts=t0 + 360.0)
     assert skip_2 is True and "quiet_flat" in rsn_2
 
+
+def test_monotonic_peak_px_warmup_intraday_post_action_trigger_and_iter_header(tmp_path) -> None:
+    """Regression coverage for:
+    1. Warmup-frozen trailing_state does not regress persisted trailing_peak as spot drops.
+    2. Intraday OHLC 24h archive + 15m high heal post-entry peak_px for <12h positions without leaking pre-entry highs.
+    3. Section 0 enriches prev_eval_actionable with the concrete order, promotes its symbol first in Section 3, and renders Iter #N (+Δt).
+    """
+    from cachepaths import cache_ohlc_24h_filename
+    from intelligence.macro_sentiment_ssot import scan_cached_price_archive_high_since
+    from intelligence.sentiment.collectors.portfolio_collector import _resolve_effective_trailing_raw_peak
+    from intelligence.sentiment.evaluators.portfolio_evaluator import PositionCostBasisEnrichmentEvaluator
+    from orchestratorOS.agy.topics import get_topic_turn_count, save_topic_registry
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    # 1. Warmup-frozen Binance trailing state must preserve higher persisted trailing_peak (TAO 182.10 -> spot 182.00)
+    t_state_warmup = {"peak": 180.6, "is_flat": False, "warmup_at": 189.63}
+    prev_pos_held = {"free_base": 5.54, "locked_base_qty": 0.0, "trailing_peak": 182.10}
+    eff_pk = _resolve_effective_trailing_raw_peak(t_state_warmup, prev_pos_held, px_f=182.00, min_notional=5.0)
+    assert eff_pk == pytest.approx(182.10)
+    # Flat prior snapshot must not carry stale peak across cycles
+    eff_pk_flat = _resolve_effective_trailing_raw_peak(t_state_warmup, {"free_base": 0.0, "trailing_peak": 250.0}, px_f=182.00, min_notional=5.0)
+    assert eff_pk_flat == pytest.approx(180.6)
+
+    # 2. scan_cached_price_archive_high_since reads 5m cache_ohlc_24h strictly after oldest_ts_ms (no pre-entry wick leak)
+    now_ms = 1_795_714_000_000
+    entry_ts_ms = now_ms - 2 * 3600 * 1000  # 2h-old position (< 12h)
+    ohlc_file = tmp_path / cache_ohlc_24h_filename("TAOUSDC")
+    ohlc_file.write_text(
+        json.dumps({
+            "ts": now_ms / 1000.0,
+            "symbol": "TAOUSDC",
+            "points": [
+                # Pre-entry candle (3h ago) with huge high 199.0 -> MUST be ignored
+                [entry_ts_ms - 3600 * 1000, 196.0, 10.0, 199.0, 195.0, 196.0],
+                # Entry 5m candle (close 1m after entry): high 188.0 could be pre-entry -> only close 181.9 counts
+                [entry_ts_ms + 60_000, 181.9, 10.0, 188.0, 180.5, 181.0],
+                # Fully post-entry 5m candle (10m after entry): high 182.50 MUST be captured
+                [entry_ts_ms + 600_000, 182.2, 12.0, 182.50, 181.8, 181.9],
+            ],
+        }),
+        encoding="utf-8",
+    )
+    arch_hi = scan_cached_price_archive_high_since(str(tmp_path), ("TAOUSDC",), entry_ts_ms)
+    assert arch_hi == pytest.approx(182.50)
+
+    # Evaluator heals a 2h-old position whose trailing_peak was clamped to spot 182.00 without leaking pre-entry high_24h=195.0
+    pos_tao = {"venue": "binance", "symbol": "TAOUSDC", "price": 182.00, "free_base": 5.54, "trailing_peak": 182.00, "dd_from_peak_pct": 0.0}
+    ro_tao = {"active_avg_buy_px": 180.60, "open_lots": [{"qty": 5.54, "entry_px": 180.60, "ts_ms": entry_ts_ms}]}
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        pos_tao,
+        ro_tao,
+        p_sym="TAOUSDC",
+        p_quote_variants=(),
+        pos_px_f=182.00,
+        held_cur=5.54,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"TAOUSDC": {"price": 182.00, "high_24h": 195.0, "high_15m": 182.40}},
+        cycle_high_memo={},
+        now_ms=now_ms,
+        archive_high_resolver=lambda cands, oms, base_hi: scan_cached_price_archive_high_since(str(tmp_path), cands, oms, baseline_high=base_hi),
+    )
+    assert pos_tao["trailing_peak"] == pytest.approx(182.50)
+    assert pos_tao["dd_from_peak_pct"] == pytest.approx(-0.27, abs=0.02)
+
+    # A brand-new 5m-old position must NOT leak high_15m (which spans 10m before entry)
+    pos_brand_new = {"venue": "binance", "symbol": "ARBUSDC", "price": 0.1127, "free_base": 1000.0, "trailing_peak": 0.1127, "dd_from_peak_pct": 0.0}
+    PositionCostBasisEnrichmentEvaluator._enrich_position_from_recent_orders(
+        pos_brand_new,
+        {"active_avg_buy_px": 0.1125, "open_lots": [{"qty": 1000.0, "entry_px": 0.1125, "ts_ms": now_ms - 5 * 60 * 1000}]},
+        p_sym="ARBUSDC",
+        p_quote_variants=(),
+        pos_px_f=0.1127,
+        held_cur=1000.0,
+        is_flat_balance=False,
+        is_flat_after_exit=False,
+        prices_and_trends={"ARBUSDC": {"price": 0.1127, "high_15m": 0.1150, "high_24h": 0.1200}},
+        cycle_high_memo={},
+        now_ms=now_ms,
+    )
+    assert pos_brand_new["trailing_peak"] == pytest.approx(0.1127)
+
+    # 3. Section 0: Iter #N (+Δt) header, concrete post_action Trigger line, and TAOUSDC promoted ahead of BTCUSDC
+    reg_path = str(tmp_path / "topics.json")
+    save_topic_registry({"auto_cryptotrade_executor": {"conversation_id": "cid-1", "turn_count": 167}}, registry_path=reg_path)
+    assert get_topic_turn_count("auto_cryptotrade_executor", registry_path=reg_path) == 167
+    assert get_topic_turn_count("unknown_topic_xyz", registry_path=reg_path) == 0
+
+    sensors_pa = TelemetrySensorSnapshot(
+        evaluated_at_ts=now_ms / 1000.0,
+        prices_and_trends={
+            "BTCUSDC": {"price": 59000.0, "trend": 0},
+            "ETHUSDC": {"price": 2100.0, "trend": 0},
+            "TAOUSDC": {"price": 182.00, "trend": 1},
+        },
+        portfolio_summary={
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "price": 59000.0, "free_base": 0.02, "value_usd": 1180.0},
+                {"venue": "binance", "symbol": "TAOUSDC", "price": 182.00, "free_base": 0.005, "locked_base_qty": 5.5387, "value_usd": 1.0},
+            ],
+            "last_cycle_execution_status": [
+                {
+                    "venue": "binance",
+                    "symbol": "TAOUSDC",
+                    "side": "SELL",
+                    "order_type": "LIMIT",
+                    "limit_px": 184.8,
+                    "status": "OPEN_RESTING",
+                    "age_min": 3.4,
+                }
+            ],
+        },
+    )
+    prompt_pa = build_supervisor_prompt(
+        sensors_pa,
+        LogEventSummary(),
+        topic_spec("auto_cryptotrade_executor"),
+        wake_reason="prev_eval_actionable",
+        iteration_num=168,
+        prev_eval_elapsed_sec=207.0,
+    )
+    assert "| Iter #168 (+3.5m vs prev)" in prompt_pa
+    assert "- Trigger: post_action | Binance:TAOUSDC SELL LIMIT@184.8 OPEN_RESTING" in prompt_pa
+    sec3_block = prompt_pa.split("### 3.", 1)[1]
+    assert sec3_block.index("TAOUSDC") < sec3_block.index("BTCUSDC")
+
+    # Fallback to bare prev_eval_actionable when last_cycle_execution_status is empty
+    sensors_pa_empty = TelemetrySensorSnapshot(
+        evaluated_at_ts=now_ms / 1000.0,
+        prices_and_trends={"BTCUSDC": {"price": 59000.0, "trend": 0}},
+        portfolio_summary={"tradable_positions": []},
+    )
+    prompt_pa_empty = build_supervisor_prompt(
+        sensors_pa_empty,
+        LogEventSummary(),
+        topic_spec("auto_cryptotrade_executor"),
+        wake_reason="prev_eval_actionable",
+    )
+    assert "- Trigger: prev_eval_actionable" in prompt_pa_empty
+
+

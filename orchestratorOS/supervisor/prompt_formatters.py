@@ -96,12 +96,63 @@ def _build_section0_trigger_context(
 
     clean_wake = str(wake_reason or "").strip()
     wake_lc = clean_wake.lower()
-    if clean_wake:
+    is_prev_actionable_wake = wake_lc == "prev_eval_actionable" or wake_lc.startswith("prev_eval_actionable")
+    if clean_wake and not is_prev_actionable_wake:
         parts.append(clean_wake)
         for tok in _TRIGGER_SYM_TOKEN_RE.findall(clean_wake):
             tu = tok.upper()
             if tu in known_upper:
                 trigger_syms.add(known_upper[tu])
+
+    if is_prev_actionable_wake and isinstance(portfolio_summary, dict):
+        raw_lces_pa = portfolio_summary.get("last_cycle_execution_status")
+        lces_pa_items = (
+            raw_lces_pa
+            if isinstance(raw_lces_pa, list)
+            else ([raw_lces_pa] if isinstance(raw_lces_pa, dict) else [])
+        )
+        pa_summaries: List[str] = []
+        seen_pa: set[Tuple[str, str, str, str]] = set()
+        for item in lces_pa_items:
+            if not isinstance(item, dict):
+                continue
+            age_m = safe_float(item.get("age_min"), None)
+            if age_m is not None and age_m > 30.0:
+                continue
+            pa_sym = str(item.get("symbol") or "").strip()
+            if not pa_sym:
+                continue
+            pa_side = str(item.get("side") or item.get("decision") or "").strip().upper()
+            raw_st_pa = str(item.get("status") or "").strip().upper()
+            ven_st_pa = str(item.get("venue_status") or "").strip().upper()
+            pa_st = "RESTING_IN_BOOK" if raw_st_pa == "RESTING_IN_BOOK" else (ven_st_pa or raw_st_pa)
+            if pa_side in ("HOLD", "SKIPPED", "NOOP") or pa_st in ("HOLD", "SKIPPED", "NOOP"):
+                continue
+            pa_ven = str(item.get("venue") or "").strip()
+            ven_lbl = pa_ven.capitalize() if pa_ven else ""
+            pa_otype = str(item.get("order_type") or "").strip().upper()
+            pa_px = item.get("fill_px")
+            if pa_px is None:
+                pa_px = item.get("limit_px") if item.get("limit_px") is not None else item.get("limit_price")
+            dedup_pa = (ven_lbl.lower(), pa_sym.upper(), pa_side, pa_st)
+            if dedup_pa in seen_pa:
+                continue
+            seen_pa.add(dedup_pa)
+            ven_pfx = f"{ven_lbl}:" if ven_lbl else ""
+            otype_s = f" {pa_otype}" if pa_otype else ""
+            px_s = f"@{_fmt_plain_float(pa_px)}" if pa_px is not None else ""
+            st_s = f" {pa_st}" if pa_st else ""
+            pa_summaries.append(f"{ven_pfx}{pa_sym} {pa_side}{otype_s}{px_s}{st_s}".strip())
+            trigger_syms.add(pa_sym)
+            if len(pa_summaries) >= 3:
+                break
+        if pa_summaries:
+            parts.append("post_action")
+            parts.extend(pa_summaries)
+        else:
+            parts.append(clean_wake)
+    elif is_prev_actionable_wake:
+        parts.append(clean_wake)
 
     clean_focus = parse_symbol_list(focus_symbols) if focus_symbols else []
     if clean_focus:
@@ -340,6 +391,8 @@ def build_supervisor_prompt(
     compact_rules: bool = False,
     delta_plan: Optional[Any] = None,
     wake_reason: Optional[str] = None,
+    iteration_num: Optional[int] = None,
+    prev_eval_elapsed_sec: Optional[float] = None,
     **_extra: Any,
 ) -> str:
     """Build the topic-specific prompt for Gemini (auto_technical_repair or auto_*trade_executor)."""
@@ -358,8 +411,20 @@ def build_supervisor_prompt(
         else datetime.now(ZoneInfo("Europe/Bucharest"))
     )
     now_ts_str = clock_dt.strftime("%Y-%m-%d %H:%M:%S %Z (%a)").strip()
+    iter_n = safe_nonneg_int(iteration_num, default=0) if iteration_num is not None else 0
+    elapsed_f = safe_nonneg_float(prev_eval_elapsed_sec, default=None) if prev_eval_elapsed_sec is not None else None
+    dt_sfx = (
+        f" (+{format_age_sec_compact(elapsed_f)} vs prev)"
+        if elapsed_f is not None and 0.0 <= elapsed_f < 7 * 86400.0
+        else ""
+    )
+    iter_hdr_sfx = (
+        f" | Iter #{iter_n}{dt_sfx}"
+        if iter_n > 0
+        else (f" |{dt_sfx}" if dt_sfx else "")
+    )
     context_items: List[str] = [
-        f"### 0. CLOCK & SNAPSHOT: {now_ts_str}\n"
+        f"### 0. CLOCK & SNAPSHOT: {now_ts_str}{iter_hdr_sfx}\n"
     ]
     prices_and_trends = getattr(sensors, "prices_and_trends", None) or {}
     microstructure = getattr(sensors, "microstructure", None) or {}

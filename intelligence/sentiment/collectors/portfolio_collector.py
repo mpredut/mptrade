@@ -562,6 +562,36 @@ def _load_audit_terminal_orders(cache_dir: str, venue: str) -> Dict[str, List[Di
     return by_sym
 
 
+def _resolve_effective_trailing_raw_peak(
+    t_state: Any,
+    prev_cached_pos: Any,
+    *,
+    px_f: float = 0.0,
+    min_notional: float = 1.0,
+) -> Optional[float]:
+    """Resolve raw trailing peak without allowing a warmup-frozen daemon peak to regress a persisted position peak."""
+    t_dict = t_state if isinstance(t_state, dict) else {}
+    t_peak = safe_pos_float(t_dict.get("peak"), default=None)
+    is_warming_up = (
+        safe_pos_float(t_dict.get("warmup_at"), default=None) is not None
+        and not _parse_bool_flag(t_dict.get("is_flat"), default=False)
+    )
+    if is_warming_up and isinstance(prev_cached_pos, dict):
+        prev_pk = safe_pos_float(prev_cached_pos.get("trailing_peak"), default=None)
+        if prev_pk is not None:
+            prev_fb = safe_nonneg_float(
+                prev_cached_pos.get("free_base")
+                if prev_cached_pos.get("free_base") is not None
+                else prev_cached_pos.get("free"),
+                default=0.0,
+            ) or 0.0
+            prev_lb = safe_nonneg_float(prev_cached_pos.get("locked_base_qty"), default=0.0) or 0.0
+            prev_held = prev_fb + prev_lb
+            if prev_held > 1e-8 and (px_f <= 0.0 or prev_held * px_f >= max(1.0, min_notional)):
+                return max(t_peak or 0.0, prev_pk)
+    return t_peak
+
+
 def _attach_trailing_peak_to_position(
     pos_entry: Dict[str, Any],
     v_norm: str,
@@ -1883,7 +1913,13 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         first_variant_dict(trailing_map, t_cands) if MarketDataProvider.uses_shared_trailing_map(v_rec_norm) else None
                     )
                     if isinstance(t_dict, dict) and ("peak" in t_dict or rec_peak is None):
-                        rec_peak = safe_pos_float(t_dict.get("peak"), default=None)
+                        rec_min_not_pk = max(
+                            1.0,
+                            first_pos_float(rec_pos.get("exchange_min_notional_usd"), rec_pos.get("min_notional_usd"), default=1.0) or 1.0,
+                        )
+                        rec_peak = _resolve_effective_trailing_raw_peak(
+                            t_dict, rec_pos, px_f=px_rec, min_notional=rec_min_not_pk
+                        )
                 _attach_trailing_peak_to_position(
                     rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,
                     fallback_dd=rec_pos.get("dd_from_peak_pct"),
@@ -2207,8 +2243,15 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     fee_spec_resolver=fee_spec_resolver,
                 )
             )
+            pos_min_not_pk = max(
+                1.0,
+                first_pos_float(pos_entry.get("exchange_min_notional_usd"), pos_entry.get("min_notional_usd"), default=1.0) or 1.0,
+            )
+            eff_raw_peak = _resolve_effective_trailing_raw_peak(
+                t_state, prev_cached_pos, px_f=px_f, min_notional=pos_min_not_pk
+            )
             _attach_trailing_peak_to_position(
-                pos_entry, v_norm, sym, px_f, base_free, t_state.get("peak"), pending_peaks_by_vs
+                pos_entry, v_norm, sym, px_f, base_free, eff_raw_peak, pending_peaks_by_vs
             )
             if params.get("trailing.pct"):
                 pos_entry["trailing_pct_cfg"] = params.get("trailing.pct")

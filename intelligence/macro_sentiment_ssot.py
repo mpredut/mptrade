@@ -185,6 +185,7 @@ from cachepaths import (
     CACHE_WHALE_SNAPSHOT_PREFIX,
     MICROSTRUCTURE_CYCLE_HISTORY_FILENAME,
     cache_24_price_filename,
+    cache_ohlc_24h_filename,
     cache_path,
     cache_symbol_variants,
     canonical_base_asset,
@@ -1702,20 +1703,47 @@ def scan_cached_price_archive_high_since(
     *,
     baseline_high: float = 0.0,
 ) -> float:
-    """Scan local 365d/sparse JSONL price archives passively for the highest price since ``oldest_ts_ms``."""
+    """Scan local OHLC/24h/365d/sparse price archives passively for the highest price strictly since ``oldest_ts_ms``."""
     best_high = safe_nonneg_float(baseline_high, 0.0) or 0.0
     if not cache_dir or oldest_ts_ms <= 0 or not symbols:
         return best_high
-    from cacheprice import Cache365PriceManager, CacheSparsePriceManager
+    from cacheprice import Cache24PriceManager, Cache365PriceManager, CacheSparsePriceManager
     for cand in dict.fromkeys(symbols):
         if not cand:
             continue
-        for mgr_cls in (Cache365PriceManager, CacheSparsePriceManager):
+        ohlc_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, cache_ohlc_24h_filename(cand))))
+        if os.path.exists(ohlc_path):
+            try:
+                ohlc_doc = read_json_dict(ohlc_path, default=None, recover_previous=True)
+                pts = ohlc_doc.get("points") if isinstance(ohlc_doc, dict) else None
+                if isinstance(pts, list):
+                    for pt in pts:
+                        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                            continue
+                        t_f = safe_pos_float(pt[0], default=0.0) or 0.0
+                        t_ms = math.trunc(t_f * 1000.0 if 0.0 < t_f < 1e11 else t_f)
+                        if t_ms < oldest_ts_ms:
+                            continue
+                        close_f = safe_pos_float(pt[1], default=0.0) or 0.0
+                        if close_f > best_high:
+                            best_high = close_f
+                        # Only use 5m candle high when the full 5m bar opened at/after oldest_ts_ms (no pre-entry wick).
+                        if len(pt) >= 4 and t_ms >= oldest_ts_ms + 300_000:
+                            high_f = safe_pos_float(pt[3], default=0.0) or 0.0
+                            if high_f > best_high:
+                                best_high = high_f
+            except Exception:
+                pass
+        for mgr_cls, max_b in (
+            (Cache24PriceManager, 256 * 1024),
+            (Cache365PriceManager, 512 * 1024),
+            (CacheSparsePriceManager, 512 * 1024),
+        ):
             arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
             if not os.path.exists(arch_path):
                 continue
             try:
-                for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=512 * 1024):
+                for rec in read_tail_jsonl_records(arch_path, limit=None, max_bytes=max_b):
                     pt = mgr_cls.extract_jsonl_series_point(rec)
                     if pt is not None and len(pt) >= 2:
                         t_f = safe_pos_float(pt[0], default=0.0) or 0.0

@@ -38,6 +38,7 @@ from botcore import (
     is_us_rth_open,
     load_dotenv,
     load_key_value_conf,
+    normalize_epoch_sec,
     optional_env,
     parse_pos_cli_float,
     parse_symbol_list,
@@ -70,7 +71,7 @@ from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_pr
 from intelligence.sentiment.evaluators.prompt_invariants_evaluator import (
     evaluate_live_prompt_invariants,
 )
-from orchestratorOS.agy.topics import get_topic_thread_state, has_pending_ui_turn
+from orchestratorOS.agy.topics import get_topic_thread_state, get_topic_turn_count, has_pending_ui_turn
 from orchestratorOS.supervisor.crypto_executor_delta_gate import (
     evaluate_crypto_executor_delta_gate,
     is_extreme_stakes_delta_gate_wakeup,
@@ -358,6 +359,7 @@ class AutonomousAIReconciler:
         ui_turn_pending: bool = False,
         prev_eval_was_actionable: bool = False,
         wake_reason: Optional[str] = None,
+        prev_eval_ts: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Feeds topic-appropriate telemetry to Gemini; the topic spec bounds both prompt scope and side effects."""
         spec = topic_spec(topic_key)
@@ -384,6 +386,20 @@ class AutonomousAIReconciler:
             else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors)
         )
 
+        eval_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
+        iteration_num: Optional[int] = None
+        try:
+            iteration_num = get_topic_turn_count(topic_key) + 1
+        except Exception:
+            iteration_num = None
+        prev_ts_norm = normalize_epoch_sec(prev_eval_ts, default=None, allow_iso=True) if prev_eval_ts is not None else None
+        eff_now_iter = eval_ts if eval_ts is not None else time.time()
+        prev_eval_elapsed_sec: Optional[float] = (
+            max(0.0, eff_now_iter - prev_ts_norm)
+            if prev_ts_norm is not None and prev_ts_norm > 0.0 and eff_now_iter >= prev_ts_norm - 5.0
+            else None
+        )
+
         full_delta_plan = None
         warm_delta_plan = None
         if spec.can_trade and not spec.can_self_heal:
@@ -393,7 +409,6 @@ class AutonomousAIReconciler:
             except Exception:
                 pass
             scope_s = getattr(spec, "asset_scope", "all")
-            eval_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
             full_delta_plan = evaluate_prompt_delta_plan(
                 sensors,
                 asset_scope=scope_s,
@@ -434,6 +449,8 @@ class AutonomousAIReconciler:
             compact_rules=False,
             delta_plan=full_delta_plan,
             wake_reason=wake_reason,
+            iteration_num=iteration_num,
+            prev_eval_elapsed_sec=prev_eval_elapsed_sec,
         )
         resume_prompt: Optional[str] = None
         if spec.can_trade and not spec.can_self_heal:
@@ -449,6 +466,8 @@ class AutonomousAIReconciler:
                 compact_rules=True,
                 delta_plan=warm_delta_plan,
                 wake_reason=wake_reason,
+                iteration_num=iteration_num,
+                prev_eval_elapsed_sec=prev_eval_elapsed_sec,
             )
 
         self._last_prompt_invariant_violations = []
@@ -819,6 +838,7 @@ class AutonomousAIReconciler:
             ui_turn_pending=ui_turn_pending,
             prev_eval_was_actionable=prev_eval_was_actionable,
             wake_reason=gate_reason or None,
+            prev_eval_ts=normalize_epoch_sec(prev_eval.get("ts"), default=None, allow_iso=True) if prev_eval else None,
         )
         cat_audit = (
             sensors.system_and_vpn.get("llm_catalog_audit")
