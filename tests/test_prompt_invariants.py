@@ -2114,6 +2114,146 @@ def test_cycle18_section1_parity_scorecard_and_structure_options_invariants() ->
     }.issubset(subjs)
 
 
+def test_macro_prints_hl_cash_front_run_invalidation_and_new_invariants() -> None:
+    """Verify live_macro_prints formatting, HL cash_usd/free_cash_usd parity, invalid front-run RR rejection, and new prompt invariants."""
+    from intelligence.sentiment.evaluators.prompt_delta_evaluator import evaluate_prompt_delta_plan
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import _collect_open_order_attention
+    from orchestratorOS.supervisor.prompt_formatters import _build_section0_trigger_context
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_hyperliquid_summary_line,
+        _format_macro_calendar_line,
+    )
+    from providers.intent_telemetry import evaluate_open_order_front_run_rr
+
+    # 1. live_macro_prints renders structured dicts cleanly with zero RAW_PYTHON_DICT leaks.
+    mc_line = _format_macro_calendar_line({
+        "session_label": "US Cash Open",
+        "next_high_impact_event": "US CPI at 15:30 EET",
+        "next_event_is_high_impact": True,
+        "live_macro_prints": [
+            {
+                "event": "US CPI",
+                "actual": "3.2%",
+                "consensus": "3.1%",
+                "prior": "3.0%",
+                "surprise": "+0.1%",
+                "surprise_zscore": 1.0,
+                "stance": "HAWKISH_HEADWIND",
+            }
+        ],
+    })
+    assert mc_line is not None
+    assert "live_macro_prints=[US CPI: act=3.2% vs cons=3.1% (prior=3.0%, surprise=+0.1%, z=+1.00, HAWKISH_HEADWIND)]" in mc_line
+    assert "{'event':" not in mc_line
+    assert audit_rendered_prompt_text(f"LIVE TELEMETRY SNAPSHOT:\n{mc_line}\n") == []
+
+    # 2. _format_hyperliquid_summary_line supports legacy cash_usd AND prompt_delta_evaluator detects free_cash_usd/locked_quote_usd changes.
+    hl_legacy = _format_hyperliquid_summary_line(
+        {"engine": "HL HYPE (long-hold)", "paper": False, "qty": 16.8, "value_usd": 1016.01, "cash_usd": 3102.38}
+    )
+    assert "free_cash=$3,102.38" in hl_legacy and "qty=16.8 ($1,016.01)" in hl_legacy
+
+    class _HLWrap:
+        def __init__(self, hl_dict: dict) -> None:
+            self.evaluated_at_ts = 1795700000.0
+            self.macro_and_sentiment = {}
+            self.portfolio_summary = {"hyperliquid_readonly": hl_dict}
+            self.breaking_news = []
+            self.source_ages_sec = {}
+
+    s_hl1 = _HLWrap({"engine": "hl", "paper": False, "qty": 10.0, "free_cash_usd": 3100.0, "locked_quote_usd": 0.0})
+    p_hl1 = evaluate_prompt_delta_plan(s_hl1, asset_scope="crypto", now_ts=1795700000.0, is_warm_resume=False, conversation_id="cid-hl")
+    s_hl2 = _HLWrap({"engine": "hl", "paper": False, "qty": 10.0, "free_cash_usd": 2100.0, "locked_quote_usd": 1000.0})
+    p_hl2 = evaluate_prompt_delta_plan(s_hl2, asset_scope="crypto", now_ts=1795700300.0, is_warm_resume=True, prev_state=p_hl1.next_state, conversation_id="cid-hl")
+    assert p_hl2.action_for("hyperliquid_readonly") == "SHOW_NEW"
+
+    # 3. Front-run at/beyond invalidation_px (risk <= 0) is rejected symmetrically by SSOT helper, delta gate, and Section 0 Trigger.
+    bad_fr_buy_order = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "price": 59680.0,
+        "order_id": "oo-bad-buy",
+        "recommended_front_run_px": 58400.0,
+    }
+    bad_fr_buy_plan = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "order_state": "RESTING",
+        "entry_px": 59680.0,
+        "target_px": 60850.0,
+        "invalidation_px": 58500.0,
+    }
+    bad_fr_sell_order = {
+        "venue": "binance",
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "price": 184.8,
+        "order_id": "oo-bad-sell",
+        "recommended_front_run_px": 187.0,
+    }
+    bad_fr_sell_plan = {
+        "venue": "binance",
+        "symbol": "TAOUSDC",
+        "side": "SELL",
+        "order_state": "RESTING",
+        "entry_px": 184.8,
+        "target_px": 180.5,
+        "invalidation_px": 186.6,
+    }
+    assert evaluate_open_order_front_run_rr(bad_fr_buy_order, [bad_fr_buy_plan], min_target_rr=0.5) == (False, None)
+    assert evaluate_open_order_front_run_rr(bad_fr_sell_order, [bad_fr_sell_plan], min_target_rr=0.5) == (False, None)
+    ps_bad_fr = {
+        "open_limit_orders": [bad_fr_buy_order, bad_fr_sell_order],
+        "active_ai_trade_plans": [bad_fr_buy_plan, bad_fr_sell_plan],
+    }
+    _, flags_bad_fr, reason_bad_fr = _collect_open_order_attention(ps_bad_fr, min_target_rr=0.5)
+    assert flags_bad_fr == {} and reason_bad_fr == ""
+    trig_bad_fr, trig_syms_bad_fr = _build_section0_trigger_context(
+        "open_order_wall_trapped", None, ps_bad_fr, {"BTCUSDC", "TAOUSDC"}, min_target_rr=0.5
+    )
+    assert trig_bad_fr == "- Trigger: open_order_wall_trapped" and trig_syms_bad_fr == set()
+
+    # 4. New invariants: terminal plan RR prohibition, Section 1 vs Section 3 price parity, and Section 0 vs Section 1 front_run RR parity.
+    clean_new = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 0. CLOCK & SNAPSHOT: 2026-11-26 19:00:00 EET (Thu)\n"
+        "- Trigger: open_order_wall_trapped | HYPEUSDC wall_trapped(front_run=60.693,RR=0.95x)\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "    - [hyperliquid] HYPEUSDC: free_HYPE=10.0 ($603.73 USD), px=60.3725, limits(max_buy=$2000.0, max_sell=$603.73)\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | SELL | 60.78 | 16.8 | 0 | 617365492660 | AI | 49.1m | +0.67% | 69% | 59.5(-2.11%)/61.95(+1.92%) RR@limit=1.09x [ACTIVE] | front_run=60.693(RR=0.95x) |\n"
+        "  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):\n"
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.113, age=3.7h): target=0.1156 (+2.30% vs_spot), invalidation=0.11 (-2.65% vs_spot) [INVALIDATED]\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * HYPEUSDC: Price=$60.3725\n"
+        "    - Trend: 24h=+1.00%\n"
+    )
+    assert audit_rendered_prompt_text(clean_new) == []
+
+    bad_new = (
+        clean_new
+        .replace("wall_trapped(front_run=60.693,RR=0.95x)", "wall_trapped(front_run=60.693,RR=1.80x)")
+        .replace("px=60.3725", "px=62.50")
+        .replace("invalidation=0.11 (-2.65% vs_spot) [INVALIDATED]", "invalidation=0.11 (-2.65% vs_spot), RR@spot=0.87x [INVALIDATED]")
+    )
+    new_viols = audit_rendered_prompt_text(bad_new)
+    new_codes = {v.code for v in new_viols}
+    new_subjs = {v.subject for v in new_viols}
+    assert {
+        "PROMPT_OPEN_ORDER_RR_MATH",
+        "PROMPT_SEC1_SEC3_PRICE_PARITY",
+        "PROMPT_ACTIVE_PLAN_RR_MATH",
+    }.issubset(new_codes)
+    assert {
+        "Section0.HYPEUSDC:wall_trapped",
+        "hyperliquid:HYPEUSDC",
+        "binance:ARBUSDC:terminal_rr",
+    }.issubset(new_subjs)
+
+
 
 
 

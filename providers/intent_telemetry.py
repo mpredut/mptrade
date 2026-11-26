@@ -28,6 +28,7 @@ from cachepaths import (
     normalize_venue_name,
 )
 from instrument_registry import casefold_get, resolve_symbol_identity
+from .ai_circuit_breaker import DEFAULT_MIN_TARGET_RR
 from .base import MarketDataProvider
 from .intent_state import (
     _clean_intent_symbol,
@@ -1298,6 +1299,35 @@ def match_open_order_resting_plan(
     return None, None
 
 
+def evaluate_open_order_front_run_rr(
+    order: Mapping[str, Any],
+    active_plans: Optional[Sequence[Mapping[str, Any]]],
+    *,
+    used_plan_indices: Optional[set[int]] = None,
+    min_target_rr: float = DEFAULT_MIN_TARGET_RR,
+) -> tuple[bool, Optional[float]]:
+    """Evaluate whether an open order's recommended front-run price satisfies its linked plan's min R:R."""
+    fr_px = safe_pos_float(order.get("recommended_front_run_px"), default=None) if isinstance(order, Mapping) else None
+    if fr_px is None:
+        return False, None
+    p_idx, linked_pl = match_open_order_resting_plan(
+        order, active_plans, used_plan_indices=used_plan_indices
+    )
+    if p_idx is not None and used_plan_indices is not None:
+        used_plan_indices.add(p_idx)
+    if linked_pl is None:
+        return True, None
+    t_px = safe_pos_float(linked_pl.get("target_px"), default=None)
+    i_px = safe_pos_float(linked_pl.get("invalidation_px"), default=None)
+    if t_px is None or i_px is None:
+        return True, None
+    rr_fr = compute_order_plan_rr(fr_px, order.get("side"), t_px, i_px)
+    eff_min_rr = max(0.0, safe_float(min_target_rr, default=DEFAULT_MIN_TARGET_RR) or 0.0)
+    if rr_fr is None:
+        return False, None
+    return (eff_min_rr <= 0.0 or rr_fr >= eff_min_rr), rr_fr
+
+
 __all__ = [
     "TERMINAL_TRADE_PLAN_STATUSES",
     "_attach_intent_age_fields",
@@ -1307,6 +1337,7 @@ __all__ = [
     "_resolve_intent_execution_details",
     "build_last_cycle_execution_status",
     "compute_order_plan_rr",
+    "evaluate_open_order_front_run_rr",
     "evaluate_trade_plan_path_status",
     "evaluate_trade_plan_status",
     "extract_frozen_trade_plan_status",

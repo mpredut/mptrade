@@ -79,6 +79,7 @@ _PLAN_RR_RE = re.compile(
     r"([0-9.]+)(?:\(([+-]?[0-9.]+)%\))?/([0-9.]+)(?:\(([+-]?[0-9.]+)%\))?\s+RR(?:@limit)?=([0-9.]+)x"
 )
 _FRONT_RUN_RR_RE = re.compile(r"front_run=([0-9.]+)\(RR=([0-9.]+)x\)")
+_TRIGGER_WALL_TRAPPED_RE = re.compile(r"\b([A-Za-z0-9_]+)\s+wall_trapped\(front_run=([0-9.]+),RR=([0-9.]+)x\)")
 _NOTE_WALL_PX_RE = re.compile(
     r"\b(?:DEEP_PASSIVE_BID|BEHIND_BID_WALL|AT_BID_WALL|FAR_ABOVE_ASK_WALL|BEHIND_ASK_WALL|AT_ASK_WALL)\(wall=([0-9.]+)"
 )
@@ -1491,7 +1492,17 @@ def audit_rendered_prompt_text(
                                 f"reported {lbl_k} dist={fmt_signed(rep_pct, 2)}% != expected {fmt_signed(exp_pct, 2)}% (px={lvl_px}, anc={anc_p})",
                             )
                         )
-            if tgt_p is not None and inv_p is not None and (m_rrp := _ACTIVE_PLAN_RR_RE.search(body_p)) is not None:
+            if (m_rrp := _ACTIVE_PLAN_RR_RE.search(body_p)) is not None and any(
+                tag in body_p for tag in ("[INVALIDATED]", "[TARGET_HIT]", "[CLOSED_EARLY]")
+            ):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_ACTIVE_PLAN_RR_MATH",
+                        f"{ven_p}:{sym_p}:terminal_rr",
+                        f"terminal plan must not display forward {m_rrp.group(0)}",
+                    )
+                )
+            elif tgt_p is not None and inv_p is not None and m_rrp is not None:
                 rr_anc_tag = m_rrp.group(1)
                 exp_anc_tag = "limit" if is_resting_p else "spot"
                 if rr_anc_tag is not None and rr_anc_tag != exp_anc_tag:
@@ -1932,6 +1943,17 @@ def _audit_prompt_cross_section_math(
                             )
                         )
 
+    for (p_ven, p_sym_u), p_px in px_by_vs.items():
+        if (s3_px := sec3_px_by_sym.get(p_sym_u)) is not None and s3_px > 0.0:
+            if abs(p_px - s3_px) / s3_px > 0.005:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_SEC1_SEC3_PRICE_PARITY",
+                        f"{p_ven}:{p_sym_u}",
+                        f"Section 1 px={p_px:g} diverges >0.5% from Section 3 Price={s3_px:g}",
+                    )
+                )
+
     btc_h = hor_chg_by_sym.get("BTCUSDC", {})
     if btc_h:
         for sym, _, rest in sec3_items:
@@ -2140,6 +2162,29 @@ def _audit_prompt_cross_section_math(
                             "PROMPT_OPEN_ORDER_WALL_BOOK_MATH",
                             f"{ven_o}:{sym_o}:front_run",
                             f"{side_o} front_run={fr_px:g} out of passive range (limit={px_o:g}, spot={spot_p:g})",
+                        )
+                    )
+
+    sec0_head = prompt_text.split("### 1.", 1)[0]
+    if "Trigger:" in sec0_head:
+        oo_fr_by_sym_px: dict[tuple[str, float], float] = {}
+        for _, sym_o, _, _, _, note_cell in open_order_rows:
+            if (m_fr_o := _FRONT_RUN_RR_RE.search(note_cell)) is not None:
+                fpx_o = safe_pos_float(m_fr_o.group(1), default=None)
+                frr_o = safe_nonneg_float(m_fr_o.group(2), default=None)
+                if fpx_o is not None and frr_o is not None:
+                    oo_fr_by_sym_px[(sym_o.upper(), round(fpx_o, 6))] = frr_o
+        for m_tw in _TRIGGER_WALL_TRAPPED_RE.finditer(sec0_head):
+            t_sym, t_px = m_tw.group(1).upper(), safe_pos_float(m_tw.group(2), default=None)
+            t_rr = safe_nonneg_float(m_tw.group(3), default=None)
+            if t_px is not None and t_rr is not None:
+                oo_rr = oo_fr_by_sym_px.get((t_sym, round(t_px, 6)))
+                if oo_rr is not None and abs(t_rr - oo_rr) > 0.02:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_OPEN_ORDER_RR_MATH",
+                            f"Section0.{t_sym}:wall_trapped",
+                            f"Section 0 trigger front_run RR={t_rr:.2f}x != Section 1 table RR={oo_rr:.2f}x (fr={t_px:g})",
                         )
                     )
 

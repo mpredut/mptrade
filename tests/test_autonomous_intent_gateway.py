@@ -5613,6 +5613,34 @@ def test_simultaneous_buys_share_cycle_venue_quote_cash_budget(tmp_path):
     assert r_c1["status"] == "CANCELED"
     assert r_b2["status"] == "EXECUTED" and r_b2["clamped_notional_usd"] == pytest.approx(1200.0, abs=0.05)
 
+    # 7. Deferred BUY (queued to order_retry_worker) reserves quote spend so BUY #2 cannot steal its cash in the same cycle.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_def = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0}
+    btc_def = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_def)
+    arb_def = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_def)
+
+    def _deferred_place(**kwargs):
+        ctx = kwargs.get("_outcome_context")
+        if isinstance(ctx, dict):
+            ctx.update({"category": "deferred", "reason": "queued_for_retry"})
+        return None
+
+    btc_def.place.side_effect = _deferred_place
+    def_map = {("binance", "BTCUSDC"): btc_def, ("binance", "ARBUSDC"): arb_def}
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: def_map[(str(venue).lower(), str(sym).upper())]
+    _, _, emitted_def, _, _ = submit_supervisor_trading_decisions(
+        {"market_trading_decisions": plan_stale["market_trading_decisions"][:2]},
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    by_def = {e["symbol"]: e for e in emitted_def}
+    assert by_def["BTCUSDC"]["history"][-1].get("category") == "deferred"
+    assert by_def["ARBUSDC"]["status"] == "EXECUTED" and by_def["ARBUSDC"]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
+
 
 
 

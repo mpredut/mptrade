@@ -1382,6 +1382,7 @@ class AutonomousIntentGateway:
                 self._commit_cycle_quote_spend(decision, effective_usd)
             elif last_hist.get("category") == "deferred":
                 preempt_tx.mark_deferred()
+                self._commit_cycle_quote_spend(decision, effective_usd)
             elif last_hist.get("submission_state") == "unknown" or last_hist.get("reason") == "submit_ambiguous":
                 preempt_tx.mark_ambiguous()
                 self._commit_cycle_quote_spend(decision, effective_usd)

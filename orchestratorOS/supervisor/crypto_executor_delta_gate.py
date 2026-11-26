@@ -27,9 +27,8 @@ from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
 from providers.ai_circuit_breaker import DEFAULT_MIN_TARGET_RR
 from providers.intent_state import eval_doc_was_actionable
 from providers.intent_telemetry import (
-    compute_order_plan_rr,
+    evaluate_open_order_front_run_rr,
     evaluate_trade_plan_status,
-    match_open_order_resting_plan,
 )
 
 _ATR_15M_DELTA_GATE_MULT = 0.75
@@ -339,19 +338,10 @@ def _collect_open_order_attention(
             cur_flag = "open_order_stale_or_far"
             cur_reason = "open_order_stale_or_far"
         elif fr_px is not None:
-            p_idx, linked_pl = match_open_order_resting_plan(
-                oo, active_plans, used_plan_indices=used_plan_indices
+            fr_ok, _ = evaluate_open_order_front_run_rr(
+                oo, active_plans, used_plan_indices=used_plan_indices, min_target_rr=eff_min_rr
             )
-            if p_idx is not None:
-                used_plan_indices.add(p_idx)
-            rr_fr = (
-                compute_order_plan_rr(
-                    fr_px, oo.get("side"), linked_pl.get("target_px"), linked_pl.get("invalidation_px")
-                )
-                if linked_pl is not None
-                else None
-            )
-            if rr_fr is None or eff_min_rr <= 0.0 or rr_fr >= eff_min_rr:
+            if fr_ok:
                 cur_flag = "open_order_wall_trapped"
                 cur_reason = "open_order_wall_trapped"
         elif oo.get("ob_flag") == "[ob_stale]" and prev_flags.get(oid) == "open_order_wall_trapped":

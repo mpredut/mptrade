@@ -62,10 +62,7 @@ from providers.ai_circuit_breaker import (
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
 )
-from providers.intent_telemetry import (
-    compute_order_plan_rr,
-    match_open_order_resting_plan,
-)
+from providers.intent_telemetry import evaluate_open_order_front_run_rr
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _LIVE_DOMAIN_AGE_KEYS = frozenset({
@@ -145,19 +142,10 @@ def _build_section0_trigger_context(
                 parts.append(f"{sym} partial_fill {_fmt_plain_float(filled_v)}{qty_s}{rem_s}")
                 trigger_syms.add(sym)
             if "open_order_wall_trapped" in wake_lc and (fr_v := safe_pos_float(oo.get("recommended_front_run_px"), default=None)) is not None:
-                p_idx, linked_pl = match_open_order_resting_plan(
-                    oo, raw_plans, used_plan_indices=used_wt_plans
+                fr_ok, rr_fr = evaluate_open_order_front_run_rr(
+                    oo, raw_plans, used_plan_indices=used_wt_plans, min_target_rr=eff_min_rr
                 )
-                if p_idx is not None:
-                    used_wt_plans.add(p_idx)
-                rr_fr = (
-                    compute_order_plan_rr(
-                        fr_v, oo.get("side"), linked_pl.get("target_px"), linked_pl.get("invalidation_px")
-                    )
-                    if linked_pl is not None
-                    else None
-                )
-                if rr_fr is None or eff_min_rr <= 0.0 or rr_fr >= eff_min_rr:
+                if fr_ok:
                     rr_sfx = f",RR={rr_fr:.2f}x" if rr_fr is not None else ""
                     parts.append(f"{sym} wall_trapped(front_run={fr_v:g}{rr_sfx})")
                     trigger_syms.add(sym)

@@ -313,6 +313,34 @@ _GT_SUMMARY_DIRECTIVE_RE = re.compile(
 )
 
 
+def _format_live_macro_prints(raw_prints: Any) -> str:
+    """Format live_macro_prints dicts cleanly without raw Python dict reprs."""
+    items = raw_prints if isinstance(raw_prints, list) else ([raw_prints] if raw_prints is not None else [])
+    formatted: List[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            formatted.append(str(item))
+            continue
+        ev = str(item.get("event") or "").strip()
+        act = item.get("actual")
+        cons = item.get("consensus")
+        if ev and act is not None and cons is not None:
+            meta: List[str] = []
+            if item.get("prior") is not None:
+                meta.append(f"prior={item['prior']}")
+            if item.get("surprise") is not None:
+                meta.append(f"surprise={item['surprise']}")
+            if (z_v := safe_float(item.get("surprise_zscore"), default=None)) is not None:
+                meta.append(f"z={fmt_signed(z_v)}")
+            if st := str(item.get("stance") or "").strip():
+                meta.append(st)
+            meta_s = f" ({', '.join(meta)})" if meta else ""
+            formatted.append(f"{ev}: act={act} vs cons={cons}{meta_s}")
+        else:
+            formatted.append(_format_compact_kv_value(item))
+    return f"[{'; '.join(formatted)}]"
+
+
 def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     """Format the Section 1 Macro Economic Calendar & Session Window bullet line."""
     if not (isinstance(mc, dict) and mc.get("next_high_impact_event")):
@@ -384,7 +412,7 @@ def _format_macro_calendar_line(mc: Any) -> Optional[str]:
     if mc.get("detected_macro_headlines"):
         mc_parts.append(f'live_macro_headlines={mc.get("detected_macro_headlines")}')
     if mc.get("live_macro_prints"):
-        mc_parts.append(f'live_macro_prints={mc.get("live_macro_prints")}')
+        mc_parts.append(f'live_macro_prints={_format_live_macro_prints(mc.get("live_macro_prints"))}')
     return f"- Macro Economic Calendar & Session Window: {' | '.join(mc_parts)}"
 
 
@@ -2367,8 +2395,9 @@ def _format_hyperliquid_summary_line(hl_ro: Any, *, tag: str = "") -> str:
         parts.append(f"paper={hl_ro['paper']}")
     if hl_ro.get("total_equity_usd") is not None:
         parts.append(f"equity=${safe_float(hl_ro.get('total_equity_usd'), 0.0):,.2f}")
-    if hl_ro.get("free_cash_usd") is not None:
-        parts.append(f"free_cash=${safe_float(hl_ro.get('free_cash_usd'), 0.0):,.2f}")
+    fc_hl = hl_ro.get("free_cash_usd") if hl_ro.get("free_cash_usd") is not None else hl_ro.get("cash_usd")
+    if fc_hl is not None:
+        parts.append(f"free_cash=${safe_float(fc_hl, 0.0):,.2f}")
     if (lq_hl := safe_float(hl_ro.get("locked_quote_usd"), 0.0) or 0.0) > 0.0:
         parts.append(f"locked_quote=${lq_hl:,.2f}")
     if (q_hl := safe_float(hl_ro.get("qty"), 0.0) or 0.0) > 0.0:

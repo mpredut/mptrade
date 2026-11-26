@@ -401,11 +401,17 @@ def _extract_block_fingerprints(
             else:
                 block_hashes["equity_bellwethers"] = _hash_payload(eq_bw)
         if isinstance(hl_ro := ps.get("hyperliquid_readonly"), Mapping) and hl_ro:
+            hl_cash_raw = (
+                hl_ro.get("free_cash_usd")
+                if hl_ro.get("free_cash_usd") is not None
+                else hl_ro.get("cash_usd")
+            )
             block_hashes["hyperliquid_readonly"] = _hash_payload({
                 "engine": hl_ro.get("engine"),
                 "paper": hl_ro.get("paper"),
                 "qty": round(safe_float(hl_ro.get("qty"), 0.0) or 0.0, 6),
-                "cash": round(safe_float(hl_ro.get("cash_usd"), 0.0) or 0.0, 1),
+                "cash": round(safe_float(hl_cash_raw, 0.0) or 0.0, 1),
+                "locked": round(safe_float(hl_ro.get("locked_quote_usd"), 0.0) or 0.0, 1),
             })
         raw_ro = ps.get("recent_orders")
         if isinstance(raw_ro, Mapping):
