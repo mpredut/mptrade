@@ -2469,16 +2469,18 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
                 f"While saving the cache file {self.filename} / .tmp ", exc
             )
 
-    def _reload_snapshot_from_disk(self):
+    def _reload_snapshot_from_disk(self) -> bool:
         try:
             metadata = self._load_versioned_account_meta(optional=True)
             if metadata is not None:
                 self._ensure_account_version(str(metadata["data_version"]))
-                return
+                return True
             with self._generation_lock():
                 self._load_order_state_generation_locked()
+            return True
         except Exception as e:
             print(f"[{self.cls_name}][Error] reload {self.filename}: {e}")
+            return False
 
     def _read_order_snapshot_recovering_previous_locked(self, metadata):
         """Read an Order snapshot against ``metadata``, restoring ``.previous`` if needed."""
@@ -3468,12 +3470,13 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                     best = v_ms
         return best
 
-    def _reload_snapshot_from_disk(self):
+    def _reload_snapshot_from_disk(self) -> bool:
         try:
             with self._generation_lock():
-                self._load_open_state_generation_locked()
+                return bool(self._load_open_state_generation_locked())
         except Exception as exc:
             print(f"[{self.cls_name}][Error] reload {self.filename}: {exc}")
+            return False
 
     def _save_state_to_file_impl(self) -> bool:
         def _save_locked() -> bool:
@@ -4064,13 +4067,13 @@ class CacheBalanceManager(CacheAccountManagerBase):
     def _ensure_account_version(self, required_version: str) -> None:
         self._load_snapshot_state()
 
-    def _load_snapshot_state(self) -> None:
+    def _load_snapshot_state(self) -> bool:
         with self._generation_lock():
             if not os.path.exists(self.filename) and not os.path.exists(self._previous_generation_path()):
-                return
+                return False
             loaded = read_json_dict_recovering(self.filename, repair_files=not self.read_only)
             if not isinstance(loaded, dict):
-                return
+                return False
             doc_ts = normalize_epoch_sec(loaded.get("verified_ts") or loaded.get("ts"), default=None)
             doc_max_ms = max(
                 self._scalar_ts_to_ms(loaded.get("ts")),
@@ -4102,15 +4105,17 @@ class CacheBalanceManager(CacheAccountManagerBase):
                 self.verified_ts = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
                 self._doc_ts_ms = doc_max_ms
                 self.breakdown = clean_bd
+            return True
 
     def _mem_max_ts(self) -> int:
         return max(super()._mem_max_ts(), getattr(self, "_doc_ts_ms", 0))
 
-    def _reload_snapshot_from_disk(self) -> None:
+    def _reload_snapshot_from_disk(self) -> bool:
         try:
-            self._load_snapshot_state()
+            return bool(self._load_snapshot_state())
         except Exception as exc:
             print(f"[{self.cls_name}][Error] reload {self.filename}: {exc}")
+            return False
 
     def get_remote_items(self, symbol, startTime) -> list[dict[str, Any]]:
         return []

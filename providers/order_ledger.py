@@ -905,9 +905,21 @@ class FileOrderLedgerBase(OrderLedgerBackendInterface, ABC):
             "schema_version": safe_nonneg_int(raw.get("schema_version"), default=ORDER_LEDGER_SCHEMA_VERSION) or ORDER_LEDGER_SCHEMA_VERSION,
             "updated_ts": safe_nonneg_float(raw.get("updated_ts"), default=0.0) or 0.0,
             "journal_cursor": norm_cursor,
-            "venue_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_ver.items() if clean_scalar_str(k) is not None},
-            "symbol_verified_ts": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_sym_ver.items() if clean_scalar_str(k) is not None},
-            "recently_closed": {str(k): safe_nonneg_float(v, default=0.0) or 0.0 for k, v in raw_rc.items() if clean_scalar_str(k) is not None},
+            "venue_verified_ts": {
+                str(k): v_f
+                for k, v in raw_ver.items()
+                if clean_scalar_str(k) is not None and (v_f := safe_pos_float(v, default=None)) is not None
+            },
+            "symbol_verified_ts": {
+                str(k): v_f
+                for k, v in raw_sym_ver.items()
+                if clean_scalar_str(k) is not None and (v_f := safe_pos_float(v, default=None)) is not None
+            },
+            "recently_closed": {
+                str(k): v_f
+                for k, v in raw_rc.items()
+                if clean_scalar_str(k) is not None and (v_f := safe_pos_float(v, default=None)) is not None
+            },
             "orders": {str(k): dict(v) for k, v in raw_orders.items() if clean_scalar_str(k) is not None and isinstance(v, dict)},
         }
 

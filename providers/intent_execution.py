@@ -468,7 +468,11 @@ def _missing_target_order_blocks_replacement(
     st_lc = (clean_scalar_str(st.get("status") if isinstance(st, dict) else getattr(st, "status", None)) or "").lower()
     if not st_lc:
         return bool(fail_closed_on_error)
-    raw_fq = st.get("filled_qty") if isinstance(st, dict) else getattr(st, "filled_qty", 0.0)
+    raw_fq = (
+        (extract_executed_qty(st) or safe_pos_float(st.get("filled_qty"), default=0.0) or 0.0)
+        if isinstance(st, dict)
+        else getattr(st, "filled_qty", 0.0)
+    )
     return is_active_or_filled_status(st_lc, raw_fq)
 
 
@@ -1012,12 +1016,50 @@ def reconcile_open_intent_by_client_id(
         return False
     st_lc = (clean_scalar_str(found.get("status")) or "").lower()
     filled_q = extract_executed_qty(found) or (safe_pos_float(found.get("filled_qty"), default=0.0) or 0.0)
-    if (
-        is_active_or_filled_status(st_lc, filled_q)
-        or (st_lc in {"canceled", "cancelled", "expired"} and _missing_target_order_blocks_replacement(inst, oid_str))
-    ):
+    if is_active_or_filled_status(st_lc, filled_q):
         matched_cid = (clean_scalar_str(extract_client_order_id(found, default="")) or base_cid).lower()
         return _adopt(found, matched_cid)
+    if st_lc in {"canceled", "cancelled", "expired"}:
+        try:
+            st_check = _call_inst_or_provider_order_lookup(
+                inst, "order_status", oid_str, raise_on_error=True
+            )
+        except OrderNotFound:
+            st_check = None
+        except Exception as exc:
+            if log:
+                log.warning(
+                    "[INTENT GATEWAY] Deferring resumed intent on %s; order_status(%s) failed for canceled order: %s",
+                    getattr(inst, "symbol", ""), oid_str, exc,
+                )
+            append_intent_history(intent, {
+                "ts": now_ts,
+                "action": "RECONCILE_DEFERRED_LOOKUP_ERROR",
+                "reason": f"order_status_failed:{exc}",
+            })
+            return True
+        if st_check is not None:
+            chk_st = (
+                clean_scalar_str(
+                    st_check.get("status") if isinstance(st_check, dict) else getattr(st_check, "status", None)
+                )
+                or ""
+            ).lower()
+            if not chk_st:
+                append_intent_history(intent, {
+                    "ts": now_ts,
+                    "action": "RECONCILE_DEFERRED_LOOKUP_ERROR",
+                    "reason": "order_status_empty",
+                })
+                return True
+            chk_fq = (
+                (extract_executed_qty(st_check) or safe_pos_float(st_check.get("filled_qty"), default=0.0) or 0.0)
+                if isinstance(st_check, dict)
+                else getattr(st_check, "filled_qty", 0.0)
+            )
+            if is_active_or_filled_status(chk_st, chk_fq):
+                matched_cid = (clean_scalar_str(extract_client_order_id(found, default="")) or base_cid).lower()
+                return _adopt(found, matched_cid)
     return False
 
 

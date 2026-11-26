@@ -149,6 +149,18 @@ class KrakenTrailing(StrategyExecutorTrailingAdapter):
             if isinstance(k, str) and k.strip().casefold() in cand_folded
         ]
 
+    def has_valid_balance(self, asset: str) -> bool:
+        if self._balance_ex_map() is None:
+            return False
+        for bx in self._balance_ex_entries(asset):
+            if not isinstance(bx, dict):
+                return False
+            bal_f = safe_nonneg_float(bx.get("balance"), default=None)
+            hold_f = safe_nonneg_float(bx.get("hold_trade", 0.0), default=None)
+            if bal_f is None or hold_f is None:
+                return False
+        return True
+
     def free_qty(self, asset: str) -> float:
         """Return FREE balance (total minus order holds), excluding locked orders."""
         total_free = 0.0

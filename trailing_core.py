@@ -264,6 +264,7 @@ class TrailingCore:
         self.item_isolation = _parse_bool_flag(item_isolation, default=True)
         self._last_observed_price: dict[str, float] = {}
         self._pending_price_outliers: dict[str, float] = {}
+        self._last_tick_status: dict[str, Any] = {"status": "ok"}
 
     # -- state (peak per key) -------------------------------------------------
     def load(self, *, read_only: bool = False) -> dict:
@@ -533,6 +534,15 @@ class TrailingCore:
         if trail_f is None or trail_f >= 100.0:
             return
         trail = trail_f
+        balance_check = getattr(self.a, "has_valid_balance", None)
+        if callable(balance_check):
+            try:
+                if balance_check(asset) is False:
+                    self.log(f"  ! [TRAIL] {asset}: corrupt or unavailable balance entry -- skipping asset tick")
+                    return
+            except Exception:
+                self.log(f"  ! [TRAIL] {asset}: balance validation failed -- skipping asset tick")
+                return
         free = self._safe_free_qty(asset)
         raw_price = self.a.price(pair)
         price = safe_pos_float(raw_price, default=None)
@@ -698,16 +708,22 @@ class TrailingCore:
 
     def check_once(self) -> None:
         if not self.a.begin_tick():
+            self._last_tick_status = {"status": "skipped", "reason": "balance_unavailable"}
             return
         if self.item_isolation:                               # Binance: isolate each coin and save when mutated
             state = self.load()
             before = clean_json_value(state, stringify_keys=False)
+            item_errors = 0
             for key, asset, pair, trail in self.a.assets():
                 try:
                     self._process(key, asset, pair, trail, state)
                 except Exception as e:  # noqa: BLE001 -- one coin must not stop the rest
+                    item_errors += 1
                     self.a.log_item_error(key, e)
             self._save_if_changed(state, before)
+            self._last_tick_status = (
+                {"status": "degraded", "item_errors": item_errors} if item_errors else {"status": "ok"}
+            )
         else:                                                 # Kraken: one try per tick; retry errors without saving
             try:
                 state = self.load()
@@ -715,7 +731,9 @@ class TrailingCore:
                 for key, asset, pair, trail in self.a.assets():
                     self._process(key, asset, pair, trail, state)
                 self._save_if_changed(state, before)
+                self._last_tick_status = {"status": "ok"}
             except Exception as e:  # noqa: BLE001 -- resilience: retry after a network failure
+                self._last_tick_status = {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
                 self.a.log_tick_error(e)
 
 
@@ -1163,15 +1181,20 @@ class TrailingAdapterBase:
         hb_name = self._HEARTBEAT_NAME or f"{self._VENUE_LABEL or 'Trailing'}-trailing"
         touch_module_heartbeat(hb_name, interval_sec=30.0, force=True, intervals={"check_seconds": check_seconds})
         while True:
+            hb_status: dict[str, Any]
             try:
                 self.check_once()
+                core_status = getattr(getattr(self, "core", None), "_last_tick_status", None)
+                hb_status = dict(core_status) if isinstance(core_status, dict) else {"status": "ok"}
             except KeyboardInterrupt:
                 return
             except Exception as e:  # noqa: BLE001
+                hb_status = {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
                 self.log_tick_error(e)
             touch_module_heartbeat(
                 hb_name,
                 interval_sec=30.0,
+                status=hb_status,
                 intervals={"check_seconds": check_seconds},
             )
             time.sleep(check_seconds)
@@ -1398,6 +1421,9 @@ class StrategyExecutorTrailingAdapter(TrailingAdapterBase):
         if self._tick_balances is None:
             self.log(f"  ! {self._LOG_TAG} empty or invalid balance snapshot -- skipping the tick")
         return self._tick_balances is not None
+
+    def has_valid_balance(self, asset: str) -> bool:
+        return self._lookup_balance_pair(asset) is not None
 
     def free_qty(self, asset: str) -> float:
         pair_val = self._lookup_balance_pair(asset)

@@ -5803,6 +5803,77 @@ def test_format_exec_intent_item_preserves_non_executed_status_and_canceled_orde
     assert intents_copy[0]["execution_payload"]["status"] == "CANCELED"
 
 
+def test_intent_execution_pass5_partial_fill_dict_and_canceled_order_status_fail_closed():
+    """Pass 5 invariants: _missing_target_order_blocks_replacement extracts venue dict partial fills (executedQty/vol_exec),
+    and reconcile_open_intent_by_client_id fails closed (defers) on transient order_status error for canceled orders."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from providers.intent_execution import (
+        _missing_target_order_blocks_replacement,
+        cancel_existing_ai_open_orders,
+        reconcile_open_intent_by_client_id,
+    )
+    from providers.ohlc_utils import ProviderError
+    from providers.strategy_executor import OrderNotFound
+
+    # 1. Dict order_status with executedQty / vol_exec on CANCELED order MUST block replacement (partial fill)
+    for field_name in ("executedQty", "vol_exec", "filled_qty"):
+        inst_partial = SimpleNamespace(
+            provider_name="binance",
+            symbol="BTCUSDC",
+            open_orders=MagicMock(return_value=[]),
+            cancel_order=MagicMock(return_value=True),
+            order_status=MagicMock(return_value={"orderId": "oid-p1", "status": "CANCELED", field_name: "0.25"}),
+        )
+        assert _missing_target_order_blocks_replacement(inst_partial, "oid-p1") is True
+        failed: list[str] = []
+        cancel_existing_ai_open_orders(
+            inst_partial, "BUY", include_bot_orders=True, target_order_ids=["oid-p1"],
+            verify_not_filled=True, failed_order_ids=failed,
+        )
+        assert failed == ["oid-p1"]
+
+    # 2. reconcile_open_intent_by_client_id: canceled summary + transient order_status error MUST defer (not resubmit and not mark EXECUTED)
+    inst_err = SimpleNamespace(
+        provider_name="binance",
+        symbol="ETHUSDC",
+        open_orders=MagicMock(return_value=[]),
+        order_by_client_id=MagicMock(return_value={"orderId": "oid-c1", "clientOrderId": "AI_iid_c1", "status": "CANCELED"}),
+        order_status=MagicMock(side_effect=ProviderError("503 unavailable")),
+    )
+    intent_err = {"intent_id": "iid_c1", "venue": "binance", "symbol": "ETHUSDC", "status": "PENDING_EXECUTION", "history": []}
+    assert reconcile_open_intent_by_client_id(inst_err, intent_err, 1_795_800_100.0) is True
+    assert intent_err["status"] == "PENDING_EXECUTION"
+    assert intent_err["history"][-1]["action"] == "RECONCILE_DEFERRED_LOOKUP_ERROR"
+
+    # 3. Canceled summary + dict order_status showing partial fill (executedQty > 0) MUST adopt as EXECUTED
+    inst_adopt = SimpleNamespace(
+        provider_name="binance",
+        symbol="ETHUSDC",
+        open_orders=MagicMock(return_value=[]),
+        order_by_client_id=MagicMock(return_value={"orderId": "oid-c2", "clientOrderId": "AI_iid_c2", "status": "CANCELED"}),
+        order_status=MagicMock(return_value={"orderId": "oid-c2", "status": "CANCELED", "executedQty": "0.15"}),
+    )
+    intent_adopt = {"intent_id": "iid_c2", "venue": "binance", "symbol": "ETHUSDC", "status": "PENDING_EXECUTION", "history": []}
+    assert reconcile_open_intent_by_client_id(inst_adopt, intent_adopt, 1_795_800_200.0) is True
+    assert intent_adopt["status"] == "EXECUTED"
+
+    # 4. Canceled summary + OrderNotFound (or zero-fill CANCELED) permits clean resubmission (returns False)
+    for st_side_effect in (OrderNotFound("gone"), {"orderId": "oid-c3", "status": "CANCELED", "executedQty": "0"}):
+        mock_st = MagicMock(side_effect=st_side_effect) if isinstance(st_side_effect, Exception) else MagicMock(return_value=st_side_effect)
+        inst_ok = SimpleNamespace(
+            provider_name="binance",
+            symbol="ETHUSDC",
+            open_orders=MagicMock(return_value=[]),
+            order_by_client_id=MagicMock(return_value={"orderId": "oid-c3", "clientOrderId": "AI_iid_c3", "status": "CANCELED"}),
+            order_status=mock_st,
+        )
+        intent_ok = {"intent_id": "iid_c3", "venue": "binance", "symbol": "ETHUSDC", "status": "PENDING_EXECUTION", "history": []}
+        assert reconcile_open_intent_by_client_id(inst_ok, intent_ok, 1_795_800_300.0) is False
+        assert intent_ok["status"] == "PENDING_EXECUTION"
+
+
+
 
 
 

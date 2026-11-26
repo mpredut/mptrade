@@ -149,19 +149,25 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             prune=True,
         )
 
-    def _reload_singleton_if_changed(self, mgr: Any) -> None:
+    def _reload_singleton_if_changed(self, mgr: Any) -> bool:
         fname = getattr(mgr, "filename", None)
         if not fname or not os.path.isfile(fname):
-            return
+            return True
         try:
             st = os.stat(fname)
             sig = (st.st_mtime_ns, st.st_size)
         except OSError:
-            return
+            return False
         if self._file_sigs.get(fname) != sig:
             if callable(reload_fn := getattr(mgr, "_reload_snapshot_from_disk", None)):
-                reload_fn()
+                try:
+                    ok = reload_fn()
+                except Exception:
+                    return False
+                if ok is False:
+                    return False
             self._file_sigs[fname] = sig
+        return True
 
     def _read_venue_open_snapshot(self, venue: str) -> tuple[dict[str, list[dict[str, Any]]], float, dict[str, float]]:
         """Read ``(items_by_symbol, venue_verified_ts, symbol_verified_ts)`` for one venue.
@@ -172,22 +178,22 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         if self._use_singletons and self._explicit_cachedb_dir is None:
             try:
                 mgr = get_order_open_manager(venue)
-                self._reload_singleton_if_changed(mgr)
-                with mgr.lock:
-                    items = {k: [dict(r) for r in v] for k, v in (mgr.cache or {}).items() if isinstance(v, list)}
-                    ver_ts = safe_nonneg_float(getattr(mgr, "verified_ts", 0.0), default=0.0) or 0.0
-                    raw_sym_ver = getattr(mgr, "symbol_verified_ts", None)
-                    sym_ver = (
-                        {
-                            str(k): round(v_f, 3)
-                            for k, v in raw_sym_ver.items()
-                            if (v_f := safe_pos_float(v, default=None)) is not None
-                        }
-                        if isinstance(raw_sym_ver, dict)
-                        else {}
-                    )
-                if items or ver_ts > 0.0 or sym_ver:
-                    return items, ver_ts, sym_ver
+                if self._reload_singleton_if_changed(mgr):
+                    with mgr.lock:
+                        items = {k: [dict(r) for r in v] for k, v in (mgr.cache or {}).items() if isinstance(v, list)}
+                        ver_ts = safe_nonneg_float(getattr(mgr, "verified_ts", 0.0), default=0.0) or 0.0
+                        raw_sym_ver = getattr(mgr, "symbol_verified_ts", None)
+                        sym_ver = (
+                            {
+                                str(k): round(v_f, 3)
+                                for k, v in raw_sym_ver.items()
+                                if (v_f := safe_pos_float(v, default=None)) is not None
+                            }
+                            if isinstance(raw_sym_ver, dict)
+                            else {}
+                        )
+                    if items or ver_ts > 0.0 or sym_ver:
+                        return items, ver_ts, sym_ver
             except Exception:
                 pass
         items, _, ver_ts, sym_ver = CacheOrderOpenManager.read_venue_open_orders_snapshot_detailed(
@@ -199,11 +205,11 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
         if self._use_singletons and self._explicit_cachedb_dir is None:
             try:
                 mgr = get_order_filled_manager(venue)
-                self._reload_singleton_if_changed(mgr)
-                with mgr.lock:
-                    items = {k: [dict(r) for r in v] for k, v in (mgr.cache or {}).items() if isinstance(v, list)}
-                if items:
-                    return items
+                if self._reload_singleton_if_changed(mgr):
+                    with mgr.lock:
+                        items = {k: [dict(r) for r in v] for k, v in (mgr.cache or {}).items() if isinstance(v, list)}
+                    if items:
+                        return items
             except Exception:
                 pass
         items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
@@ -752,14 +758,22 @@ def main() -> int:
     _touch_ledger_hb({"active_count": 0}, poll_sec=poll_sec, force=True)
     while True:
         last_stats = None
+        last_error = None
         try:
             stats = reconciler.reconcile_once()
             last_stats = stats
             if any(stats[k] for k in ("events_applied", "reconciled_open", "reconciled_filled", "reconciled_closed", "orphans_adopted")):
                 print(f"[order_ledger] {stats}")
         except Exception as exc:  # noqa: BLE001
+            last_error = f"{exc.__class__.__name__}: {exc}"
             print(f"[order_ledger] pass error (continuing): {exc}")
-        _touch_ledger_hb(last_stats if isinstance(last_stats, dict) else {"status": "ok"}, poll_sec=poll_sec)
+        if isinstance(last_stats, dict):
+            hb_status = last_stats
+        elif last_error is not None:
+            hb_status = {"status": "error", "error": last_error}
+        else:
+            hb_status = {"status": "ok"}
+        _touch_ledger_hb(hb_status, poll_sec=poll_sec)
         time.sleep(poll_sec)
     return 0
 

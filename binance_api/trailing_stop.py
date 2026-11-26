@@ -276,19 +276,27 @@ class TrailingStop(TrailingAdapterBase):
             self.log(f"  ! [TRAIL] balances unavailable ({e}) \u2014 skipping the tick")
             return False
 
+    def has_valid_balance(self, asset: str) -> bool:
+        bal = self._find_balance_row(self._balances, asset)
+        if bal is None:
+            return True
+        f = safe_nonneg_float(bal.get("free", 0.0), default=None)
+        l = safe_nonneg_float(bal.get("locked", 0.0), default=None)
+        return f is not None and l is not None
+
     def free_qty(self, asset: str) -> float:
         bal = self._find_balance_row(self._balances, asset)
         return safe_nonneg_float(bal.get("free"), default=0.0) if bal is not None else 0.0
 
-    def total_qty(self, asset: str) -> float:
+    def total_qty(self, asset: str) -> float | None:
         bal = self._find_balance_row(self._balances, asset)
         if bal is None:
             return 0.0
         f = safe_nonneg_float(bal.get("free", 0.0), default=None)
         l = safe_nonneg_float(bal.get("locked", 0.0), default=None)
         if f is None or l is None:
-            return 0.0
-        return safe_nonneg_float(f + l, default=0.0)
+            return None
+        return safe_nonneg_float(f + l, default=None)
 
     def unlock_qty(self, pair: str) -> bool:
         """Cancel open SELL orders to release locked quantity for emergency stop."""

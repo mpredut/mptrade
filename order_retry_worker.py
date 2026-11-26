@@ -1129,16 +1129,28 @@ def main():
     _touch_worker_hb({"retry_enabled": True}, force=True)
     while True:
         last_stats = None
+        last_error = None
+        hb_state = "ok"
         try:
             stats = process_once(mkt)
             last_stats = stats
             if stats["attempted"] or stats["expired"] or stats["observed"]:
                 print(f"[order_retry] {stats}")
         except oq.RetryQueueCorruptionError as exc:
+            hb_state = "corrupted"
+            last_error = f"{exc.__class__.__name__}: {exc}"
             _log_queue_corruption(exc)
         except Exception as exc:
+            hb_state = "error"
+            last_error = f"{exc.__class__.__name__}: {exc}"
             print(f"[order_retry] pass error (continuing): {exc}")
-        _touch_worker_hb(last_stats if isinstance(last_stats, dict) else {"retry_enabled": True})
+        if isinstance(last_stats, dict):
+            hb_status = last_stats
+        elif last_error is not None:
+            hb_status = {"retry_enabled": True, "status": hb_state, "error": last_error}
+        else:
+            hb_status = {"retry_enabled": True}
+        _touch_worker_hb(hb_status)
         time.sleep(WORKER_POLL_SEC)
     return 0
 

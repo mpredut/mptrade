@@ -1742,5 +1742,177 @@ def test_terminal_closed_ledger_normalizes_contradictory_non_terminal_vst(tmp_pa
     assert trace["closed_orders"] and trace["closed_orders"][-1]["vst"] == "CANCELED"
 
 
+def test_order_ledger_pass5_invariants_and_reload_fallback(tmp_path, monkeypatch):
+    """Pass 5 invariants: strip non-positive snapshot ts, never pin failed reload sigs, and report error heartbeats."""
+    import threading
+    import order_ledger_reconciler_worker as worker_mod
+    from cacheaccount import CacheOrderFilledManager, CacheOrderOpenManager
+    from cachepaths import CACHE_BINANCE_ORDER_FILLED_FILENAME, CACHE_BINANCE_ORDER_OPEN_FILENAME, resolve_cachedb_filepath
+
+    t0 = 1_795_800_000.0
+    cdb = str(tmp_path / "cachedb")
+    writer = OrderLedgerWriter(cachedb_dir=cdb)
+    reader = OrderLedgerReader(cachedb_dir=cdb)
+
+    # 1. Invariant: read_active_snapshot strips <= 0 / corrupt timestamps from verified maps and recently_closed.
+    writer.write_active_snapshot(
+        {
+            "schema_version": 1,
+            "updated_ts": t0,
+            "journal_cursor": {"file": "", "offset": 0},
+            "venue_verified_ts": {"binance": t0, "kraken": 0, "hyperliquid": "bad", "t212": -5},
+            "symbol_verified_ts": {"binance:btcusdc": t0, "binance:ethusdc": 0.0, "kraken:hypeusd": None},
+            "recently_closed": {"binance:vid:1": t0, "binance:vid:0": 0.0, "binance:vid:bad": "nan"},
+            "orders": {},
+        }
+    )
+    snap = reader.read_active_snapshot()
+    assert snap["venue_verified_ts"] == {"binance": t0}
+    assert snap["symbol_verified_ts"] == {"binance:btcusdc": t0}
+    assert snap["recently_closed"] == {"binance:vid:1": t0}
+
+    # 2. Dependent cross-check: failed _reload_snapshot_from_disk MUST NOT pin _file_sigs and MUST fall back
+    # to disk fills so a filled order absent from open_orders is reconciled as FILLED, never CANCELED.
+    assert writer.record_event(
+        OrderEventType.ACKED,
+        venue="binance",
+        symbol="BTCUSDC",
+        ts=t0,
+        owner="ai_executor",
+        side="BUY",
+        order_type="LIMIT",
+        qty=0.5,
+        px=60000.0,
+        iid="iid_reload_race",
+        vid="777001",
+        vst="NEW",
+    )
+    oo_path = resolve_cachedb_filepath(os.path.join(cdb, CACHE_BINANCE_ORDER_OPEN_FILENAME))
+    of_path = resolve_cachedb_filepath(os.path.join(cdb, CACHE_BINANCE_ORDER_FILLED_FILENAME))
+    os.makedirs(os.path.dirname(oo_path), exist_ok=True)
+    with open(oo_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "verified_ts": t0 + 90.0,
+                "symbol_verified_ts": {"BTCUSDC": t0 + 90.0},
+                "items": {"BTCUSDC": []},
+            },
+            fh,
+        )
+    with open(of_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "fetchtime": {"BTCUSDC": int((t0 + 90.0) * 1000)},
+                "items": {
+                    "BTCUSDC": [
+                        {
+                            "orderId": "777001",
+                            "price": 60000.0,
+                            "quantity": 0.5,
+                            "timestamp": int((t0 + 60.0) * 1000),
+                            "side": "BUY",
+                            "status": "FILLED",
+                        }
+                    ]
+                },
+            },
+            fh,
+        )
+
+    reload_attempts = {"filled": 0}
+    fail_first = {"flag": True}
+
+    class _FlakyFilledSingleton:
+        filename = of_path
+        lock = threading.Lock()
+        cache = {}  # Stale RAM missing order 777001
+
+        def _reload_snapshot_from_disk(self) -> bool:
+            reload_attempts["filled"] += 1
+            if fail_first["flag"]:
+                return False  # Simulates order_cache_reader_not_current
+            self.cache = {
+                "BTCUSDC": [
+                    {
+                        "orderId": "777001",
+                        "price": 60000.0,
+                        "quantity": 0.5,
+                        "timestamp": int((t0 + 60.0) * 1000),
+                        "side": "BUY",
+                        "status": "FILLED",
+                    }
+                ]
+            }
+            return True
+
+    class _FreshOpenSingleton:
+        filename = oo_path
+        lock = threading.Lock()
+        cache = {"BTCUSDC": []}
+        verified_ts = t0 + 90.0
+        symbol_verified_ts = {"BTCUSDC": t0 + 90.0}
+
+        def _reload_snapshot_from_disk(self) -> bool:
+            return True
+
+    flaky_filled = _FlakyFilledSingleton()
+    fresh_open = _FreshOpenSingleton()
+
+    rec = OrderLedgerReconciler(cachedb_dir=cdb, use_singletons=True, reconcile_grace_sec=30.0)
+    rec._explicit_cachedb_dir = None  # Exercise singleton path in test
+    monkeypatch.setattr(worker_mod, "get_order_filled_manager", lambda v: flaky_filled if v == "binance" else None)
+    monkeypatch.setattr(worker_mod, "get_order_open_manager", lambda v: fresh_open if v == "binance" else None)
+
+    stats1 = rec.reconcile_once(now_ts=t0 + 95.0)
+    assert reload_attempts["filled"] == 1
+    assert of_path not in rec._file_sigs  # Failed reload MUST NOT pin signature!
+    assert stats1["reconciled_filled"] == 1
+    trace = reader.trace_order("777001")
+    assert trace["closed_orders"] and trace["closed_orders"][-1]["state"] == "FILLED"
+
+    # Next tick retries reload (since signature wasn't pinned), succeeds, and caches signature.
+    fail_first["flag"] = False
+    rec.reconcile_once(now_ts=t0 + 100.0)
+    assert reload_attempts["filled"] == 2
+    assert of_path in rec._file_sigs
+    rec.reconcile_once(now_ts=t0 + 105.0)
+    assert reload_attempts["filled"] == 2  # Unchanged file now skipped after clean reload
+
+    # 3. Direct manager invariant: _reload_snapshot_from_disk returns False on missing/error reload.
+    from cacheaccount import CacheBalanceManager
+
+    bad_open = CacheOrderOpenManager(60, ["BTCUSDC"], str(tmp_path / "missing_open.json"), read_only=True, venue="binance")
+    assert bad_open._reload_snapshot_from_disk() is False
+    bad_bal = CacheBalanceManager(60, ["BTC"], str(tmp_path / "missing_bal.json"), read_only=True, venue="binance")
+    assert bad_bal._reload_snapshot_from_disk() is False
+    bad_filled = CacheOrderFilledManager(
+        60, ["BTCUSDC"], str(tmp_path / "corrupt_filled.json"), read_only=True, venue="binance"
+    )
+    monkeypatch.setattr(bad_filled, "_load_versioned_account_meta", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert bad_filled._reload_snapshot_from_disk() is False
+
+    # 4. Heartbeat invariant: main() never reports {"status": "ok"} when reconcile_once() raises.
+    hb_calls: list[dict] = []
+
+    class _ExplodingReconciler:
+        reconcile_grace_sec = 30.0
+        intent_stale_sec = 60.0
+
+        def reconcile_once(self):
+            raise RuntimeError("disk_io_timeout")
+
+    monkeypatch.setattr(worker_mod, "OrderLedgerReconciler", _ExplodingReconciler)
+    monkeypatch.setattr(worker_mod, "single_instance", lambda *_a, **_kw: None)
+    monkeypatch.setattr(worker_mod, "_touch_ledger_hb", lambda st, **kw: hb_calls.append(dict(st)))
+    monkeypatch.setattr(worker_mod.sys, "argv", ["order_ledger_reconciler_worker.py"])
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda _s: (_ for _ in ()).throw(SystemExit(0)))
+    with pytest.raises(SystemExit):
+        worker_mod.main()
+    assert len(hb_calls) >= 2
+    assert hb_calls[-1].get("status") == "error"
+    assert "disk_io_timeout" in str(hb_calls[-1].get("error") or "")
+
+
+
 
 

@@ -1856,3 +1856,42 @@ def test_fixed_limit_record_preserves_limit_price_and_fast_cache_deferral_retry(
     assert mkt_lim.calls[0]["kw"]["wait_for_trend"] is False
     assert "_retry_requested_price" not in mkt_lim.calls[0]["kw"]
     assert oq.get(rid)["lifecycle"] == "accepted"
+
+
+def test_order_retry_worker_main_heartbeat_reports_error_and_corruption_status(monkeypatch):
+    """Worker loop heartbeat must report status=corrupted / status=error on pass exceptions instead of clean ok."""
+    import pytest
+
+    monkeypatch.setattr(worker, "single_instance", lambda *_a, **_kw: None)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "consolidate_deferred_streams", lambda: [])
+    monkeypatch.setattr(worker, "_alert_queue_corruption", lambda _exc: False)
+    monkeypatch.setattr(worker.sys, "argv", ["order_retry_worker.py"])
+
+    # Case 1: RetryQueueCorruptionError -> status="corrupted"
+    hb_corrupt: list[dict] = []
+    monkeypatch.setattr(worker, "_touch_worker_hb", lambda st, **kw: hb_corrupt.append(dict(st)))
+    monkeypatch.setattr(
+        worker,
+        "process_once",
+        lambda _mkt: (_ for _ in ()).throw(oq.RetryQueueCorruptionError("q.jsonl", 1, "{bad", "json")),
+    )
+    monkeypatch.setattr(worker.time, "sleep", lambda _s: (_ for _ in ()).throw(SystemExit(0)))
+    with pytest.raises(SystemExit):
+        worker.main()
+    assert hb_corrupt[-1]["status"] == "corrupted"
+    assert "RetryQueueCorruptionError" in hb_corrupt[-1]["error"]
+
+    # Case 2: Generic pass Exception -> status="error"
+    hb_err: list[dict] = []
+    monkeypatch.setattr(worker, "_touch_worker_hb", lambda st, **kw: hb_err.append(dict(st)))
+    monkeypatch.setattr(
+        worker,
+        "process_once",
+        lambda _mkt: (_ for _ in ()).throw(RuntimeError("exchange_timeout")),
+    )
+    with pytest.raises(SystemExit):
+        worker.main()
+    assert hb_err[-1]["status"] == "error"
+    assert "exchange_timeout" in hb_err[-1]["error"]
+

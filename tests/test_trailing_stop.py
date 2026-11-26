@@ -1189,3 +1189,111 @@ def test_trailing_core_check_once_skips_redundant_disk_write_when_state_unchange
         assert spy_save.call_count == 2
     assert core.load()["BTCUSDC"]["peak"] == 105.0
 
+
+def test_trailing_corrupt_balance_preserves_peak_and_loop_reports_non_ok_heartbeat(tmp_path):
+    """Corrupt balances never flip open trailing state to is_flat/reset peak, and heartbeat reflects skipped/error ticks."""
+    import pytest
+    import trailing_core as tc
+    from binance_api.trailing_stop import TrailingStop
+    from kraken.trailing_stop import KrakenTrailing
+
+    # 1. BinanceTrailing: corrupt balance row fails closed (has_valid_balance=False, total_qty=None)
+    # and TrailingCore.check_once() preserves peak + is_flat=False untouched.
+    sf_bin = str(tmp_path / "bin_state.json")
+    api_bin = SimpleNamespace(
+        get_account_assets_balances=lambda: [{"asset": "BTC", "free": "1.0", "locked": "0.0"}],
+        get_current_price=lambda _pair: 100.0,
+    )
+    sym_bin = SimpleNamespace(symbols=["BTCUSDC"])
+    ts_bin = TrailingStop(api_bin, MagicMock(), sym_bin, log=lambda _m: None, enabled=False, state_file=sf_bin)
+    ts_bin.check_once()
+    assert ts_bin.core.load()["BTCUSDC"]["peak"] == 100.0
+    assert ts_bin.core.load()["BTCUSDC"].get("is_flat") is False
+
+    # Inject corrupt balance entry on tick 2 -> MUST NOT mark is_flat=True or overwrite peak
+    api_bin.get_account_assets_balances = lambda: [{"asset": "BTC", "free": "NaN", "locked": "0.5"}]
+    api_bin.get_current_price = lambda _pair: 85.0
+    ts_bin.check_once()
+    assert ts_bin.has_valid_balance("BTC") is False
+    assert ts_bin.total_qty("BTC") is None
+    st_bin = ts_bin.core.load()["BTCUSDC"]
+    assert st_bin["peak"] == 100.0
+    assert st_bin.get("is_flat") is False
+
+    # 2. KrakenTrailing: corrupt hold_trade keeps free_qty==0.0 (fail-closed) AND preserves peak / is_flat=False
+    sf_kr = str(tmp_path / "kr_state.json")
+    kr_bal = {"HYPE": {"balance": "20.0", "hold_trade": "0.0"}}
+    kr_px = {"val": 50.0}
+    fake_k = SimpleNamespace(
+        _private=lambda method, data=None: dict(kr_bal) if method == "BalanceEx" else {},
+        last_price=lambda _p: kr_px["val"],
+    )
+    ts_kr = KrakenTrailing(fake_k, log=lambda _m: None, enabled=False, state_file=sf_kr)
+    ts_kr.check_once()
+    assert ts_kr.core.load()["HYPE"]["peak"] == 50.0
+    assert ts_kr.core.load()["HYPE"].get("is_flat") is False
+
+    kr_bal["HYPE"] = {"balance": "20.0", "hold_trade": "corrupt"}
+    kr_px["val"] = 45.0
+    ts_kr.check_once()
+    assert ts_kr.free_qty("HYPE") == 0.0
+    assert ts_kr.has_valid_balance("HYPE") is False
+    st_kr = ts_kr.core.load()["HYPE"]
+    assert st_kr["peak"] == 50.0
+    assert st_kr.get("is_flat") is False
+
+    # 2b. HyperliquidTrailing (StrategyExecutorTrailingAdapter): corrupt balance tuple preserves peak & is_flat=False
+    from tests.conftest import load_venue_modules
+
+    HyperliquidTrailing = load_venue_modules("hyperliquid", "trailing_stop").HyperliquidTrailing
+
+    sf_hl = str(tmp_path / "hl_state.json")
+    hl_balances = {"HYPE": (15.0, 0.0)}
+    hl_px = {"val": 40.0}
+    fake_hl_exec = SimpleNamespace(
+        all_free_and_locked_balances=lambda _assets: dict(hl_balances),
+        get_current_price=lambda _pair: hl_px["val"],
+        pair_precision=lambda _pair: SimpleNamespace(price_decimals=4, volume_decimals=4, min_qty=0.01, min_notional=10.0),
+    )
+    ts_hl = HyperliquidTrailing(provider=fake_hl_exec, log=lambda _m: None, enabled=False, state_file=sf_hl)
+    ts_hl.check_once()
+    assert ts_hl.core.load()["HYPE"]["peak"] == 40.0
+    assert ts_hl.core.load()["HYPE"].get("is_flat") is False
+
+    hl_balances["HYPE"] = ("NaN", 0.0)
+    hl_px["val"] = 35.0
+    ts_hl.check_once()
+    assert ts_hl.has_valid_balance("HYPE") is False
+    assert ts_hl.free_qty("HYPE") == 0.0
+    st_hl = ts_hl.core.load()["HYPE"]
+    assert st_hl["peak"] == 40.0
+    assert st_hl.get("is_flat") is False
+
+    # Valid flat (0.0, 0.0) STILL marks is_flat=True normally
+    hl_balances["HYPE"] = (0.0, 0.0)
+    ts_hl.check_once()
+    assert ts_hl.has_valid_balance("HYPE") is True
+    assert ts_hl.core.load()["HYPE"].get("is_flat") is True
+
+    # 3. TrailingCore + _run_trailing_loop heartbeat reports skipped/error states accurately
+    hb_statuses: list[dict] = []
+    api_bin.get_account_assets_balances = lambda: []
+    ts_bin.check_once()
+    assert ts_bin.core._last_tick_status == {"status": "skipped", "reason": "balance_unavailable"}
+
+    with patch.object(tc, "touch_module_heartbeat", side_effect=lambda *a, **kw: hb_statuses.append(kw.get("status"))), \
+         patch.object(tc.time, "sleep", side_effect=SystemExit(0)):
+        with pytest.raises(SystemExit):
+            ts_bin._run_trailing_loop(60.0, [])
+    assert hb_statuses[-1] == {"status": "skipped", "reason": "balance_unavailable"}
+
+    hb_err: list[dict] = []
+    with patch.object(ts_bin, "check_once", side_effect=RuntimeError("state_disk_full")), \
+         patch.object(tc, "touch_module_heartbeat", side_effect=lambda *a, **kw: hb_err.append(kw.get("status"))), \
+         patch.object(tc.time, "sleep", side_effect=SystemExit(0)):
+        with pytest.raises(SystemExit):
+            ts_bin._run_trailing_loop(60.0, [])
+    assert hb_err[-1]["status"] == "error"
+    assert "state_disk_full" in hb_err[-1]["error"]
+
+
