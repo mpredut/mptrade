@@ -90,6 +90,14 @@ _OPEN_ORDER_ROW_RE = re.compile(
 _FILLED_REM_RE = re.compile(r"^([0-9.]+)\(rem=([0-9.]+)\)$")
 _PLAN_RR_RE = re.compile(r"([0-9.]+)(?:\([^)]*\))?/([0-9.]+)(?:\([^)]*\))?\s+RR=([0-9.]+)x")
 _FRONT_RUN_RR_RE = re.compile(r"front_run=([0-9.]+)\(RR=([0-9.]+)x\)")
+_ACTIVE_PLAN_LINE_RE = re.compile(
+    r"^\s*-\s*\[([a-z0-9_]+)\]\s+([A-Za-z0-9_]+)\s+(BUY|SELL)@([0-9.]+)\s*\(([^)]+)\):\s*(.+)$",
+    re.MULTILINE,
+)
+_ACTIVE_PLAN_SPOT_RE = re.compile(r"\bspot=([0-9.]+)")
+_ACTIVE_PLAN_TGT_RE = re.compile(r"\btarget=([0-9.]+)(?:\s*\(([+-]?[0-9.]+)%\s*(vs_spot|vs_limit)\))?")
+_ACTIVE_PLAN_INV_RE = re.compile(r"\binvalidation=([0-9.]+)(?:\s*\(([+-]?[0-9.]+)%\s*(vs_spot|vs_limit)\))?")
+_ACTIVE_PLAN_RR_RE = re.compile(r"\bRR=([0-9.]+)x\b")
 _VENUE_CASH_BD_RE = re.compile(r"\b([a-z0-9_]+)\s+([A-Z]+)=\$([0-9,]+\.?\d*)\s*\(([^)]+)\)")
 _COMPACT_USD_MULT: dict[str, float] = {"K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}
 _OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
@@ -706,6 +714,46 @@ def audit_rendered_prompt_text(
                                         f"front_run RR={rep_fr_rr:.2f}x != expected {exp_fr_rr:.2f}x (fr={fr_px}, tgt={t_v}, inv={i_v})",
                                     )
                                 )
+
+    for m_ap in _ACTIVE_PLAN_LINE_RE.finditer(prompt_text):
+        ven_p, sym_p, side_p = m_ap.group(1), m_ap.group(2), m_ap.group(3)
+        entry_p = safe_pos_float(m_ap.group(4), default=None)
+        meta_p, body_p = m_ap.group(5) or "", m_ap.group(6) or ""
+        spot_m = _ACTIVE_PLAN_SPOT_RE.search(meta_p)
+        spot_p = safe_pos_float(spot_m.group(1), default=None) if spot_m else None
+        is_resting_p = "RESTING" in meta_p.upper()
+        anc_p = entry_p if is_resting_p else spot_p
+        m_tgt = _ACTIVE_PLAN_TGT_RE.search(body_p)
+        m_inv = _ACTIVE_PLAN_INV_RE.search(body_p)
+        tgt_p = safe_pos_float(m_tgt.group(1), default=None) if m_tgt else None
+        inv_p = safe_pos_float(m_inv.group(1), default=None) if m_inv else None
+        if anc_p is not None and anc_p > 0.0:
+            for lbl_k, m_lvl, lvl_px in (("target", m_tgt, tgt_p), ("invalidation", m_inv, inv_p)):
+                if m_lvl is not None and m_lvl.group(2) is not None and lvl_px is not None:
+                    rep_pct = safe_float(m_lvl.group(2), default=None)
+                    exp_pct = ((lvl_px - anc_p) / anc_p) * 100.0
+                    if rep_pct is not None and abs(rep_pct - exp_pct) > 0.15:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_ACTIVE_PLAN_RR_MATH",
+                                f"{ven_p}:{sym_p}:{lbl_k}",
+                                f"reported {lbl_k} dist={rep_pct:+.2f}% != expected {exp_pct:+.2f}% (px={lvl_px}, anc={anc_p})",
+                            )
+                        )
+            if tgt_p is not None and inv_p is not None and (m_rrp := _ACTIVE_PLAN_RR_RE.search(body_p)) is not None:
+                rep_rrp = safe_nonneg_float(m_rrp.group(1), default=None)
+                rew_p = (tgt_p - anc_p) if side_p == "BUY" else (anc_p - tgt_p)
+                rsk_p = (anc_p - inv_p) if side_p == "BUY" else (inv_p - anc_p)
+                if rep_rrp is not None and rsk_p > 0.0:
+                    exp_rrp = max(0.0, rew_p / rsk_p)
+                    if abs(rep_rrp - exp_rrp) > 0.02:
+                        violations.append(
+                            InvariantViolation(
+                                "PROMPT_ACTIVE_PLAN_RR_MATH",
+                                f"{ven_p}:{sym_p}",
+                                f"active plan RR={rep_rrp:.2f}x != expected {exp_rrp:.2f}x (anc={anc_p}, tgt={tgt_p}, inv={inv_p})",
+                            )
+                        )
 
     for ln_cash in prompt_text.splitlines():
         if "Available Free Quote Cash per Venue:" not in ln_cash:

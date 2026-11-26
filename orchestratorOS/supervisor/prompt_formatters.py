@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from botcore import (
     is_us_rth_open,
     load_key_value_conf,
+    normalize_epoch_sec,
     parse_symbol_list,
     safe_float,
     safe_nonneg_float,
@@ -40,6 +41,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
 )
 from orchestratorOS.supervisor.prompt_sections import (
     _extract_active_portfolio_symbols,
+    _fmt_plain_float,
     _format_macro_and_news_section,
     _format_market_prices_section,
     _format_microstructure_section,
@@ -82,6 +84,8 @@ def _build_section0_trigger_context(
     focus_symbols: Optional[List[str]],
     portfolio_summary: Dict[str, Any],
     known_symbols: set[str],
+    *,
+    now_ts: Optional[float] = None,
 ) -> Tuple[Optional[str], set[str]]:
     """Build Section 0 Trigger line and extract symbols that should be promoted to top of Section 3."""
     parts: List[str] = []
@@ -103,7 +107,11 @@ def _build_section0_trigger_context(
         if not clean_wake or "focus_symbols(" not in wake_lc:
             parts.append(f"focus={','.join(clean_focus)}")
 
-    raw_open = portfolio_summary.get("open_limit_orders") if isinstance(portfolio_summary, dict) else None
+    raw_open = (
+        portfolio_summary.get("open_limit_orders")
+        if isinstance(portfolio_summary, dict) and isinstance(portfolio_summary.get("open_limit_orders"), list)
+        else (portfolio_summary.get("open_orders") if isinstance(portfolio_summary, dict) else None)
+    )
     if isinstance(raw_open, list):
         for oo in raw_open:
             if not isinstance(oo, dict):
@@ -115,9 +123,14 @@ def _build_section0_trigger_context(
             filled_v = safe_float(oo.get("filled_qty"), 0.0) or 0.0
             st_u = str(oo.get("status") or "").strip().upper()
             if filled_v > 0.0 or st_u == "PARTIALLY_FILLED":
-                rem_s = f"(rem={max(0.0, qty_v - filled_v):g})" if (qty_v is not None and qty_v > filled_v) else ""
-                qty_s = f"/{qty_v:g}" if qty_v is not None else ""
-                parts.append(f"{sym} partial_fill {filled_v:g}{qty_s}{rem_s}")
+                rem_s = ""
+                if qty_v is not None and qty_v > filled_v:
+                    rem_str = _fmt_plain_float(round(max(0.0, qty_v - filled_v), 8))
+                    if rem_str.endswith(".0"):
+                        rem_str = rem_str[:-2]
+                    rem_s = f"(rem={rem_str})"
+                qty_s = f"/{_fmt_plain_float(qty_v)}" if qty_v is not None else ""
+                parts.append(f"{sym} partial_fill {_fmt_plain_float(filled_v)}{qty_s}{rem_s}")
                 trigger_syms.add(sym)
             if "open_order_wall_trapped" in wake_lc and (fr_v := safe_pos_float(oo.get("recommended_front_run_px"), default=None)) is not None:
                 parts.append(f"{sym} wall_trapped(front_run={fr_v:g})")
@@ -130,6 +143,7 @@ def _build_section0_trigger_context(
                     trigger_syms.add(sym)
 
     if "new_fill" in wake_lc and isinstance(portfolio_summary, dict):
+        seen_fills: set[Tuple[str, str]] = set()
         raw_lces = portfolio_summary.get("last_cycle_execution_status")
         lces_items = raw_lces if isinstance(raw_lces, list) else ([raw_lces] if isinstance(raw_lces, dict) else [])
         for item in lces_items:
@@ -144,6 +158,33 @@ def _build_section0_trigger_context(
                     px_s = f"@{f_px}" if f_px is not None else ""
                     parts.append(f"{f_sym} {f_side} {st_l}{px_s}".strip())
                     trigger_syms.add(f_sym)
+                    seen_fills.add((f_sym.upper(), f_side))
+        recent_orders = portfolio_summary.get("recent_orders")
+        if isinstance(recent_orders, dict):
+            eff_now_nf = safe_pos_float(now_ts, default=None) or time.time()
+            recent_hits: List[Tuple[float, str, str, Any, str]] = []
+            for ro_sym, ro_info in recent_orders.items():
+                if not isinstance(ro_info, dict) or not str(ro_sym or "").strip():
+                    continue
+                ro_sym_s = str(ro_sym).strip()
+                for leg_k, leg_side in (("last_buy", "BUY"), ("last_sell", "SELL")):
+                    leg = ro_info.get(leg_k)
+                    if not isinstance(leg, dict) or (ro_sym_s.upper(), leg_side) in seen_fills:
+                        continue
+                    leg_ts = normalize_epoch_sec(
+                        leg.get("ts_ms") if leg.get("ts_ms") is not None else leg.get("ts"),
+                        default=0.0,
+                        allow_iso=True,
+                    ) or 0.0
+                    if leg_ts > 0.0 and -60.0 <= (eff_now_nf - leg_ts) <= 1200.0:
+                        actor_u = str(leg.get("actor") or "").strip().upper()
+                        recent_hits.append((leg_ts, ro_sym_s, leg_side, leg.get("price"), actor_u))
+            for _, ro_sym_s, leg_side, leg_px, actor_u in sorted(recent_hits, key=lambda x: x[0], reverse=True):
+                px_s = f"@{leg_px}" if leg_px is not None else ""
+                act_s = f"({actor_u})" if actor_u in ("BOT", "MANUAL") else ""
+                parts.append(f"{ro_sym_s} {leg_side} FILLED{px_s}{act_s}")
+                trigger_syms.add(ro_sym_s)
+                seen_fills.add((ro_sym_s.upper(), leg_side))
 
     if ("invalidat" in wake_lc or "target_hit" in wake_lc) and isinstance(portfolio_summary, dict):
         raw_plans = portfolio_summary.get("active_ai_trade_plans")
@@ -317,6 +358,7 @@ def build_supervisor_prompt(
             focus_symbols,
             portfolio_summary,
             known_syms,
+            now_ts=eval_now_ts,
         )
         if trigger_line:
             context_items.append(trigger_line)
@@ -508,15 +550,15 @@ def build_supervisor_prompt(
         limit_exec_rule = (
             "   - SPOT 'LIMIT' EXECUTION (PASSIVE OR NEAR-SPOT): Submit `\"order_type\": \"LIMIT\"` (never MARKET) to control fill price and spread: "
             "passive `limit_price` near `vol_profile`/`session_vwap` for swings; explicit near-spot `limit_price` (`urgency:\"NORMAL\"`) for momentum; `limit_price: null` (`urgency:\"HIGH\"`) only for urgent defensive exits/reversals. "
-            "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`), "
+            "Audit `open_limit_orders` (`Dist`, `Fill1h`), "
             "`last_cycle_execution_status` (`<=60m` fill/reject or `<=30m` resting), and calibration `arr_bps`/`slip_bps` (negative = favorable price improvement), `unfilled_off_bps`, & `fill_by_offset` fill-rate bands: "
-            "re-anchor stale/far (`fill_prob_1h_pct<=5%` or `|dist|>4%`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
+            "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
             if is_equities
             else (
                 "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: Submit post-only `\"order_type\": \"LIMIT\"` (never MARKET; gateway re-checks live price & steps 1 tick onto maker book) to capture spread and cut fees: "
                 "passive `limit_price` at bid/ask walls for swings; explicit BBO `limit_price` (`urgency:\"NORMAL\"`) for breakouts; `limit_price: null` (`urgency:\"HIGH\"`) only for urgent defensive exits/reversals. "
-                "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr_bps`/`slip_bps`/`unfilled_off_bps`/`fill_by_offset`: "
-                "re-anchor stale/far (`fill_prob_1h_pct<=5%` or `|dist|>4%`) or wall-trapped (`recommended_front_run_px`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
+                "Audit `open_limit_orders` (`Dist`, `Fill1h`, `Note`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr_bps`/`slip_bps`/`unfilled_off_bps`/`fill_by_offset`: "
+                "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`) or wall-trapped (`front_run=` / `Note` wall flags) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
             )
         )
         structure_macro_rule = (

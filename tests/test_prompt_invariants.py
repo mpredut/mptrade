@@ -926,5 +926,101 @@ def test_cycle13_closed_equity_pruning_open_order_wall_notes_and_plain_venue_spe
     assert "PROMPT_VENUE_PRECISION" in sci_codes
 
 
+def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_invariant() -> None:
+    """Verify Cycle 14 fixes:
+    1. Section 0 new_fill trigger detects fresh BOT/MANUAL/resting fills from recent_orders (<=20m),
+       promotes the filled symbol ahead of BTCUSDC in Section 3, ignores stale fills (>20m),
+       deduplicates against last_cycle_execution_status, and formats tiny partial_fill rem without sci notation.
+    2. Full rules prose references actual rendered open_limit_orders table labels (Dist, Fill1h, Note, front_run=)
+       instead of stale pre-table JSON keys (dist_from_spot_pct, fill_prob_1h_pct, recommended_front_run_px).
+    3. audit_rendered_prompt_text validates unlinked Active AI Trade Plans dist% & RR math symmetrically.
+    """
+    from types import SimpleNamespace
+    from botcore import topic_spec
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    t0 = 1_800_000_000.0
+    sensors = SimpleNamespace(
+        evaluated_at_ts=t0,
+        prices_and_trends={
+            "BTCUSDC": {"price": 60000.0, "chg_24h_pct": 1.0},
+            "ARBUSDC": {"price": 0.1132, "chg_24h_pct": 5.0},
+            "TAOUSDC": {"price": 182.8, "chg_24h_pct": 3.0},
+        },
+        microstructure={},
+        portfolio_summary={
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "price": 60000.0, "free_base": 0.01, "value_usd": 600.0, "free_quote": 1000.0},
+                {"venue": "binance", "symbol": "ARBUSDC", "price": 0.1132, "free_base": 2000.0, "value_usd": 226.4, "free_quote": 1000.0},
+                {"venue": "binance", "symbol": "TAOUSDC", "price": 182.8, "free_base": 0.0, "value_usd": 0.0, "free_quote": 1000.0},
+            ],
+            "open_orders": [
+                {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "price": 59500.0,
+                    "qty": 0.00008,
+                    "filled_qty": 0.00001,
+                    "status": "PARTIALLY_FILLED",
+                    "order_id": "101",
+                    "actor": "AI",
+                }
+            ],
+            "last_cycle_execution_status": [
+                {"venue": "binance", "symbol": "TAOUSDC", "side": "BUY", "status": "OPEN_RESTING", "limit_px": 180.5, "age_min": 5.0}
+            ],
+            "recent_orders": {
+                "ARBUSDC": {
+                    "last_buy": {"price": 0.1125, "qty": 2666.6, "ts_ms": (t0 - 180.0) * 1000.0, "actor": "BOT"},
+                    "last_sell": {"price": 0.1093, "qty": 1000.0, "ts_ms": (t0 - 7200.0) * 1000.0, "actor": "AI"},
+                },
+                "TAOUSDC": {
+                    "last_buy": {"price": 171.1, "qty": 4.0, "ts_ms": (t0 - 3600.0) * 1000.0, "actor": "AI"},
+                },
+            },
+        },
+        source_ages_sec={},
+    )
+    txt_cr = build_supervisor_prompt(
+        sensors, None, spec=topic_spec("auto_cryptotrade_executor"), compact_rules=False, wake_reason="new_fill"
+    )
+    assert "ARBUSDC BUY FILLED@0.1125(BOT)" in txt_cr
+    assert "0.1093" not in txt_cr.splitlines()[txt_cr.splitlines().index(next(l for l in txt_cr.splitlines() if l.startswith("- Trigger:")))]
+    assert "BTCUSDC partial_fill 0.00001/0.00008(rem=0.00007)" in txt_cr
+    assert "7e-05" not in txt_cr
+    s3_cr = txt_cr[txt_cr.index("### 3. TRADABLE MARKETS"):]
+    assert s3_cr.index("  * ARBUSDC:") < s3_cr.index("  * BTCUSDC:")
+
+    # 2. Rules prose matches rendered open_limit_orders table labels in both crypto and equities.
+    rules_cr = txt_cr.split("LIVE TELEMETRY SNAPSHOT:", 1)[0]
+    for stale_tok in ("dist_from_spot_pct", "fill_prob_1h_pct", "recommended_front_run_px"):
+        assert stale_tok not in rules_cr
+    assert "(`Dist`, `Fill1h`, `Note`; watch `[ob_stale]` when `ob_age > 30s`)" in rules_cr
+    assert "(`Fill1h<=5%` or `|Dist|>4%`) or wall-trapped (`front_run=` / `Note` wall flags)" in rules_cr
+
+    txt_eq = build_supervisor_prompt(
+        SimpleNamespace(evaluated_at_ts=t0), None, spec=topic_spec("auto_sharetrade_executor"), compact_rules=False
+    )
+    rules_eq = txt_eq.split("LIVE TELEMETRY SNAPSHOT:", 1)[0]
+    for stale_tok in ("dist_from_spot_pct", "fill_prob_1h_pct", "recommended_front_run_px"):
+        assert stale_tok not in rules_eq
+    assert "Audit `open_limit_orders` (`Dist`, `Fill1h`)" in rules_eq
+    assert "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`)" in rules_eq
+
+    # 3. PROMPT_ACTIVE_PLAN_RR_MATH validates unlinked FILLED & RESTING plans symmetrically.
+    good_plans = (
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+2.12% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR=0.75x [ACTIVE]\n"
+        "    - [t212] NVDA_US_EQ SELL@155.0 (RESTING, age=1.0h): target=145.0 (-6.45% vs_limit), invalidation=160.0 (+3.23% vs_limit), RR=2.00x [ACTIVE]\n"
+    )
+    assert audit_rendered_prompt_text(good_plans) == []
+    bad_plan_rr = (
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+5.00% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR=1.99x [ACTIVE]\n"
+    )
+    bad_vs = [v for v in audit_rendered_prompt_text(bad_plan_rr) if v.code == "PROMPT_ACTIVE_PLAN_RR_MATH"]
+    assert len(bad_vs) == 2
+
+
+
 
 
