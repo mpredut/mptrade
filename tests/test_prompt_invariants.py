@@ -2413,6 +2413,34 @@ def test_cycle20_wave3_per_venue_nav_spot_flow_va_hold_weibull_atr_and_cross_par
     }.issubset(bad_subjs)
 
 
+def test_multi_order_last_cycle_execution_status_no_false_status_conflict() -> None:
+    """Semicolon-separated multi-order last_cycle_execution_status must pair each status with its own id."""
+    clean_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Active Open Orders & Linked Trade Plans (Locking Liquidity) — open_limit_orders:\n"
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+        "    | binance | ARBUSDC | SELL | 0.115 | 2353.9 | 0 | 568763607 | AI | 19.6m | +0.44% | 74% | - | - |\n"
+        "  * Last Cycle Execution Status — last_cycle_execution_status: "
+        "[binance] ARBUSDC SELL LIMIT OPEN_RESTING (limit_px=0.115, ref_px=0.1138, notional=$270.98, id=568763607, age=19.6m); "
+        "[hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=62.06, limit_px=62.06, ref_px=62.088, qty=19.33, notional=$1,199.62, slippage_bps=0.0, arr_bps=-4.51, id=617441855947, age=2.3m)\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [hyperliquid] HYPEUSDC BUY LIMIT FILLED (fill_px=62.06, qty=19.33, notional=$1,199.62, target=63.3, inval=61.5, slippage_bps=0.0, arr_bps=-4.51, id=617441855947, age=0.04h)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+    )
+    assert audit_rendered_prompt_text(clean_prompt) == []
+
+    # True contradiction on the FIRST semicolon-separated item (568763607) must still be caught.
+    bad_first = clean_prompt.replace(
+        "id=617441855947, age=0.04h)",
+        "id=568763607, age=0.04h)",
+    )
+    bad_viols = [v for v in audit_rendered_prompt_text(bad_first) if v.code == "PROMPT_ORDER_LIFECYCLE_CONSISTENCY"]
+    assert any("568763607" in v.detail for v in bad_viols)
+
+
+
 
 
 

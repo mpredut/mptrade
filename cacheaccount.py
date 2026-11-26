@@ -88,6 +88,7 @@ from cachepaths import (
     cache_path,
     cache_symbol_variants,
     cachedb_root_for_file,
+    canonical_base_asset,
     clean_scalar_str,
     clean_symbol_key,
     is_equity_venue,
@@ -4621,6 +4622,8 @@ class _HyperliquidAccountTradeBridge:
     ) -> None:
         self.ws_stream = ws_stream
         self.hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
+        self._rest_resync_lock = threading.Lock()
+        self._rest_resync_in_flight = False
         ws_stream._fills_cache_path = fills_cache_path
         ws_stream._fills_ws_seeded = False
         ws_stream._last_fills_touch_ms = 0
@@ -4684,6 +4687,66 @@ class _HyperliquidAccountTradeBridge:
             request_venue_account_refresh("hyperliquid", include_open_orders=True)
         ws_stream._last_fills_touch_ms = ts_ms
 
+    def _schedule_invalidated_fills_resync(
+        self,
+        symbols: tuple[str, ...],
+        fills_file: str,
+        ts_ms: int,
+        *,
+        blocking: bool = False,
+    ) -> bool:
+        """Recover invalidated ``fetchtime`` entries via authoritative Hyperliquid REST fills off the WS thread."""
+        if not symbols or self.hl_prov_cls is None:
+            return False
+        with self._rest_resync_lock:
+            if self._rest_resync_in_flight:
+                return False
+            self._rest_resync_in_flight = True
+
+        def _worker() -> None:
+            try:
+                fills_by_sym: dict[str, list[dict[str, Any]]] = {}
+                ok_syms: list[str] = []
+                for sym_s in symbols:
+                    try:
+                        tok = canonical_base_asset(sym_s) or sym_s
+                        rows = self.hl_prov_cls(token=tok).fetch_remote_trades(sym_s, 0)
+                        if isinstance(rows, list):
+                            fills_by_sym[sym_s] = rows
+                            ok_syms.append(sym_s)
+                    except Exception as exc:
+                        log(f"[hyperliquid_cache][ws] invalidated fills REST resync {sym_s} failed: {exc}")
+                if ok_syms:
+                    sync_ms = max(ts_ms, resolve_now_ms())
+                    CacheTradeManager.merge_venue_fills_snapshot(
+                        fills_file,
+                        fills_by_sym,
+                        now_ms=sync_ms,
+                        is_snapshot=False,
+                        touch_symbols=ok_syms,
+                        touch_create_missing=True,
+                    )
+                    CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+                        _sibling_order_filled_path(fills_file, "hyperliquid"),
+                        fills_by_sym,
+                        venue="hyperliquid",
+                        now_ms=sync_ms,
+                        is_snapshot=False,
+                        touch_symbols=ok_syms,
+                        touch_create_missing=True,
+                    )
+                    _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
+                    _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=sync_ms)
+            finally:
+                with self._rest_resync_lock:
+                    self._rest_resync_in_flight = False
+
+        if blocking:
+            _worker()
+            return True
+        threading.Thread(target=_worker, name="hl-ws-invalidated-fills-resync", daemon=True).start()
+        return True
+
     def touch_fills_cache_if_needed(self, ts_ms: int) -> None:
         ws_stream = self.ws_stream
         if (
@@ -4693,22 +4756,26 @@ class _HyperliquidAccountTradeBridge:
             return
         try:
             with ws_stream._lock:
-                symbols = ws_stream._symbols
+                symbols = tuple(ws_stream._symbols or ())
             fills_file = self.resolve_fills_cache_file()
-            CacheTradeManager.touch_venue_fills_snapshot(
+            tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
                 fills_file,
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
             )
-            CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+            fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
                 _sibling_order_filled_path(fills_file, "hyperliquid"),
                 ts_ms,
                 symbols=symbols,
                 create_missing=False,
             )
-            _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
-            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
+            if tr_touched:
+                _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
+            if fo_touched:
+                _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
+            if (not tr_touched or not fo_touched) and symbols:
+                self._schedule_invalidated_fills_resync(symbols, fills_file, ts_ms)
             ws_stream._last_fills_touch_ms = ts_ms
         except Exception:
             pass
@@ -4984,51 +5051,59 @@ def run_kraken_trade_ws_loop(
                     pass
                 return
             if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
+                def _launch_bg_rest_sync(sync_ms: int) -> bool:
+                    with rest_sync_lock:
+                        if rest_sync_in_flight[0]:
+                            return False
+                        rest_sync_in_flight[0] = True
+
+                    # Run periodic REST Ledgers reconciliation off the WS reader thread so slow HTTP calls
+                    # never starve RFC6455 ping/pong handling and trigger spurious ping/pong timeouts.
+                    def _bg_rest_sync(eff_sync_ms: int = sync_ms) -> None:
+                        try:
+                            merged = _merge_rest(now_ms=eff_sync_ms)
+                            if merged is not None:
+                                log(
+                                    f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
+                                    f"for {list(merged['items'].keys())}"
+                                )
+                        except Exception as exc:
+                            delay_s = _bump_rest_sync_backoff(exc)
+                            log(
+                                f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc} "
+                                f"(backing off {delay_s:g}s)"
+                            )
+                        finally:
+                            with rest_sync_lock:
+                                rest_sync_in_flight[0] = False
+
+                    threading.Thread(target=_bg_rest_sync, name="kraken-ws-rest-sync", daemon=True).start()
+                    return True
+
                 launched_async = False
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms and now_ms >= next_rest_sync_ms[0]:
-                    with rest_sync_lock:
-                        if not rest_sync_in_flight[0]:
-                            rest_sync_in_flight[0] = True
-                            launched_async = True
-                    if launched_async:
-                        # Run periodic REST Ledgers reconciliation off the WS reader thread so slow HTTP calls
-                        # never starve RFC6455 ping/pong handling and trigger spurious ping/pong timeouts.
-                        def _bg_rest_sync(sync_ms: int = now_ms) -> None:
-                            try:
-                                merged = _merge_rest(now_ms=sync_ms)
-                                if merged is not None:
-                                    log(
-                                        f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
-                                        f"for {list(merged['items'].keys())}"
-                                    )
-                            except Exception as exc:
-                                delay_s = _bump_rest_sync_backoff(exc)
-                                log(
-                                    f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc} "
-                                    f"(backing off {delay_s:g}s)"
-                                )
-                            finally:
-                                with rest_sync_lock:
-                                    rest_sync_in_flight[0] = False
-
-                        threading.Thread(target=_bg_rest_sync, name="kraken-ws-rest-sync", daemon=True).start()
+                    launched_async = _launch_bg_rest_sync(now_ms)
                 if not launched_async and last_rest_sync_ms[0] > 0:
-                    CacheTradeManager.touch_venue_fills_snapshot(
+                    tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
                         cache_file,
                         now_ms=now_ms,
                         symbols=pairs,
                         create_missing=False,
                         indent=1,
                     )
-                    CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+                    fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
                         _sibling_order_filled_path(cache_file, "kraken"),
                         now_ms=now_ms,
                         symbols=pairs,
                         create_missing=False,
                         indent=1,
                     )
-                    _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
-                    _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
+                    if tr_touched:
+                        _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
+                    if fo_touched:
+                        _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
+                    if (not tr_touched or not fo_touched) and now_ms >= next_rest_sync_ms[0]:
+                        _launch_bg_rest_sync(now_ms)
                 last_flush_ms[0] = now_ms
                 should_hb = True
         else:

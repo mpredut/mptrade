@@ -771,3 +771,106 @@ def test_check_cache_coherence_cli_fails_on_cross_cache_drift_and_passes_when_co
     out_fail = capsys.readouterr().out
     assert "binance:causal_fill_to_balance" in out_fail
     assert "binance:balance_phantom_lock" in out_fail
+
+
+def test_hyperliquid_ws_invalidated_fetchtime_does_not_lie_in_health_and_recovers_via_rest(tmp_path, monkeypatch):
+    """After order_status/cancel invalidates HYPEUSDC fetchtime, HL WS bridge must not advance health until REST catch-up restores disk fetchtime."""
+    import threading
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    tr_path = acct_dir / "cache_trade_hyperliquid.json"
+    fo_path = acct_dir / "cache_order_filled_hyperliquid.json"
+    health_path = acct_dir / "cache_account_health.json"
+
+    t0 = 1_795_740_000.0
+    t0_ms = int(t0 * 1000)
+    fill_row = {
+        "coin": "@107",
+        "px": "62.06",
+        "sz": "19.33",
+        "side": "B",
+        "time": t0_ms - 60_000,
+        "oid": 617441855947,
+        "tid": 734038162456393,
+        "fee": "0.007732",
+        "feeToken": "HYPE",
+    }
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(tr_path), {"HYPEUSDC": [fill_row]}, now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path), {"HYPEUSDC": [fill_row]}, venue="hyperliquid", now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+
+    # Simulate HyperliquidProvider.order_status/cancel_order expiring fetchtime["HYPEUSDC"].
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(tr_path))
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(fo_path))
+
+    health_calls: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        cacheaccount,
+        "_record_venue_health_sync",
+        lambda v, s, *, now_ms=None: health_calls.append((v, s, int(now_ms or 0))) or True,
+    )
+
+    class _DummyWs:
+        _lock = threading.Lock()
+        _symbols = ["HYPEUSDC"]
+        _fills_ws_seeded = True
+        _last_fills_touch_ms = t0_ms
+
+    # 1. With a failing REST resync, touch_fills_cache_if_needed must NOT lie by advancing health.
+    class _FailingProv:
+        def __init__(self, *, token=None):
+            self.token = token
+
+        def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0):
+            raise RuntimeError("transient hl error")
+
+        @staticmethod
+        def resolve_ws_user_address(addr, resolve_env=None):
+            return addr or "0xabc"
+
+    monkeypatch.setattr(MarketDataProvider, "resolve_venue_provider_class", classmethod(lambda cls, v: _FailingProv if v == "hyperliquid" else None))
+    ws = _DummyWs()
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(ws, user_address="0xabc", fills_cache_path=str(tr_path))
+    ws._fills_ws_seeded = True
+    ws._last_fills_touch_ms = t0_ms
+    # Intercept async spawn to run synchronously in test.
+    orig_sched = bridge._schedule_invalidated_fills_resync
+    monkeypatch.setattr(bridge, "_schedule_invalidated_fills_resync", lambda syms, ff, tms: orig_sched(syms, ff, tms, blocking=True))
+    bridge.touch_fills_cache_if_needed(t0_ms + 20_000)
+    assert health_calls == []
+
+    # 2. With a healthy REST provider, touch_fills_cache_if_needed restores disk fetchtime & records health coherently.
+    class _OkProv(_FailingProv):
+        def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0):
+            return [fill_row]
+
+    bridge.hl_prov_cls = _OkProv
+    t_rec_ms = t0_ms + 40_000
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda v=None: t_rec_ms if v is None else int(v))
+    bridge.touch_fills_cache_if_needed(t_rec_ms)
+    assert ("hyperliquid", "trades", t_rec_ms) in health_calls
+    assert ("hyperliquid", "filled_orders", t_rec_ms) in health_calls
+
+    _, fo_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="hyperliquid")
+    assert fo_ft.get("HYPEUSDC") == t_rec_ms
+
+    # Cross-cache coherence audit confirms zero health_disk_lag!
+    _write_health_doc(
+        health_path,
+        now_ms=t_rec_ms,
+        started_ms=t0_ms - 5_000,
+        venue_streams={"hyperliquid": {"filled_orders": t_rec_ms, "trades": t_rec_ms}},
+    )
+    viols = audit_account_cache_coherence(
+        str(tmp_path),
+        now_s=t_rec_ms / 1000.0,
+        venues=("hyperliquid",),
+        health_path=str(health_path),
+        include_ledger=False,
+    )
+    assert viols == [], [v.format_line() for v in viols]
+

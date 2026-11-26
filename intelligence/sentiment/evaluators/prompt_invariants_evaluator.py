@@ -191,7 +191,7 @@ _LIQ_CLUSTER_ITEM_RE = re.compile(
     r"\b(long_liq|short_liq|deep_long|deep_short)=\$([0-9.,]+)\[\$[^,]+,\s*([+-]?[0-9.]+)%\]"
 )
 _INTENT_STATUS_ID_RE = re.compile(
-    r"\b(FILLED|PARTIALLY_FILLED|OPEN_RESTING|CANCELED|CANCELLED|EXPIRED)\b[^\n]*\bid=([A-Za-z0-9_-]+)"
+    r"\b(FILLED|PARTIALLY_FILLED|OPEN_RESTING|CANCELED|CANCELLED|EXPIRED)\b[^\n;]*?\bid=([A-Za-z0-9_-]+)"
 )
 _TERMINAL_ORDER_STATUS_TOKS: frozenset[str] = frozenset({"FILLED", "CANCELED", "CANCELLED", "EXPIRED"})
 _WARM_OMITTED_LINE_RE = re.compile(
