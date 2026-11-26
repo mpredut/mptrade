@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from cachepaths import (
     cache_symbol_variants,
@@ -173,7 +173,12 @@ class VenueFeeAndLimitsEvaluator(TcaRiskEvaluatorBase):
         if inst is None and isinstance(fallback_limits, dict):
             _apply_fee_meta(fallback_limits, allow_precision=not prefer_static_precision)
         if callable(fee_spec_resolver):
-            _apply_fee_meta(fee_spec_resolver(v_norm, symbol) or {}, include_limits=False)
+            _apply_fee_meta(
+                fee_spec_resolver(v_norm, symbol) or {},
+                include_limits=True,
+                allow_tick=not prefer_static_tick,
+                allow_precision=not prefer_static_precision,
+            )
         params = getattr(inst, "params", {}) if inst is not None and isinstance(getattr(inst, "params", None), dict) else {}
         _apply_fee_meta(params, allow_precision=not prefer_static_precision)
         if inst is not None:
@@ -253,6 +258,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
         *,
         now_ts: Optional[float] = None,
         ob_stale_sec: float = 30.0,
+        tradable_positions: Optional[Sequence[Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         if not isinstance(open_orders, list) or not open_orders:
@@ -261,6 +267,15 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
         explicit_now = safe_pos_float(now_ts, default=None)
         ref_now = explicit_now if explicit_now is not None else resolve_now_ts(None)
         eff_ob_stale_sec = safe_pos_float(ob_stale_sec, default=30.0) or 30.0
+        tick_by_vs: Dict[tuple[str, str], float] = {}
+        for pos in tradable_positions or ():
+            if not isinstance(pos, dict):
+                continue
+            pv = normalize_venue_name(pos.get("venue"))
+            ps = str(pos.get("symbol") or "").strip().upper()
+            pt = safe_pos_float(pos.get("tick_size"), default=None)
+            if pv and ps and pt is not None:
+                tick_by_vs[(pv, ps)] = pt
         for o in open_orders:
             if not isinstance(o, dict):
                 continue
@@ -376,7 +391,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 if isinstance(m_entry, dict)
                 else 0
             )
-            dec = max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
+            explicit_tick = safe_pos_float(o.get("tick_size"), default=None) or tick_by_vs.get((v_norm, sym))
+            dec = (
+                _obs_px_dec(explicit_tick)
+                if explicit_tick is not None
+                else max(MarketDataProvider.resolve_venue_tca_price_decimals(v_norm, lim_px), obs_dec)
+            )
             queue_penalty = 1.0
             # Gate resting-wall queue penalties & front-run recommendations via AssetTelemetryCapabilities SSOT
             # so synthetic volume-profile proxies (RTH equities) never produce fake L2 wall penalties.
@@ -390,7 +410,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 best_ask_px = safe_pos_float(m_entry.get("best_ask"), default=None) or (
                     spot_px * (1.0 + sp_bps / 20000.0) if spot_px and spot_px > 0.0 else None
                 )
-                tick_step = 10.0 ** (-dec)
+                tick_step = explicit_tick if explicit_tick is not None else (10.0 ** (-dec))
                 side_depth_usd = safe_pos_float(m_entry.get(f"{w_pfx}_depth_usd"), default=0.0) or 0.0
                 spot_vol_15m = safe_pos_float(m_entry.get("spot_vol_15m_usd"), default=0.0) or 0.0
                 min_wall_usd = (
@@ -411,7 +431,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         floor_ask = max(best_ask_px or 0.0, (spot_px or 0.0) * 1.0002)
                         if floor_ask > 0.0:
                             raw_fr = max(floor_ask + tick_step, raw_fr)
-                        fr_px = round(min(w_px, raw_fr), dec)
+                        clamped_fr = min(w_px, raw_fr)
+                        fr_px = (
+                            round(math.floor((clamped_fr + 1e-12) / tick_step) * tick_step, dec)
+                            if explicit_tick is not None
+                            else round(clamped_fr, dec)
+                        )
                         eff_fr = fr_px if (can_fr and fr_px < w_px and fr_px < lim_px) else None
                         far_behind, behind = lim_px > w_px * 1.015, lim_px > w_px * 1.0003
                         at_wall = lim_px >= w_px - 0.5 * tick_step and (lim_px - w_px) / w_px <= 0.0003
@@ -423,7 +448,12 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                         )
                         if ceil_bid > 0.0:
                             raw_fr = min(ceil_bid - tick_step, raw_fr)
-                        fr_px = round(max(w_px, raw_fr), dec)
+                        clamped_fr = max(w_px, raw_fr)
+                        fr_px = (
+                            round(math.ceil((clamped_fr - 1e-12) / tick_step) * tick_step, dec)
+                            if explicit_tick is not None
+                            else round(clamped_fr, dec)
+                        )
                         eff_fr = fr_px if (can_fr and fr_px > w_px and fr_px > lim_px) else None
                         far_behind, behind = lim_px < w_px * 0.985, lim_px < w_px * 0.9997
                         at_wall = lim_px <= w_px + 0.5 * tick_step and (w_px - lim_px) / w_px <= 0.0003
@@ -919,6 +949,7 @@ def enrich_open_limit_orders_tca(
     *,
     now_ts: Optional[float] = None,
     ob_stale_sec: float = 30.0,
+    tradable_positions: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Enrich resting open limit orders with Orderbook Wall Queue Position, Front-Run Price, and 1h Fill Probability (Layer II.3)."""
     return _OPEN_LIMIT_ORDERS_TCA_EVALUATOR.evaluate(
@@ -927,6 +958,7 @@ def enrich_open_limit_orders_tca(
         microstructure,
         now_ts=now_ts,
         ob_stale_sec=ob_stale_sec,
+        tradable_positions=tradable_positions,
     )
 
 

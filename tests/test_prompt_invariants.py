@@ -584,3 +584,130 @@ def test_lifo_window_bounds_pre_window_hydration_against_ancient_ghost_buys() ->
     assert attr["ai_summary"]["realized_net_usd"] > 0.0
 
 
+def test_cycle11_12_acute_geo_escalation_gateway_min_snapshot_and_equity_ob_precision() -> None:
+    """Verify Cycle 11 & 12 fixes:
+    1. New acute unassessed geo headline escalates Delta-Gate to high-effort & urgent routing.
+    2. BUY active trade plan clears symmetrically when effective_max_sell_usd == 0.0 (unsellable dust).
+    3. derive_runtime_portfolio_view & PositionCostBasisEnrichmentEvaluator propagate gateway_min_usd
+       and preserve T212 static precision.
+    4. align_equity_orderbook_to_spot caps sub-dollar US equity OB quotes to <=4 decimal places.
+    """
+    from types import SimpleNamespace
+    from intelligence.sentiment.evaluators.microstructure_evaluator import align_equity_orderbook_to_spot
+    from intelligence.sentiment.evaluators.portfolio_evaluator import enrich_positions_with_orders_and_cycles
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+        evaluate_crypto_executor_delta_gate,
+        is_urgent_delta_gate_wakeup,
+    )
+
+    t0 = 1_800_000_000.0
+    acute_note = "BREAKING: Emergency missile strike hits Strait of Hormuz oil tanker"
+    sensors_acute = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 60500.0}},
+        microstructure={},
+        portfolio_summary={"tradable_positions": [], "open_orders": [], "recent_orders": {}},
+        sentiment_advisor={"market_bias": "NEUTRAL", "recommended_action": "HOLD"},
+        geopolitical_threat={
+            "threat_level": "NORMAL",
+            "recommended_brake": "NONE",
+            "risk_score": 0.15,
+            "live_unassessed_high_sev_note": acute_note,
+        },
+        source_timestamps={},
+    )
+    prev_hold = {
+        "ts": t0 - 300.0,
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC"}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 60500.0},
+            "macro_ts": t0 - 600.0,
+            "macro_verdict": "NEUTRAL||HOLD|",
+            "geo_ts": t0 - 1200.0,
+            "geo_verdict": "NORMAL|NONE",
+            "latest_fill_ts": 0.0,
+            "open_order_ids": [],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+    skip_a, rsn_a, high_a, meta_a = evaluate_crypto_executor_delta_gate(sensors_acute, prev_hold, now_ts=t0)
+    assert skip_a is False
+    assert rsn_a == "geo_unassessed_acute_headline"
+    assert high_a is True
+    assert is_urgent_delta_gate_wakeup(rsn_a) is True
+    assert is_urgent_delta_gate_wakeup("max_idle_elapsed", sensors=sensors_acute, prev_eval=prev_hold) is True
+    prev_ack = {**prev_hold, "ts": t0, "delta_gate_meta": meta_a}
+    assert is_urgent_delta_gate_wakeup("max_idle_elapsed", sensors=sensors_acute, prev_eval=prev_ack) is False
+
+    # 2. BUY plan clears when effective_max_sell_usd == 0.0 (e.g. $7 unsellable dust < $10 gateway min)
+    buy_dust_intent = {
+        **_filled_intent("buy_rgnt_1", t0 - 3600.0, "BUY", "RGNT_US_EQ", "t212", 0.90, 8.0),
+        "target_px": 1.10,
+        "invalidation_px": 0.80,
+    }
+    plans_dust = summarize_active_ai_trade_plans(
+        [buy_dust_intent],
+        "equities",
+        t0,
+        lambda it, default=0.0: it.get("clamped_notional_usd", default),
+        tradable_positions=[
+            {
+                "venue": "t212",
+                "symbol": "RGNT_US_EQ",
+                "value_usd": 7.20,
+                "effective_max_buy_usd": 500.0,
+                "effective_max_sell_usd": 0.0,
+            }
+        ],
+        prices_and_trends={"RGNT_US_EQ": {"price": 0.90}},
+    )
+    assert plans_dust == []
+
+    # 3. PositionCostBasisEnrichmentEvaluator propagates gateway_min_usd and enforces T212 static precision
+    pos_list = [
+        {
+            "venue": "t212",
+            "symbol": "RGNT_US_EQ",
+            "price": 0.90,
+            "free_base": 3.93,
+            "free_quote": 500.0,
+            "value_usd": 3.54,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.001,
+        }
+    ]
+    enrich_positions_with_orders_and_cycles(
+        pos_list,
+        {"RGNT_US_EQ": {"price": 0.90}},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+        gateway_max_usd=2000.0,
+        gateway_min_usd=10.0,
+        now_ts=t0,
+    )
+    assert pos_list[0]["effective_max_sell_usd"] == 0.0
+    assert (pos_list[0]["min_qty"], pos_list[0]["step_size"], pos_list[0]["tick_size"]) == (0.01, 0.01, 0.01)
+
+    # 4. align_equity_orderbook_to_spot caps sub-dollar US equities to <=4 decimals (no 0.895001)
+    rgnt_ob = {
+        "best_bid": 0.8951,
+        "best_ask": 0.9051,
+        "ob_mid_price": 0.9001,
+        "bid_wall_px": 0.8951,
+        "ask_wall_px": 0.9051,
+        "spread_bps": 111.1,
+    }
+    assert align_equity_orderbook_to_spot(rgnt_ob, 0.90) is True
+    for k in ("best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px"):
+        frac = f"{rgnt_ob[k]:.8f}".rstrip("0").partition(".")[2]
+        assert len(frac) <= 4, f"{k}={rgnt_ob[k]} has >4 decimals"
+
+
+

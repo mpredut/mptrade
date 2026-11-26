@@ -31,7 +31,7 @@ from botcore import (
     safe_pos_float,
     topic_spec,
 )
-from cachepaths import matches_asset_scope, normalize_venue_name
+from cachepaths import has_equity_suffix, matches_asset_scope, normalize_venue_name
 from instrument_registry import (
     casefold_get,
     disabled_registry_symbols,
@@ -127,6 +127,7 @@ def audit_snapshot_invariants(
     arb_tol_bps: float = 0.3,
     range_tol_pct: float = 1.0,
     breakdown_tol_frac: float = 0.05,
+    gateway_min_usd: float = 0.0,
 ) -> list[InvariantViolation]:
     """Audit mathematical and structural invariants on a ``MacroTelemetrySnapshot`` or serialized dict."""
     violations: list[InvariantViolation] = []
@@ -321,9 +322,39 @@ def audit_snapshot_invariants(
                 )
             )
 
+    gw_min_snap = safe_nonneg_float(gateway_min_usd, default=0.0) or 0.0
+    if gw_min_snap > 0.0:
+        for pos in ps.get("tradable_positions") or ():
+            if not isinstance(pos, Mapping):
+                continue
+            p_ven = normalize_venue_name(pos.get("venue")) or str(pos.get("venue") or "").strip().lower()
+            p_sym = str(pos.get("symbol") or "").strip()
+            for cap_k in ("effective_max_buy_usd", "effective_max_sell_usd"):
+                cap_v = safe_nonneg_float(pos.get(cap_k), default=None)
+                if cap_v is not None and 0.0 < cap_v < gw_min_snap - 1e-6:
+                    violations.append(
+                        InvariantViolation(
+                            "SNAPSHOT_SUB_GATEWAY_MIN_CAP",
+                            f"{p_ven}:{p_sym}:{cap_k}",
+                            f"{cap_k}=${cap_v:.2f} is below gateway_min_usd=${gw_min_snap:.2f}",
+                        )
+                    )
+
     for sym, minfo in micro.items():
         if not isinstance(minfo, Mapping):
             continue
+        if has_equity_suffix(str(sym)):
+            for px_k in ("best_bid", "best_ask", "ob_mid_price", "bid_wall_px", "ask_wall_px"):
+                if (pv := safe_pos_float(minfo.get(px_k), default=None)) is not None:
+                    frac = f"{pv:.8f}".rstrip("0").partition(".")[2]
+                    if len(frac) > 4:
+                        violations.append(
+                            InvariantViolation(
+                                "EQUITY_OB_PRECISION",
+                                f"{sym}:{px_k}",
+                                f"equity orderbook price {px_k}={pv} exceeds 4 decimal places",
+                            )
+                        )
         ob_mid = safe_pos_float(minfo.get("ob_mid_price"), default=None)
         if ob_mid is None:
             continue
@@ -692,7 +723,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             allow_network=False,
             persist=False,
         )
-        violations.extend(audit_snapshot_invariants(snap, non_tradable_symbols=non_trad))
+        violations.extend(
+            audit_snapshot_invariants(
+                snap, non_tradable_symbols=non_trad, gateway_min_usd=gw_min_usd
+            )
+        )
         if args.check_rendered_prompt:
             from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
 

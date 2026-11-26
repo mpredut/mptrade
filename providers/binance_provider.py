@@ -144,6 +144,42 @@ class BinanceProvider(MarketDataProvider):
 
     def __init__(self, live_enabled: Optional[bool] = None):
         self._live_enabled = live_enabled
+        self._symbol_rules_cache: dict[str, BinanceOrderRules] = {}
+
+    def _cache_symbol_rules(self, symbol: str, rules: BinanceOrderRules) -> None:
+        if (sym_u := clean_upper_scalar(symbol)) is not None:
+            cache = getattr(self, "_symbol_rules_cache", None)
+            if not isinstance(cache, dict):
+                cache = {}
+                self._symbol_rules_cache = cache
+            cache[sym_u] = rules
+
+    @classmethod
+    def extract_cached_fee_and_limits(
+        cls,
+        provider: object,
+        symbol: str,
+        *,
+        price: Optional[float] = None,
+    ) -> dict:
+        """Extract non-blocking cached Binance LOT_SIZE / PRICE_FILTER / NOTIONAL limits for ``symbol``."""
+        _ = price
+        if provider is None or (sym_u := clean_upper_scalar(symbol)) is None:
+            return {}
+        cache = getattr(provider, "_symbol_rules_cache", None)
+        rules = casefold_get(cache, sym_u) if isinstance(cache, dict) else None
+        if not isinstance(rules, BinanceOrderRules):
+            return {}
+        out: dict[str, float] = {}
+        if (step_f := safe_pos_float(rules.lot_step, default=None)) is not None:
+            out["step_size"] = step_f
+        if (min_q := safe_pos_float(rules.lot_min, default=None) or out.get("step_size")) is not None:
+            out["min_qty"] = min_q
+        if (tick_f := safe_pos_float(rules.tick_size, default=None)) is not None:
+            out["tick_size"] = tick_f
+        if (min_not := safe_pos_float(rules.min_notional, default=None)) is not None:
+            out["min_notional"] = round(min_not, 4)
+        return out
 
     @property
     def name(self) -> str:
@@ -531,6 +567,7 @@ class BinanceProvider(MarketDataProvider):
             rules = BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"pair_precision({symbol}): {exc}") from exc
+        self._cache_symbol_rules(symbol, rules)
         return PairPrecision(
             price_decimals=decimal_places(rules.tick_size),
             volume_decimals=decimal_places(rules.lot_step),
@@ -555,6 +592,7 @@ class BinanceProvider(MarketDataProvider):
         enforce_min = _parse_bool_flag(enforce_business_minimum, True)
         try:
             rules = BinanceOrderRules.from_symbol_info(_get_bapi().client.get_symbol_info(symbol))
+            self._cache_symbol_rules(symbol, rules)
             current_price = price if is_market else self.get_current_price(symbol)
             candidate_price = _po.order_candidate_price(side, price, current_price, market=is_market)
         except Exception as exc:  # noqa: BLE001
@@ -724,6 +762,7 @@ class BinanceProvider(MarketDataProvider):
         try:
             client = _get_bapi().client
             rules = BinanceOrderRules.from_symbol_info(client.get_symbol_info(symbol))
+            self._cache_symbol_rules(symbol, rules)
             reference_price = self.get_current_price(symbol)
             try:
                 normalized_qty, normalized_price = rules.normalize(

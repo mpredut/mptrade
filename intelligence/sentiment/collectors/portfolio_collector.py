@@ -766,6 +766,7 @@ def derive_runtime_portfolio_view(
     *,
     now_ts_oo: float,
     gateway_max_usd: float,
+    gateway_min_usd: float = 0.0,
     cache_dir: Optional[str] = None,
     fresh_bal_cache_bd: Optional[Dict[tuple[str, str], Dict[str, float]]] = None,
     cached_bals: Optional[Dict[str, Any]] = None,
@@ -1016,6 +1017,7 @@ def derive_runtime_portfolio_view(
                     locked_quote_usd=lq_pos if lq_pos > 0.0 else None,
                     locked_base_qty=lb_pos if lb_pos > 0.0 else None,
                     gateway_max_usd=gateway_max_usd,
+                    gateway_min_usd=gateway_min_usd,
                     fee_spec_resolver=fee_spec_resolver,
                     fallback_limits=prev_inst_limits,
                 )
@@ -1765,8 +1767,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         venue_quote_cash: Dict[str, Dict[str, Any]],
         pending_peaks_by_vs: Dict[tuple[str, str], tuple[float, Optional[float]]],
         cache_dir: Optional[str] = None,
+        gateway_min_usd: float = 0.0,
     ) -> None:
         gw_max_rec = safe_pos_float(gateway_max_usd, default=2000.0) or 2000.0
+        gw_min_rec = safe_nonneg_float(gateway_min_usd, default=0.0) or 0.0
         seen_rec_vs: set[tuple[str, str]] = set()
         cached_obs_by_va = _build_cached_balance_observations(cached_bals)
         non_tradable_rec_syms = _resolve_non_tradable_registry_symbols(cache_dir)
@@ -1851,13 +1855,22 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             rec_pos["value_usd"] = round(fb_val * px_rec, 2)
                             sell_cap_rec = venue_fee_cap_quantity(v_rec_norm, "SELL", px_rec, fb_val)
                             raw_sell_rec = min(gw_max_rec, sell_cap_rec * px_rec)
-                            rec_min_not = safe_pos_float(rec_pos.get("exchange_min_notional_usd"), default=1.0) or 1.0
+                            rec_min_not = max(
+                                safe_pos_float(rec_pos.get("exchange_min_notional_usd"), default=1.0) or 1.0,
+                                gw_min_rec,
+                            )
                             rec_min_qty = safe_pos_float(rec_pos.get("min_qty"), default=0.0) or 0.0
                             rec_pos["effective_max_sell_usd"] = (
                                 0.0
                                 if (raw_sell_rec < rec_min_not or (rec_min_qty > 0.0 and sell_cap_rec < rec_min_qty))
                                 else round(raw_sell_rec, 2)
                             )
+                        if (
+                            gw_min_rec > 0.0
+                            and rec_pos.get("effective_max_buy_usd") is not None
+                            and (safe_nonneg_float(rec_pos.get("effective_max_buy_usd"), default=0.0) or 0.0) < gw_min_rec
+                        ):
+                            rec_pos["effective_max_buy_usd"] = 0.0
                         pt_key_rec = next((pk for pk in prices_and_trends if str(pk).upper() == p_sym_u), p_sym)
                         prices_and_trends.setdefault(pt_key_rec, {"price": px_rec, "trend": 0, "growth_coefficient": 0.0})
                     else:
@@ -1919,7 +1932,8 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         order_ts_map: Dict[str, Any],
         now_ts_oo: float,
         gateway_max_usd: float,
-        cache_dir: Optional[str],
+        gateway_min_usd: float = 0.0,
+        cache_dir: Optional[str] = None,
         allow_network: bool,
         force_persist: bool,
         tradable_positions: List[Dict[str, Any]],
@@ -2189,6 +2203,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     free_quote=quote_free,
                     free_base=base_free,
                     gateway_max_usd=gateway_max_usd,
+                    gateway_min_usd=gateway_min_usd,
                     fee_spec_resolver=fee_spec_resolver,
                 )
             )
@@ -2325,6 +2340,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         trailing_by_venue: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
         known_ai_order_ids: Optional[set[str]] = None,
         gateway_max_usd: float = 2000.0,
+        gateway_min_usd: float = 0.0,
         verified_open_venues: Optional[set[str]] = None,
         verified_open_symbols: Optional[set[Tuple[str, str]]] = None,
         allow_empty_inst_recovery: bool = False,
@@ -2407,6 +2423,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 order_ts_map=order_ts_map,
                 now_ts_oo=now_ts_oo,
                 gateway_max_usd=gateway_max_usd,
+                gateway_min_usd=gateway_min_usd,
                 cache_dir=cache_dir,
                 allow_network=allow_network,
                 force_persist=force_persist,
@@ -2439,6 +2456,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     order_ts_map=order_ts_map,
                     now_ts_oo=now_ts_oo,
                     gateway_max_usd=gateway_max_usd,
+                    gateway_min_usd=gateway_min_usd,
                     tradable_positions=tradable_positions,
                     open_orders_list=open_orders_list,
                     venue_quote_cash=venue_quote_cash,
@@ -2507,6 +2525,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             pending_peaks_by_vs,
             now_ts_oo=now_ts_oo,
             gateway_max_usd=gateway_max_usd,
+            gateway_min_usd=gateway_min_usd,
             cache_dir=cache_dir,
             fresh_bal_cache_bd=fresh_bal_cache_bd,
             cached_bals=cached_bals,
@@ -2694,6 +2713,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         read_json_fn: Any = None,
         known_ai_order_ids: Optional[set[str]] = None,
         gateway_max_usd: float = 2000.0,
+        gateway_min_usd: float = 0.0,
         ai_intents: Optional[List[Dict[str, Any]]] = None,
         allow_network: bool = True,
         now_ts: Optional[float] = None,
@@ -2932,6 +2952,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             t212_cycles,
             cyc_sell_ts_map,
             gateway_max_usd=gateway_max_usd,
+            gateway_min_usd=gateway_min_usd,
             now_ts=now_ts,
             archive_high_resolver=_archive_high_fn,
             fee_spec_resolver=_fee_spec_fn,
@@ -3128,6 +3149,7 @@ def harvest_tradable_positions_and_orders(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
+    gateway_min_usd: float = 0.0,
     cache_dir: Optional[str] = None,
     verified_open_venues: Optional[set[str]] = None,
     verified_open_symbols: Optional[set[Tuple[str, str]]] = None,
@@ -3147,6 +3169,7 @@ def harvest_tradable_positions_and_orders(
         trailing_by_venue=trailing_by_venue,
         known_ai_order_ids=known_ai_order_ids,
         gateway_max_usd=gateway_max_usd,
+        gateway_min_usd=gateway_min_usd,
         verified_open_venues=verified_open_venues,
         verified_open_symbols=verified_open_symbols,
         allow_empty_inst_recovery=allow_empty_inst_recovery,
@@ -3184,6 +3207,7 @@ def harvest_recent_orders_and_enrich_positions(
     *,
     known_ai_order_ids: Optional[set[str]] = None,
     gateway_max_usd: float = 2000.0,
+    gateway_min_usd: float = 0.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
     allow_network: bool = True,
     now_ts: Optional[float] = None,
@@ -3201,6 +3225,7 @@ def harvest_recent_orders_and_enrich_positions(
         read_json_fn=read_json_fn,
         known_ai_order_ids=known_ai_order_ids,
         gateway_max_usd=gateway_max_usd,
+        gateway_min_usd=gateway_min_usd,
         ai_intents=ai_intents,
         allow_network=allow_network,
         now_ts=now_ts,

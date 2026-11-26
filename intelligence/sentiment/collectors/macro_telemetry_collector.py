@@ -1765,11 +1765,17 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
         if snapshot.portfolio_summary:
             snapshot.portfolio_summary.setdefault("open_limit_orders", [])
             if isinstance(snapshot.portfolio_summary.get("open_limit_orders"), list) and snapshot.portfolio_summary["open_limit_orders"]:
+                ob_stale_sec_ssot = (
+                    _mss.resolve_derived_telemetry_intervals()["orderbook_interval_sec"]
+                    * _mss.TELEMETRY_SOURCE_STALE_INTERVAL_MULT
+                )
                 enrich_open_limit_orders_tca(
                     snapshot.portfolio_summary["open_limit_orders"],
                     snapshot.prices_and_trends,
                     snapshot.microstructure,
                     now_ts=now_ts,
+                    ob_stale_sec=ob_stale_sec_ssot,
+                    tradable_positions=snapshot.portfolio_summary.get("tradable_positions"),
                 )
             if risk_eng := compute_enterprise_portfolio_risk_metrics(
                 snapshot.portfolio_summary, snapshot.prices_and_trends, snapshot.microstructure
@@ -2182,7 +2188,9 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
             og_conf_path = os.path.join(workspace_dir, "order_guard.conf")
             if os.path.isfile(og_conf_path):
                 try:
-                    _, cfg_min_usd, cfg_max_usd, _, _ = parse_intent_gateway_config(load_key_value_conf(og_conf_path))
+                    _, cfg_min_usd, cfg_max_usd, _, _ = parse_intent_gateway_config(
+                        load_key_value_conf(workspace_dir, workspace_dir)
+                    )
                     if gw_min_usd is None:
                         gw_min_usd = cfg_min_usd
                     if gw_max_usd is None:

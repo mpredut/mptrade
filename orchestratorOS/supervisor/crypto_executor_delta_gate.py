@@ -103,6 +103,26 @@ def _has_unacknowledged_geo_shock(
     return prev_ts <= 0.0 or eff_geo_ts > prev_ts + 0.5
 
 
+def _has_unacknowledged_acute_geo_headline(
+    gt: Any,
+    prev_eval: Optional[Mapping[str, Any]],
+) -> bool:
+    """Return True when an unassessed breaking headline carries acute shock keywords and differs from prev_eval."""
+    note = (
+        str(gt.get("live_unassessed_high_sev_note") or "").strip()
+        if isinstance(gt, Mapping)
+        else ""
+    )
+    if not (note and has_acute_shock_keywords(note)):
+        return False
+    prev_meta = (
+        prev_eval.get("delta_gate_meta")
+        if isinstance(prev_eval, Mapping) and isinstance(prev_eval.get("delta_gate_meta"), Mapping)
+        else {}
+    )
+    return note != str(prev_meta.get("geo_unassessed_note") or "").strip()
+
+
 def _has_new_fill_since_prev(
     ps_map: Mapping[str, Any],
     prev_eval: Optional[Mapping[str, Any]],
@@ -157,12 +177,14 @@ def is_urgent_delta_gate_wakeup(
     if focus_symbols and parse_symbol_list(focus_symbols):
         return True
     reason_lc = str(gate_reason or "").strip().lower()
-    if reason_lc.startswith(("focus_symbols(", "trade_plan_", "new_fill")):
+    if reason_lc.startswith(("focus_symbols(", "trade_plan_", "new_fill", "geo_unassessed_acute")):
         return True
     if sensors is not None:
         gt = getattr(sensors, "geopolitical_threat", None)
         src_ts = getattr(sensors, "source_timestamps", None)
-        if _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None):
+        if _has_unacknowledged_geo_shock(
+            gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None
+        ) or _has_unacknowledged_acute_geo_headline(gt, prev_eval):
             return True
         ps = getattr(sensors, "portfolio_summary", None)
         if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
@@ -587,7 +609,7 @@ def evaluate_crypto_executor_delta_gate(
         if isinstance(gt, Mapping)
         else ""
     )
-    geo_unassessed_acute = bool(geo_unassessed_note and has_acute_shock_keywords(geo_unassessed_note))
+    geo_unassessed_acute_new = _has_unacknowledged_acute_geo_headline(gt, prev_map)
     snapshot_meta: Dict[str, Any] = {
         "eval_prices": eval_prices,
         "macro_ts": round(macro_ts, 3),
@@ -628,6 +650,7 @@ def evaluate_crypto_executor_delta_gate(
         or high_effort_breach
         or has_new_fill
         or geo_shock
+        or geo_unassessed_acute_new
         or plan_trigger_reason
     )
 
@@ -665,7 +688,6 @@ def evaluate_crypto_executor_delta_gate(
 
     prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
     prev_geo_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
-    prev_geo_unassessed = str(prev_meta.get("geo_unassessed_note") or "").strip()
     if geo_shock or (
         geo_ts > 0.0
         and (
@@ -675,7 +697,7 @@ def evaluate_crypto_executor_delta_gate(
         and (not geo_verdict or not prev_geo_verdict or geo_verdict != prev_geo_verdict)
     ):
         return False, "geo_update", escalate_high_effort, snapshot_meta
-    if geo_unassessed_acute and geo_unassessed_note != prev_geo_unassessed:
+    if geo_unassessed_acute_new:
         return False, "geo_unassessed_acute_headline", escalate_high_effort, snapshot_meta
 
     prev_oids = sorted({str(x).strip() for x in (prev_meta.get("open_order_ids") or []) if str(x).strip()})

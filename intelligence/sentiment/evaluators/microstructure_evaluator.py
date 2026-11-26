@@ -215,7 +215,7 @@ def align_equity_orderbook_to_spot(m_info: Dict[str, Any], spot_px: float) -> bo
     ob_mid_m = safe_pos_float(m_info.get("ob_mid_price"), default=None)
     if ob_mid_m is None or _prices_diverged(spot_px, ob_mid_m, threshold=0.35):
         return False
-    px_dec = _auto_px_decimals(spot_px)
+    px_dec = min(_auto_px_decimals(spot_px), 4)
     changed = False
     if abs(spot_px - ob_mid_m) > 1e-6:
         scale_r = spot_px / ob_mid_m

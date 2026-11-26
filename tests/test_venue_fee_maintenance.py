@@ -420,3 +420,124 @@ def test_binance_per_symbol_fee_schedule_and_live_maker_cross_venue_arb(tmp_path
     assert m_bn["net_buy_taker_edge_vs_peer_bps"] == pytest.approx(33.5, abs=0.1)
     assert m_bn["best_buy_venue"] == "binance:TAOUSDC"
 
+
+def test_persisted_symbol_limits_override_fallback_ladder_and_align_tca_front_run(tmp_path, monkeypatch):
+    """Verify BinanceFeeMaintainer persists exact exchange filters into cache_fee_schedule.json,
+    resolve_venue_fee_and_limits consumes them (while keeping T212 static), BinanceProvider exposes
+    cached rules, and OpenLimitOrdersTcaEvaluator snaps front-run prices to real tick_size."""
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    from providers.binance_provider import BinanceProvider
+    from providers.quantity import BinanceOrderRules
+    from state_stores.cache_fee_schedule import CacheFeeScheduleStore
+
+    monkeypatch.setattr(botcore, "is_trade_enabled", lambda: True)
+    now_ts = 1_770_060_000.0
+    tao_info = {
+        "symbol": "TAOUSDC",
+        "baseAsset": "TAO",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "minPrice": "0.1", "maxPrice": "100000.0", "tickSize": "0.10"},
+            {"filterType": "LOT_SIZE", "minQty": "0.0001", "maxQty": "9000.0", "stepSize": "0.0001"},
+            {"filterType": "NOTIONAL", "minNotional": "5.00", "applyMinToMarket": True},
+        ],
+    }
+    btc_info = {
+        "symbol": "BTCUSDC",
+        "baseAsset": "BTC",
+        "quoteAsset": "USDC",
+        "filters": [
+            {"filterType": "PRICE_FILTER", "minPrice": "0.01", "maxPrice": "1000000.0", "tickSize": "0.01"},
+            {"filterType": "LOT_SIZE", "minQty": "0.00001", "maxQty": "9000.0", "stepSize": "0.00001"},
+            {"filterType": "NOTIONAL", "minNotional": "5.00", "applyMinToMarket": True},
+        ],
+    }
+    cli = MagicMock()
+    cli.get_bnb_burn_spot_margin.return_value = {"spotBNBBurn": True}
+    cli.get_account.return_value = {
+        "balances": [
+            {"asset": "BNB", "free": "0.30", "locked": "0.0"},
+            {"asset": "USDC", "free": "2000.0", "locked": "0.0"},
+        ]
+    }
+    cli.get_orderbook_ticker.return_value = {"symbol": "BNBUSDC", "bidPrice": "600.00", "askPrice": "600.10"}
+    cli.get_open_orders.return_value = []
+    cli.get_trade_fee.return_value = [
+        {"symbol": "TAOUSDC", "makerCommission": "0.001", "takerCommission": "0.00095"},
+        {"symbol": "BTCUSDC", "makerCommission": "0.001", "takerCommission": "0.00095"},
+    ]
+    cli.get_exchange_info.return_value = {"symbols": [tao_info, btc_info]}
+
+    maintainer = BinanceFeeMaintainer(
+        client=cli,
+        bapi_mod=SimpleNamespace(client=cli, _cancel_and_resolve=MagicMock()),
+        placeorder_mod=SimpleNamespace(_submit_binance_order=MagicMock()),
+        audit=ExecutionAudit(directory=str(tmp_path / "audit")),
+    )
+    res = maintainer.maintain(now_ts, {}, load_fee_maintenance_config(_sample_cfg()))
+    assert res["symbol_limits"]["TAOUSDC"] == {
+        "exchange_min_notional_usd": 5.0,
+        "min_qty": 0.0001,
+        "step_size": 0.0001,
+        "tick_size": 0.1,
+    }
+    assert res["symbol_limits"]["BTCUSDC"]["step_size"] == 0.00001
+
+    sched_path = CacheFeeScheduleStore.resolve_schedule_path(str(tmp_path))
+    CacheFeeScheduleStore.save_schedule(
+        sched_path,
+        {
+            "schema_version": 1,
+            "ts": now_ts,
+            "interval_sec": 14400.0,
+            "state_max_age_sec": 86400.0,
+            "venues": {
+                "binance": res,
+                "t212": {
+                    "ts": now_ts,
+                    "fee_spec": {"fee_tier": "INVEST_RTH", "maker_fee_bps": 15.0, "taker_fee_bps": 15.0},
+                    "symbol_limits": {"NVDA_US_EQ": {"min_qty": 0.001, "step_size": 0.001, "tick_size": 0.001}},
+                },
+            },
+        },
+        indent=2,
+    )
+    resolver = build_persisted_venue_fee_resolver(str(tmp_path), now_ts=now_ts)
+    tao_lim = resolve_venue_fee_and_limits("binance", "TAOUSDC", None, price=183.5, fee_spec_resolver=resolver)
+    assert tao_lim["step_size"] == 0.0001
+    assert tao_lim["min_qty"] == 0.0001
+    assert tao_lim["tick_size"] == 0.1
+
+    # Static-precision T212 stays protected at 0.01/0.01/0.01 even if stale limits exist
+    nvda_lim = resolve_venue_fee_and_limits("t212", "NVDA_US_EQ", None, price=150.0, fee_spec_resolver=resolver)
+    assert (nvda_lim["min_qty"], nvda_lim["step_size"], nvda_lim["tick_size"]) == (0.01, 0.01, 0.01)
+
+    # BinanceProvider.extract_cached_fee_and_limits reads cached BinanceOrderRules without REST
+    bp = BinanceProvider(live_enabled=False)
+    bp._cache_symbol_rules("TAOUSDC", BinanceOrderRules.from_symbol_info(tao_info))
+    assert BinanceProvider.extract_cached_fee_and_limits(bp, "TAOUSDC")["tick_size"] == 0.1
+
+    # OpenLimitOrdersTcaEvaluator snaps front-run prices to TAOUSDC's real 0.10 tick (never 185.39)
+    orders = [{"venue": "binance", "symbol": "TAOUSDC", "side": "SELL", "price": 186.0, "qty": 2.0}]
+    enrich_open_limit_orders_tca(
+        orders,
+        {"TAOUSDC": {"price": 183.5, "vol_1h_pct": 1.2}},
+        {
+            "TAOUSDC": {
+                "best_bid": 183.4,
+                "best_ask": 183.5,
+                "ob_mid_price": 183.45,
+                "spread_bps": 5.45,
+                "ask_depth_usd": 100000.0,
+                "ask_wall_px": 185.4,
+                "ask_wall_usd": 40000.0,
+                "_ob_raw_ts": now_ts - 5.0,
+            }
+        },
+        now_ts=now_ts,
+        tradable_positions=[{"venue": "binance", "symbol": "TAOUSDC", "tick_size": 0.1}],
+    )
+    assert orders[0]["wall_queue_pos"] == "BEHIND_ASK_WALL"
+    assert orders[0]["recommended_front_run_px"] == 185.3
+
+

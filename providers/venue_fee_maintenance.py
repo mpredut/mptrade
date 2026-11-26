@@ -109,6 +109,7 @@ _FEE_SCHEDULE_EXCHANGE_KEYS: frozenset[str] = frozenset({
     "ts",
     "fee_spec",
     "by_symbol",
+    "symbol_limits",
     "spot_bnb_burn",
     "bnb_free",
     "bnb_locked",
@@ -231,6 +232,22 @@ class VenueFeeMaintainerBase(VenueFeeMaintainerInterface, ABC):
             "maker_fee_bps": round(m_bps, 2),
             "taker_fee_bps": round(t_bps, 2),
         }
+
+    @staticmethod
+    def _extract_symbol_limit_fields(raw: Any, *, include_tick: bool = True) -> Dict[str, float]:
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, float] = {}
+        min_not = safe_pos_float(
+            raw.get("exchange_min_notional_usd") if raw.get("exchange_min_notional_usd") is not None else raw.get("min_notional"),
+            default=None,
+        )
+        if min_not is not None:
+            out["exchange_min_notional_usd"] = round(min_not, 4)
+        for k in ("min_qty", "step_size", *(("tick_size",) if include_tick else ())):
+            if (val := safe_pos_float(raw.get(k), default=None)) is not None:
+                out[k] = val
+        return out
 
 
 class BinanceFeeMaintainer(VenueFeeMaintainerBase):
@@ -367,6 +384,48 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
     def _extract_base_fee_bps(cls, cli: Any) -> tuple[float, float]:
         maker_bps, taker_bps, _ = cls._extract_symbol_fee_schedule_bps(cli)
         return maker_bps, taker_bps
+
+    @classmethod
+    def _extract_symbol_limits(cls, cli: Any, target_syms: List[str]) -> Dict[str, Dict[str, float]]:
+        info_by_sym: Dict[str, dict] = {}
+        ex_fn = getattr(cli, "get_exchange_info", None)
+        if callable(ex_fn) and target_syms:
+            try:
+                ex_raw = ex_fn(symbols=target_syms)
+                if isinstance(ex_raw, dict) and isinstance(ex_raw.get("symbols"), list):
+                    for row in ex_raw["symbols"]:
+                        if isinstance(row, dict) and (rs := clean_upper_scalar(row.get("symbol"))):
+                            info_by_sym[rs] = row
+            except Exception:
+                pass
+        si_fn = getattr(cli, "get_symbol_info", None)
+        limits: Dict[str, Dict[str, float]] = {}
+        for sym in target_syms:
+            info = info_by_sym.get(sym)
+            if info is None and callable(si_fn):
+                try:
+                    cand = si_fn(sym)
+                    if isinstance(cand, dict) and (clean_upper_scalar(cand.get("symbol")) or sym) == sym:
+                        info = cand
+                except Exception:
+                    info = None
+            if not isinstance(info, dict):
+                continue
+            try:
+                rules = BinanceOrderRules.from_symbol_info(info)
+            except Exception:
+                continue
+            lim = cls._extract_symbol_limit_fields(
+                {
+                    "min_qty": rules.lot_min if rules.lot_min > 0 else rules.lot_step,
+                    "step_size": rules.lot_step,
+                    "tick_size": rules.tick_size,
+                    "min_notional": rules.min_notional if rules.min_notional > 0 else None,
+                }
+            )
+            if lim:
+                limits[sym] = lim
+        return limits
 
     def maintain(
         self,
@@ -585,11 +644,25 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             s_k: self.build_fee_spec(fee_tier, m_b * disc, t_b * disc)
             for s_k, (m_b, t_b) in sym_schedule.items()
         }
+        limit_syms = list(
+            dict.fromkeys(
+                [
+                    *(
+                        s
+                        for raw_s in symbols_for("binance")
+                        if (s := clean_upper_scalar(raw_s)) is not None and not has_equity_suffix(s)
+                    ),
+                    *by_symbol.keys(),
+                ]
+            )
+        )
+        symbol_limits = self._extract_symbol_limits(cli, limit_syms)
 
         out: Dict[str, Any] = {
             "ts": round(now_ts, 3),
             "fee_spec": self.build_fee_spec(fee_tier, eff_maker_bps, eff_taker_bps),
             "by_symbol": by_symbol,
+            **({"symbol_limits": symbol_limits} if symbol_limits else {}),
             "spot_bnb_burn": spot_bnb_burn,
             "bnb_free": round(bnb_free, 6),
             "bnb_locked": round(bnb_locked, 6),
@@ -702,10 +775,30 @@ class KrakenFeeMaintainer(VenueFeeMaintainerBase):
             if not _parse_bool_flag(dry_run, False):
                 last_alert_ts = round(now_ts, 3)
 
+        symbol_limits: Dict[str, Dict[str, float]] = {}
+        kr_all_syms = [
+            str(raw_s).strip()
+            for raw_s in symbols_for("kraken")
+            if str(raw_s).strip() and not has_equity_suffix(str(raw_s).strip())
+        ]
+        if callable(ap_fn := getattr(cli, "asset_pairs", None)) and kr_all_syms:
+            try:
+                ap_fn()
+            except Exception:
+                pass
+        for raw_ks in kr_all_syms:
+            try:
+                lim = self._extract_symbol_limit_fields(KrakenProvider.extract_cached_fee_and_limits(kp, raw_ks))
+                if lim:
+                    symbol_limits[raw_ks] = lim
+            except Exception:
+                continue
+
         out: Dict[str, Any] = {
             "ts": round(now_ts, 3),
             "fee_spec": self.build_fee_spec(fee_tier, maker_bps, taker_bps),
             "by_symbol": by_symbol,
+            **({"symbol_limits": symbol_limits} if symbol_limits else {}),
             "idle_usdc": round(idle_usdc, 2),
             "events": events,
         }
@@ -755,9 +848,25 @@ class HyperliquidFeeMaintainer(VenueFeeMaintainerBase):
                 stake_disc = safe_nonneg_float(uf.get("activeStakingDiscount"), default=0.0) or 0.0
                 fee_tier = "SPOT_LIVE_DISC" if (ref_disc > 0.0 or stake_disc > 0.0) else "SPOT_TIER0"
 
+        symbol_limits: Dict[str, Dict[str, float]] = {}
+        for raw_hs in symbols_for("hyperliquid"):
+            hs_u = clean_upper_scalar(raw_hs)
+            if not hs_u or has_equity_suffix(hs_u):
+                continue
+            try:
+                lim = self._extract_symbol_limit_fields(
+                    HyperliquidProvider.extract_cached_fee_and_limits(hp, hs_u),
+                    include_tick=False,
+                )
+                if lim:
+                    symbol_limits[hs_u] = lim
+            except Exception:
+                continue
+
         return {
             "ts": round(now_ts, 3),
             "fee_spec": self.build_fee_spec(fee_tier, maker_bps, taker_bps),
+            **({"symbol_limits": symbol_limits} if symbol_limits else {}),
             "active_referral_discount": round(ref_disc, 6),
             "active_staking_discount": round(stake_disc, 6),
             "events": [],
@@ -797,23 +906,22 @@ def _extract_venue_fee_spec_from_schedule(
     if not v_norm:
         return {}
     m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
-    if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
-        return sym_override
+    sym_override = m_cls.static_symbol_fee_override(symbol) if m_cls is not None else None
     if not isinstance(payload, dict) or not payload:
-        return {}
+        return dict(sym_override) if sym_override else {}
     venues_map = payload.get("venues")
     if not isinstance(venues_map, dict):
-        return {}
+        return dict(sym_override) if sym_override else {}
     v_entry = venues_map.get(v_norm)
     if not isinstance(v_entry, dict):
-        return {}
+        return dict(sym_override) if sym_override else {}
     max_age_sec = safe_pos_float(payload.get("state_max_age_sec"), default=None)
     if max_age_sec is None:
         iv_sec = safe_pos_float(payload.get("interval_sec"), default=14400.0) or 14400.0
         max_age_sec = iv_sec * 6.0
     entry_ts = safe_pos_float(v_entry.get("ts"), default=safe_pos_float(payload.get("ts"), default=None))
     if not is_cache_fresh(entry_ts, eff_now, max_age_sec):
-        return {}
+        return dict(sym_override) if sym_override else {}
 
     spec: Dict[str, Any] = {}
     base_spec = v_entry.get("fee_spec")
@@ -824,6 +932,8 @@ def _extract_venue_fee_spec_from_schedule(
         sym_spec = casefold_get(by_sym, symbol)
         if isinstance(sym_spec, dict):
             spec.update(sym_spec)
+    if sym_override:
+        spec.update(sym_override)
 
     out: Dict[str, Any] = {}
     if clean_scalar_str(spec.get("fee_tier")):
@@ -832,6 +942,11 @@ def _extract_venue_fee_spec_from_schedule(
         out["maker_fee_bps"] = round(m_bps, 2)
     if (t_bps := safe_nonneg_float(spec.get("taker_fee_bps"), default=None)) is not None:
         out["taker_fee_bps"] = round(t_bps, 2)
+    sym_lims = v_entry.get("symbol_limits")
+    if symbol and isinstance(sym_lims, dict):
+        lim_entry = casefold_get(sym_lims, symbol)
+        if isinstance(lim_entry, dict):
+            out.update(VenueFeeMaintainerBase._extract_symbol_limit_fields(lim_entry))
     return out
 
 

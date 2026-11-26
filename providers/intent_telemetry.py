@@ -1142,6 +1142,11 @@ def summarize_active_ai_trade_plans(
 
         pos_hit = _find_matching_position(venue, sym)
         if side == "BUY" and not is_resting and isinstance(pos_hit, dict):
+            if "effective_max_sell_usd" in pos_hit:
+                ms_u = safe_pos_float(pos_hit.get("effective_max_sell_usd"), default=0.0) or 0.0
+                rms_u = safe_pos_float(pos_hit.get("replace_max_sell_usd"), default=0.0) or 0.0
+                if ms_u <= 0.0 and rms_u <= 0.0:
+                    continue
             held_usd = (safe_float(pos_hit.get("value_usd"), 0.0) or 0.0) + (
                 safe_float(pos_hit.get("locked_base_usd"), 0.0) or 0.0
             )

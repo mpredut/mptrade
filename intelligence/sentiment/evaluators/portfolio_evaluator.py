@@ -2343,6 +2343,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
         cyc_sell_ts_map: Optional[Dict[tuple[str, str], int]] = None,
         *,
         gateway_max_usd: float = 2000.0,
+        gateway_min_usd: float = 0.0,
         now_ts: Optional[float] = None,
         archive_high_resolver: Optional[Callable[[Sequence[str], int, float], float]] = None,
         fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
@@ -2442,21 +2443,29 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 )
             )
             inst_obj = inst_by_sym.get(f"{p_venue}:{p_sym}") or inst_by_sym.get(p_sym)
+            static_prec_e = MarketDataProvider.prefers_static_precision(p_venue)
+            prev_limit_keys_e = (
+                (
+                    "fee_tier",
+                    "maker_fee_bps",
+                    "taker_fee_bps",
+                    "maker_rebate_edge_bps",
+                    "exchange_min_notional_usd",
+                )
+                if static_prec_e
+                else (
+                    "fee_tier",
+                    "maker_fee_bps",
+                    "taker_fee_bps",
+                    "maker_rebate_edge_bps",
+                    "exchange_min_notional_usd",
+                    "min_qty",
+                    "step_size",
+                    "tick_size",
+                )
+            )
             prev_inst_limits = (
-                {
-                    k: pos[k]
-                    for k in (
-                        "fee_tier",
-                        "maker_fee_bps",
-                        "taker_fee_bps",
-                        "maker_rebate_edge_bps",
-                        "exchange_min_notional_usd",
-                        "min_qty",
-                        "step_size",
-                        "tick_size",
-                    )
-                    if pos.get(k) is not None
-                }
+                {k: pos[k] for k in prev_limit_keys_e if pos.get(k) is not None}
                 if inst_obj is None
                 else {}
             )
@@ -2469,6 +2478,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                     locked_base_qty=safe_pos_float(pos.get("locked_base_qty"), default=None),
                     spread_bps=safe_nonneg_float(sym_spread, default=None),
                     gateway_max_usd=gateway_max_usd,
+                    gateway_min_usd=gateway_min_usd,
                     fee_spec_resolver=fee_spec_resolver,
                     fallback_limits=prev_inst_limits,
                 )
@@ -2576,6 +2586,7 @@ def enrich_positions_with_orders_and_cycles(
     cyc_sell_ts_map: Dict[tuple[str, str], int],
     *,
     gateway_max_usd: float = 2000.0,
+    gateway_min_usd: float = 0.0,
     now_ts: Optional[float] = None,
     archive_high_resolver: Optional[Callable[[Sequence[str], int, float], float]] = None,
     fee_spec_resolver: Optional[Callable[[str, str], Optional[Dict[str, Any]]]] = None,
@@ -2592,6 +2603,7 @@ def enrich_positions_with_orders_and_cycles(
         t212_cycles,
         cyc_sell_ts_map,
         gateway_max_usd=gateway_max_usd,
+        gateway_min_usd=gateway_min_usd,
         now_ts=now_ts,
         archive_high_resolver=archive_high_resolver,
         fee_spec_resolver=fee_spec_resolver,
