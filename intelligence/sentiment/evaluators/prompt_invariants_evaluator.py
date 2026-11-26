@@ -264,6 +264,18 @@ _LIQ_CLUSTER_QUAD_RE = re.compile(
     r"liq_clusters\(long_liq=\$([0-9.,]+)\[[^\]]+\],\s*short_liq=\$([0-9.,]+)\[[^\]]+\],\s*"
     r"deep_long=\$([0-9.,]+)\[[^\]]+\],\s*deep_short=\$([0-9.,]+)\["
 )
+_VENUE_CASH_LOCK_ITEM_RE = re.compile(
+    r"\b([a-z0-9_]+)\s+[A-Z]+=\$([0-9,]+\.?\d*)(?:\s*\[locked_quote_usd=\$([0-9,]+\.?\d*)\])?"
+)
+_SPOT_CVD_REAL_RE = re.compile(r"\bspot_cvd_15m=([+-]?)\$([0-9.,]+[KMBkmb]?)\[real_spot\]")
+_WHALE_LONG_PCT_RE = re.compile(r"\bwhale_long_pct=([+-]?[0-9.]+)%")
+_WEIBULL_Q_RE = re.compile(r"\bmed_d=([0-9.]+)d/p90=([0-9.]+)d\b")
+_ATR_TRIPLE_RE = re.compile(r"\batr\(15m=([0-9.]+)%,\s*1h=([0-9.]+)%,\s*4h=([0-9.]+)%\)")
+_SEC4_ETH_PX_RE = re.compile(r"^\s*\|\s*ETHUSDC\s*\|\s*\$([0-9,]+\.?\d*)\s*\|", re.MULTILINE)
+_XSTOCK_SPCX_PX_RE = re.compile(r"\bSPCX=\$([0-9,]+\.?\d*)")
+_CROSS_EQ_SPCX_PX_RE = re.compile(r"^\s*\|\s*SPCX_US_EQ\s*\|\s*\$([0-9,]+\.?\d*)\s*\|", re.MULTILINE)
+_INTENT_ID_ONLY_RE = re.compile(r"\bid=([A-Za-z0-9_-]+)\b")
+_VA_POS_VAL_RE = re.compile(r"vol_profile\([^)]*\bva_pos=([+-]?[0-9.]+)%([^)]*)\)")
 _NUMERIC_HYGIENE_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("NONE_LITERAL", re.compile(r"(?:=None\b|\|\s*None\s*\||\(None\)|\[None\])")),
     ("NAN_OR_INF", re.compile(r"(?:[=:(,\[\s\$])(?:nan|NaN|[+-]?inf|Inf)\b")),
@@ -2241,6 +2253,37 @@ def _audit_prompt_cross_section_math(
                         f"|agg_spot_cvd_15m|=${cvd_mag:.1f} exceeds agg_spot_vol=${agg_vol:.1f}",
                     )
                 )
+            if (m_v15a := _SPOT_VOL_15M_RE.search(rest)) is not None:
+                v15_a = _parse_money(m_v15a.group(1))
+                if v15_a is not None and agg_vol is not None and v15_a > agg_vol * 1.05 + 50.0:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+                            f"{sym}:spot_vol_vs_agg",
+                            f"spot_vol_15m=${v15_a:.1f} exceeds agg_spot_vol=${agg_vol:.1f}",
+                        )
+                    )
+        if (m_scv := _SPOT_CVD_REAL_RE.search(rest)) is not None and (m_v15c := _SPOT_VOL_15M_RE.search(rest)) is not None:
+            sc_mag = _parse_money(m_scv.group(2))
+            v15_c = _parse_money(m_v15c.group(1))
+            if sc_mag is not None and v15_c is not None and sc_mag > v15_c * 1.05 + 50.0:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+                        f"{sym}:spot_cvd_vs_vol",
+                        f"|spot_cvd_15m|=${sc_mag:.1f} exceeds spot_vol_15m=${v15_c:.1f}",
+                    )
+                )
+        if (m_wl := _WHALE_LONG_PCT_RE.search(rest)) is not None:
+            wl_v = safe_float(m_wl.group(1), default=None)
+            if wl_v is not None and not (0.0 <= wl_v <= 100.0):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+                        f"{sym}:whale_long_pct",
+                        f"whale_long_pct={wl_v:.2f}% outside [0, 100]",
+                    )
+                )
 
     for (s_a, s_b), arb_ab in arb_pairs.items():
         if s_a in edge_by_sym:
@@ -2707,7 +2750,7 @@ def _audit_prompt_section1_parity_and_structure(
                 )
             )
 
-    # 2. Total <Venue> Portfolio Value live_reconciled vs Portfolio Risk Engine venues(<venue>=...)
+    # 2. Total <Venue> Portfolio Value live_reconciled & Per-Venue NAV conservation vs venues(<venue>=...)
     if (m_nav := _NAV_LINE_RE.search(sec1_body)) is not None:
         v_map_s1 = {vk.lower(): _parse_money(vv) for vk, vv in _VENUE_VAL_RE.findall(m_nav.group(5))}
         for m_vlr in _VENUE_LIVE_REC_RE.finditer(sec1_body):
@@ -2722,6 +2765,56 @@ def _audit_prompt_section1_parity_and_structure(
                         f"venues({ven_lbl})=${ven_amt:.2f} != Total {m_vlr.group(1)} live_reconciled=${live_amt:.2f}",
                     )
                 )
+        v_cash_s1: dict[str, float] = {}
+        v_lq_s1: dict[str, float] = {}
+        for ln_c in sec1_body.splitlines():
+            if "Available Free Quote Cash per Venue:" not in ln_c:
+                continue
+            stripped_vc = _PARENS_RE.sub("", ln_c.split("Available Free Quote Cash per Venue:", 1)[1])
+            for m_vcl in _VENUE_CASH_LOCK_ITEM_RE.finditer(stripped_vc):
+                vk_c = m_vcl.group(1).lower()
+                if (fc_v := _parse_money(m_vcl.group(2))) is not None:
+                    v_cash_s1[vk_c] = v_cash_s1.get(vk_c, 0.0) + fc_v
+                if m_vcl.group(3) and (lq_v := _parse_money(m_vcl.group(3))) is not None:
+                    v_lq_s1[vk_c] = v_lq_s1.get(vk_c, 0.0) + lq_v
+        v_pos_s1: dict[str, float] = {}
+        for m_ip in _SEC3C_INST_RE.finditer(sec1_body):
+            ven_p_l, rest_p = m_ip.group(1).lower(), m_ip.group(3)
+            if "free_" not in rest_p or "limits(" not in rest_p:
+                continue
+            if (m_fbp := _FREE_BASE_VAL_RE.search(rest_p)) is not None and (fb_u := _parse_money(m_fbp.group(2))) is not None:
+                v_pos_s1[ven_p_l] = v_pos_s1.get(ven_p_l, 0.0) + fb_u
+            if (m_lbp := _LOCKED_BASE_QTY_USD_RE.search(rest_p)) is not None and (lb_u := _parse_money(m_lbp.group(2))) is not None:
+                v_pos_s1[ven_p_l] = v_pos_s1.get(ven_p_l, 0.0) + lb_u
+        if v_cash_s1 or v_pos_s1:
+            for vk_nav, nav_v in v_map_s1.items():
+                if nav_v is None:
+                    continue
+                comp_v = v_cash_s1.get(vk_nav, 0.0) + v_lq_s1.get(vk_nav, 0.0) + v_pos_s1.get(vk_nav, 0.0)
+                if comp_v > nav_v + max(0.25, nav_v * 0.005):
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_SECTION1_SUM_CONSERVATION",
+                            f"Section1.VenueNavSum:{vk_nav}",
+                            f"venue {vk_nav} cash+locked+positions=${comp_v:.2f} exceeds venues({vk_nav})=${nav_v:.2f}",
+                        )
+                    )
+
+    # 2B. Recent Autonomous Intents unique order IDs
+    if "Recent Autonomous Intents:" in sec1_body:
+        ra_seg = sec1_body.split("Recent Autonomous Intents:", 1)[1]
+        seen_ra_ids: set[str] = set()
+        for m_rid in _INTENT_ID_ONLY_RE.finditer(ra_seg):
+            rid = m_rid.group(1)
+            if rid in seen_ra_ids:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_ORDER_LIFECYCLE_CONSISTENCY",
+                        f"Section1.RecentIntents.DuplicateID:{rid}",
+                        f"duplicate order id={rid} in Recent Autonomous Intents",
+                    )
+                )
+            seen_ra_ids.add(rid)
 
     # 3. Recent_Fills vs Live Tradable Spot Instruments anchor parity (unique-venue symbols)
     pos_anchors_by_sym: dict[str, dict[str, float]] = {}
@@ -2876,6 +2969,65 @@ def _audit_prompt_section1_parity_and_structure(
                         f"kalman_vel={kv:g} has opposite sign to kalman_z={kz:g}",
                     )
                 )
+        if (m_vh := _VA_POS_VAL_RE.search(rest)) is not None:
+            va_p_v = safe_float(m_vh.group(1), default=None)
+            va_tail = m_vh.group(2) or ""
+            has_bv, has_av = ("below_val=" in va_tail), ("above_vah=" in va_tail)
+            if (has_bv and has_av) or (va_p_v is not None and ((has_bv and va_p_v > 0.5) or (has_av and va_p_v < 99.5))):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_VA_POS_AND_LIQ_MATH",
+                        f"{sym}:va_hold_dir",
+                        f"vol_profile hold tag contradicts va_pos={va_p_v}% ({va_tail.strip()})",
+                    )
+                )
+        if (m_wq := _WEIBULL_Q_RE.search(rest)) is not None:
+            md_v = safe_float(m_wq.group(1), default=None)
+            p90_v = safe_float(m_wq.group(2), default=None)
+            if md_v is not None and p90_v is not None and (md_v <= 0.0 or p90_v <= 0.0 or md_v > p90_v + 0.05):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"{sym}:weibull_quantiles",
+                        f"Weibull duration quantiles inconsistent: med_d={md_v:g}d > p90={p90_v:g}d",
+                    )
+                )
+        if (m_at := _ATR_TRIPLE_RE.search(rest)) is not None:
+            a15 = safe_float(m_at.group(1), default=None)
+            a1h = safe_float(m_at.group(2), default=None)
+            a4h = safe_float(m_at.group(3), default=None)
+            if a15 is not None and a1h is not None and a4h is not None and (a15 <= 0.0 or a1h <= 0.0 or a4h <= 0.0 or a15 > a4h * 1.05):
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_STRUCTURE_AND_OPTIONS_MATH",
+                        f"{sym}:atr_bounds",
+                        f"ATR bounds invalid: 15m={a15:g}%, 1h={a1h:g}%, 4h={a4h:g}%",
+                    )
+                )
+
+    # 7. Cross-section ETH (Breadth vs Section 4 ETHUSDC) and SPCX (xStocks vs Cross-Market US Equities) price parity
+    if (m_be := _BREADTH_ETH_BTC_RE.search(prompt_text)) is not None and (m_s4e := _SEC4_ETH_PX_RE.search(prompt_text)) is not None:
+        eth_b = _parse_money(m_be.group(2))
+        eth_4 = _parse_money(m_s4e.group(1))
+        if eth_b is not None and eth_4 is not None and eth_4 > 0.0 and abs(eth_b - eth_4) / eth_4 > 0.03:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                    "MarketBreadth.ETH_vs_Sec4",
+                    f"Breadth ETH=${eth_b:.2f} diverges >3% from Section 4 ETHUSDC=${eth_4:.2f}",
+                )
+            )
+    if (m_xs_s := _XSTOCK_SPCX_PX_RE.search(sec1_body)) is not None and (m_eq_s := _CROSS_EQ_SPCX_PX_RE.search(prompt_text)) is not None:
+        spx_xs = _parse_money(m_xs_s.group(1))
+        spx_eq = _parse_money(m_eq_s.group(1))
+        if spx_xs is not None and spx_eq is not None and spx_eq > 0.0 and abs(spx_xs - spx_eq) / spx_eq > 0.005:
+            violations.append(
+                InvariantViolation(
+                    "PROMPT_EXEC_AND_CROSS_MARKET_MATH",
+                    "xStocks.SPCX_vs_CrossEq",
+                    f"xStocks SPCX=${spx_xs:.2f} diverges >0.5% from Cross-Market SPCX_US_EQ=${spx_eq:.2f}",
+                )
+            )
 
     for m_sib in _SIBLING_HDR_RE.finditer(prompt_text):
         main_s, sib_s = m_sib.group(1), m_sib.group(2)

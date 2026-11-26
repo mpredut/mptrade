@@ -127,7 +127,7 @@ def _make_rich_sensors(ts: float, *, anchor_ts: float | None = None) -> Telemetr
             "invested_exposure_usd": 6000.0,
             "global_free_cash_usd": 4000.0,
             "global_free_cash_pct": 40.0,
-            "venue_nav_breakdown_usd": {"binance": 7000.0, "hyperliquid": 3000.0},
+            "venue_nav_breakdown_usd": {"binance": 7340.0, "hyperliquid": 2660.0},
             "portfolio_btc_beta": 0.92,
             "avg_corr_vs_btc_24h": 0.85,
             "intraday_var_95_usd": 180.0,

@@ -2353,6 +2353,69 @@ def test_cycle19_kalman_sci_hygiene_and_wave2_micro_flow_nesting_invariants() ->
     assert {"BTCUSDC:15m_in_24h", "BTCUSDC:24h_in_7d", "BTCUSDC:ob_mid"}.issubset(snap_subjs)
 
 
+def test_cycle20_wave3_per_venue_nav_spot_flow_va_hold_weibull_atr_and_cross_parity() -> None:
+    """Validate per-venue NAV conservation, spot_cvd<=spot_vol<=agg_vol, whale bounds, VA hold tags, Weibull, ATR, parity & IDs."""
+    clean_c20 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Portfolio Risk Engine: crypto_nav=$10,000.00, invested=$2,500.00, free_cash=$7,500.00 (75.0%), "
+        "venues(binance=$6,500.00, kraken=$3,500.00)\n"
+        "  * Available Free Quote Cash per Venue: binance USDC=$5,000.00, kraken USD=$2,500.00\n"
+        "  * Live Tradable Spot Instruments:\n"
+        "    - [binance] BTCUSDC: free_BTC=0.025 ($1500.00 USD), px=60000.0, limits(max_buy=$2000.0, max_sell=$1500.0)\n"
+        "    - [kraken] SPCXxUSD: free_SPCXx=7.751938 ($1000.00 USD), px=129.0, limits(max_buy=$0.0, max_sell=$1000.0)\n"
+        "  * Kraken Tokenized Equities / xStocks: SPCX=$128.95, EXT_CLOSE, xstock_vs_underlying=+0.04%\n"
+        "  * Recent Autonomous Intents:\n"
+        "    - [binance] BTCUSDC BUY LIMIT FILLED (fill_px=60000.0, qty=0.01, notional=$600.00, id=1001, age=0.5h)\n"
+        "    - [binance] BTCUSDC SELL LIMIT FILLED (fill_px=60500.0, qty=0.01, notional=$605.00, id=1002, age=0.2h)\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "- Market Breadth: advance_ratio=0.5000, advancing=10/20, ETH/BTC=0.02833, ETH=$1700.00 (+1.00% 24h)\n"
+        "  * Cross-Market US Equities Telemetry:\n"
+        "    | Symbol | Px | 24h | 7d | Pos24h | ExtVsRTH | Close | Source (Age) |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | SPCX_US_EQ | $128.95 | +2.15% | -10.08% | 98.6% | +1.31% | $127.28 | yahoo_ext_cached (900m) |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: vol_profile(POC=58500.0[+2.56%], VAL=58000.0[+3.45%], VAH=59500.0[+0.84%], va_pos=133.3%, above_vah=45m, vp_source=REAL_VOL) | "
+        "atr(15m=0.35%, 1h=0.75%, 4h=1.80%) | long_trend=UP(40.0h, est_rem=20.0h, med_d=3.0d/p90=6.5d)\n"
+        "    - Flow: whale_long_pct=65.0%, spot_cvd_15m=+$40.0K[real_spot], agg_spot_cvd_15m=+$120.0K[usdc+usdt, vol=$500.0K], spot_vol_15m=$150.0K, spot_vol_1h=$600.0K\n"
+        "### 4. MARKET BELLWETHERS (OBSERVE-ONLY):\n"
+        "  | Symbol | Price | 15m | 1h | 6h | 24h | Pos24h | Context | Flow & Deriv |\n"
+        "  |---|---|---|---|---|---|---|---|---|\n"
+        "  | ETHUSDC | $1,698.00 | +0.00% | +0.00% | +0.00% | +1.00% | 50.0% | - | taker_ratio=1.00 |\n"
+    )
+    assert audit_rendered_prompt_text(clean_c20) == []
+
+    bad_c20 = (
+        clean_c20
+        .replace("venues(binance=$6,500.00, kraken=$3,500.00)", "venues(binance=$5,500.00, kraken=$4,500.00)")
+        .replace("id=1002", "id=1001")
+        .replace("va_pos=133.3%, above_vah=45m", "va_pos=133.3%, below_val=45m")
+        .replace("med_d=3.0d/p90=6.5d", "med_d=9.0d/p90=6.5d")
+        .replace("atr(15m=0.35%, 1h=0.75%, 4h=1.80%)", "atr(15m=2.50%, 1h=0.75%, 4h=1.80%)")
+        .replace("whale_long_pct=65.0%", "whale_long_pct=112.0%")
+        .replace("spot_cvd_15m=+$40.0K[real_spot]", "spot_cvd_15m=+$250.0K[real_spot]")
+        .replace("vol=$500.0K", "vol=$80.0K")
+        .replace("ETH=$1700.00", "ETH=$1950.00")
+        .replace("| SPCX_US_EQ | $128.95 |", "| SPCX_US_EQ | $138.00 |")
+    )
+    bad_vs = audit_rendered_prompt_text(bad_c20)
+    bad_subjs = {v.subject for v in bad_vs}
+    assert {
+        "Section1.VenueNavSum:binance",
+        "Section1.RecentIntents.DuplicateID:1001",
+        "BTCUSDC:va_hold_dir",
+        "BTCUSDC:weibull_quantiles",
+        "BTCUSDC:atr_bounds",
+        "BTCUSDC:whale_long_pct",
+        "BTCUSDC:spot_cvd_vs_vol",
+        "BTCUSDC:spot_vol_vs_agg",
+        "MarketBreadth.ETH_vs_Sec4",
+        "xStocks.SPCX_vs_CrossEq",
+    }.issubset(bad_subjs)
+
+
+
 
 
 
