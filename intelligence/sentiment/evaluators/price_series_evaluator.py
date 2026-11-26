@@ -693,6 +693,8 @@ def build_compact_4h_ohlc_bars(
     archive_pts: list,
     sparse_7d_pts: list,
     watcher_7d_pts: list,
+    *,
+    threshold: float = 0.10,
 ) -> List[List[Any]]:
     """Build at most ~45 compact 4h ``[ts_ms, close, 0.0, high, low]`` bars from 7d archive rows (0 extra I/O)."""
     src_pts: list = []
@@ -703,9 +705,9 @@ def build_compact_4h_ohlc_bars(
         s_last = parse_ts_px_row(sparse_7d_pts[-1])
         if a_last is not None and s_last is not None:
             src_pts = (
-                prepend_older_non_diverged_points(archive_pts, sparse_7d_pts)
+                prepend_older_non_diverged_points(archive_pts, sparse_7d_pts, threshold=threshold)
                 if a_last[0] >= s_last[0]
-                else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts)
+                else prepend_older_non_diverged_points(sparse_7d_pts, archive_pts, threshold=threshold)
             )
         else:
             src_pts = list(archive_pts or sparse_7d_pts)

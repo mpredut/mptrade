@@ -37,6 +37,7 @@ from cachepaths import (
     cache_24_price_filename,
     cache_365_price_filename,
     cache_ohlc_24h_filename,
+    cache_ohlc_bars_filename,
     cache_path,
     CACHE_ORDERBOOK_DEPTH_PREFIX,
     CACHE_REALIZED_LIQUIDATIONS_FILENAME,
@@ -1603,6 +1604,50 @@ class EquityYahoo5dChartCollector(PriceSeriesCacheCollectorBase):
         return normalize_yahoo_5d_chart_bars(chart_res, raw_s24, eff_now, eq_rth_open=eq_rth_open)
 
 
+def _extract_local_1h_bar_7d_points(
+    doc: Any,
+    *,
+    anchor_end_ms: Optional[float] = None,
+    before_ts_ms: Optional[float] = None,
+    window_ms: float = 7.15 * 86400.0 * 1000.0,
+) -> list:
+    """Extract recent closed 1h bar ``[close_ts_ms, close_px]`` points from local ``cache_ohlc_bars_1h`` doc."""
+    if not isinstance(doc, dict):
+        return []
+    raw_bars = doc.get("bars")
+    if not isinstance(raw_bars, list) or not raw_bars:
+        return []
+    eff_end = anchor_end_ms
+    if eff_end is None:
+        for row in reversed(raw_bars):
+            if isinstance(row, (list, tuple)) and len(row) >= 5:
+                t_o = normalize_timestamp_ms(row[0], default=None)
+                if t_o is not None and safe_pos_float(row[4], default=None) is not None:
+                    eff_end = t_o + 3_600_000.0
+                    break
+    if eff_end is None:
+        return []
+    cutoff_ms = eff_end - window_ms
+    out: list = []
+    for row in reversed(raw_bars):
+        if not isinstance(row, (list, tuple)) or len(row) < 5:
+            continue
+        t_o = normalize_timestamp_ms(row[0], default=None)
+        c_px = safe_pos_float(row[4], default=None)
+        if t_o is None or c_px is None:
+            continue
+        t_c = t_o + 3_600_000.0
+        if t_c < cutoff_ms:
+            break
+        if before_ts_ms is not None and t_c >= before_ts_ms:
+            continue
+        out.append([t_c, c_px])
+    if len(out) > 1:
+        out.reverse()
+        out = sort_ts_rows(out)
+    return out
+
+
 class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
     """Concrete composite loader (Level 3) that reads & merges artifacts produced by the ``CachePriceManagerBase`` hierarchy:
     - ``Cache24PriceManager`` (``cache_24_price_<SYM>.json``)
@@ -1652,6 +1697,7 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                     *(CacheSparsePriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(Cache365PriceManager.disk_filename_for_symbol(c) for c in cands),
                     *(cache_365_price_filename(c, ext=".json") for c in cands),
+                    *((cache_ohlc_bars_filename(c, timeframe="1h") for c in cands) if include_7d else ()),
                 )
                 if not stat_list:
                     stat_list = _stat_candidate_price_files(cachedb_dir, CACHE_WATCHER_ALL_PRICE_FILENAME)
@@ -1841,6 +1887,83 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
                 if max(arch_span_ms, sparse_7d_span_ms) >= min_full_7d_ms:
                     break
 
+        cur_arch_span_ms = 0.0
+        if archive_pts:
+            _a0_chk, _a1_chk = parse_ts_px_row(archive_pts[0]), parse_ts_px_row(archive_pts[-1])
+            cur_arch_span_ms = (_a1_chk[0] - _a0_chk[0]) if (_a0_chk and _a1_chk) else 0.0
+        if include_7d and max(cur_arch_span_ms, sparse_7d_span_ms) < min_full_7d_ms:
+            max_bar_seam_gap_ms = 4.5 * 86400.0 * 1000.0
+            div_thr_1h = session_policy.price_divergence_threshold
+            for cand in cands:
+                bar_1h_doc = None
+                for bar_path in _candidate_cache_paths(cachedb_dir, cache_ohlc_bars_filename(cand, timeframe="1h")):
+                    if not os.path.exists(bar_path) and not os.path.exists(bar_path + ".previous"):
+                        continue
+                    doc_cand = _rj(bar_path)
+                    if isinstance(doc_cand, dict) and isinstance(doc_cand.get("bars"), list) and doc_cand.get("bars"):
+                        bar_1h_doc = doc_cand
+                        break
+                if bar_1h_doc is None:
+                    continue
+                if archive_pts:
+                    _a0, _a1 = parse_ts_px_row(archive_pts[0]), parse_ts_px_row(archive_pts[-1])
+                    if _a0 is None or _a1 is None:
+                        continue
+                    base_sp = (
+                        sparse_7d_pts
+                        if (sparse_7d_pts and sparse_7d_span_ms > cur_arch_span_ms)
+                        else archive_pts
+                    )
+                    base_p0 = parse_ts_px_row(base_sp[0])
+                    if base_p0 is None:
+                        continue
+                    older_bars = _extract_local_1h_bar_7d_points(
+                        bar_1h_doc,
+                        anchor_end_ms=_a1[0],
+                        before_ts_ms=base_p0[0],
+                    )
+                    if not older_bars:
+                        continue
+                    ob_last = parse_ts_px_row(older_bars[-1])
+                    if (
+                        ob_last is None
+                        or (base_p0[0] - ob_last[0]) > max_bar_seam_gap_ms
+                        or _prices_diverged(ob_last[1], base_p0[1], threshold=div_thr_1h)
+                    ):
+                        continue
+                    prefix_pts = (
+                        older_bars + [r for r in base_sp if (pt_b := parse_ts_px_row(r)) is not None and pt_b[0] < _a0[0]]
+                        if base_sp is not archive_pts
+                        else older_bars
+                    )
+                    pf0 = parse_ts_px_row(prefix_pts[0]) if prefix_pts else None
+                    cand_span_ms = (_a1[0] - pf0[0]) if pf0 is not None else 0.0
+                    if cand_span_ms > max(cur_arch_span_ms, sparse_7d_span_ms):
+                        sparse_7d_pts = prefix_pts
+                        sparse_7d_span_ms = cand_span_ms
+                        if sparse_7d_span_ms >= min_full_7d_ms:
+                            break
+                else:
+                    s24_end = parse_ts_px_row(series_24h[-1]) if series_24h else None
+                    bar_pts = _extract_local_1h_bar_7d_points(
+                        bar_1h_doc,
+                        anchor_end_ms=s24_end[0] if s24_end is not None else None,
+                    )
+                    if len(bar_pts) < 2:
+                        continue
+                    bp0, bp1 = parse_ts_px_row(bar_pts[0]), parse_ts_px_row(bar_pts[-1])
+                    if bp0 is None or bp1 is None:
+                        continue
+                    if s24_end is not None and (
+                        abs(s24_end[0] - bp1[0]) > max_bar_seam_gap_ms
+                        or _prices_diverged(bp1[1], s24_end[1], threshold=div_thr_1h)
+                    ):
+                        continue
+                    archive_pts = bar_pts
+                    cur_arch_span_ms = bp1[0] - bp0[0]
+                    if cur_arch_span_ms >= min_full_7d_ms:
+                        break
+
         watcher_cutoff_24h: Optional[float] = None
         watcher_7d_pts: list = []
         if not archive_pts and need_24h_supplement and not series_24h:
@@ -1864,7 +1987,12 @@ class CompositeSymbolPriceSeriesLoader(PriceSeriesCacheCollectorBase):
         series_24h, vals_7d, arch_7d_end_ts, arch_7d_span_ms = extract_archive_24h_and_7d_slices(
             archive_pts, sparse_7d_pts, watcher_7d_pts, series_24h, symbol, need_24h_supplement, watcher_cutoff_24h
         )
-        bars_4h_7d = build_compact_4h_ohlc_bars(archive_pts, sparse_7d_pts, watcher_7d_pts)
+        bars_4h_7d = build_compact_4h_ohlc_bars(
+            archive_pts,
+            sparse_7d_pts,
+            watcher_7d_pts,
+            threshold=session_policy.price_divergence_threshold,
+        )
         with _MEMO_LOCK:
             LAST_7D_SPAN_MS_BY_SYM[sym_u] = arch_7d_span_ms
             lru_dict_put(LAST_7D_4H_BARS_BY_SYM, sym_u, bars_4h_7d, 128)

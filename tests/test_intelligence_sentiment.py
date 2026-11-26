@@ -18805,6 +18805,119 @@ def test_cycle9_10_static_precision_hl_buy_buf_gw_min_survival_rules_and_gold_mi
     assert is_off_topic_general_news_title(gold_macro) is False
 
 
+def test_price_series_loader_stitches_local_1h_ohlc_bar_archive_for_short_sparse_history(tmp_path):
+    """Verify local cache_ohlc_bars_1h_<SYM>.json fills 7d history & 4h ATR when sparse archive < 5d (0 network)."""
+    from cachepaths import cache_ohlc_bars_filename
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        LAST_7D_4H_BARS_BY_SYM,
+        LAST_7D_SPAN_MS_BY_SYM,
+        enrich_24h_and_microstructure,
+        load_symbol_price_series,
+    )
+
+    cache_dir = tmp_path / "cachedb"
+    prices_dir = cache_dir / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    now_ms = round(now_s * 1000.0)
+    hour_ms = 3_600_000
+
+    # 1. Partial 72h sparse archive + 10d local 1h bar archive -> full 7d span without network.
+    sym = "ADAUSDC"
+    sparse_rows = [
+        {"s": sym, "i": [now_ms - (72 - h) * hour_ms, round(0.146 + h * 0.00006, 6)]}
+        for h in range(73)
+    ]
+    p24_rows = [r["i"] for r in sparse_rows[-25:]]
+    (prices_dir / f"cache_24_price_{sym}.json").write_text(
+        json.dumps({"items": {sym: p24_rows}}), encoding="utf-8"
+    )
+    (prices_dir / f"cache_sparse_price_{sym}.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in sparse_rows) + "\n", encoding="utf-8"
+    )
+    bars_1h = []
+    for h_back in range(240, 0, -1):
+        open_ms = now_ms - h_back * hour_ms
+        # Smoothly approach sparse_rows[0] price (0.146) around 72h ago, starting from 0.160 at 7d ago.
+        if h_back >= 72:
+            px = round(0.146 + (h_back - 72) * (0.014 / 96.0), 6)
+        else:
+            px = round(0.146 + (72 - h_back) * 0.00006, 6)
+        bars_1h.append([open_ms, px, round(px * 1.005, 6), round(px * 0.995, 6), px, 1000.0])
+    bar_path = prices_dir / cache_ohlc_bars_filename(sym, timeframe="1h")
+    bar_path.write_text(
+        json.dumps({"schema_version": 1, "symbol": sym, "timeframe": "1h", "bars": bars_1h}),
+        encoding="utf-8",
+    )
+
+    _, vals_7d = load_symbol_price_series(str(cache_dir), sym)
+    assert LAST_7D_SPAN_MS_BY_SYM[sym] >= 6.9 * 86400.0 * 1000.0
+    assert len(LAST_7D_4H_BARS_BY_SYM.get(sym) or []) >= 35
+    assert vals_7d[0] > 0.158
+    assert vals_7d[-1] == pytest.approx(sparse_rows[-1]["i"][1], rel=1e-4)
+
+    pt_map = {sym: {"price": sparse_rows[-1]["i"][1], "trend": 0, "growth_coefficient": 0.0}}
+    enrich_24h_and_microstructure(str(cache_dir), str(tmp_path), pt_map, {}, {}, {}, now_s, allow_network=False)
+    assert pt_map[sym].get("is_partial_7d") is None
+    assert pt_map[sym].get("chg_7d_pct") is not None
+    assert pt_map[sym].get("low_7d") is not None and pt_map[sym].get("high_7d") is not None
+    assert pt_map[sym].get("swing_low_px") is not None
+
+    # 2. Updating cache_ohlc_bars_1h invalidates memo and updates 7d start price.
+    bars_1h_mod = [list(r) for r in bars_1h]
+    for r in bars_1h_mod:
+        if now_ms - 172 * hour_ms <= r[0] <= now_ms - 166 * hour_ms:
+            r[4] = 0.175
+    bar_path.write_text(
+        json.dumps({"schema_version": 1, "symbol": sym, "timeframe": "1h", "bars": bars_1h_mod}),
+        encoding="utf-8",
+    )
+    os.utime(bar_path, (now_s + 2.0, now_s + 2.0))
+    _, vals_7d_updated = load_symbol_price_series(str(cache_dir), sym)
+    assert vals_7d_updated[0] == pytest.approx(0.175, rel=1e-4)
+
+    # 3. Diverged 1h bar archive at the splice seam is safely rejected.
+    bad_sym = "BADUSDC"
+    (prices_dir / f"cache_24_price_{bad_sym}.json").write_text(
+        json.dumps({"items": {bad_sym: [[now_ms - 20 * hour_ms, 10.0], [now_ms, 10.2]]}}),
+        encoding="utf-8",
+    )
+    (prices_dir / f"cache_sparse_price_{bad_sym}.jsonl").write_text(
+        "\n".join(
+            json.dumps({"s": bad_sym, "i": [now_ms - (48 - h) * hour_ms, 10.0 + h * 0.004]})
+            for h in range(49)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    bad_bars = [[now_ms - h_back * hour_ms, 30.0, 31.0, 29.0, 30.0, 100.0] for h_back in range(200, 0, -1)]
+    (prices_dir / cache_ohlc_bars_filename(bad_sym, timeframe="1h")).write_text(
+        json.dumps({"schema_version": 1, "symbol": bad_sym, "timeframe": "1h", "bars": bad_bars}),
+        encoding="utf-8",
+    )
+    _, bad_7d = load_symbol_price_series(str(cache_dir), bad_sym)
+    assert LAST_7D_SPAN_MS_BY_SYM[bad_sym] < 3.0 * 86400.0 * 1000.0
+    assert all(px < 15.0 for px in bad_7d)
+
+    # 4. Brand-new symbol with zero sparse/365 archive seeds full 7d directly from cache_ohlc_bars_1h.
+    new_sym = "NEWUSDC"
+    (prices_dir / f"cache_24_price_{new_sym}.json").write_text(
+        json.dumps({"items": {new_sym: [[now_ms - 600_000, 50.0], [now_ms, 50.2]]}}),
+        encoding="utf-8",
+    )
+    new_bars = [
+        [now_ms - h_back * hour_ms, 50.0, 51.0, 49.0, round(48.0 + (200 - h_back) * 0.011, 4), 500.0]
+        for h_back in range(200, 0, -1)
+    ]
+    (prices_dir / cache_ohlc_bars_filename(new_sym, timeframe="1h")).write_text(
+        json.dumps({"schema_version": 1, "symbol": new_sym, "timeframe": "1h", "bars": new_bars}),
+        encoding="utf-8",
+    )
+    _, new_7d = load_symbol_price_series(str(cache_dir), new_sym)
+    assert LAST_7D_SPAN_MS_BY_SYM[new_sym] >= 6.9 * 86400.0 * 1000.0
+    assert len(new_7d) >= 160
+
+
+
 
 
 
