@@ -22,8 +22,8 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |    verify_tools/chart_view.py), AI survival breakers (EV>=2xRT, RR>=0.5x, 6/h        |
 |    replace cap, daily BUY cap, scorecard), bot repair, sizing, maker LIMIT,          |
 |    breakout/dip playbook, cross-asset guidance, Romanian report + JSON schema.       |
-|  - WARM: compact reminder (~300w, incl. mptrade cachedb/statedb/logs read access) +  |
-|    JSON schema (Turn 1 full rules remain pinned in the thread prefix).               |
+|  - WARM: compact reminder (~305w, incl. mptrade cachedb/statedb/logs & chart_view.py) |
+|    + JSON schema (Turn 1 full rules remain pinned in the thread prefix).             |
 +======================================================================================+
 | ### 0. CLOCK & SNAPSHOT: YYYY-MM-DD HH:MM:SS EET (Day)                         [G0]  |
 |  - Trigger: <delta_gate_reason> | <partial_fill / new_fill / wall_trapped / focus>   |
@@ -55,7 +55,7 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |      - AI Decision Scorecard (48h: W/BE/L, avg, net)                           [G1]  |
 |      - AI Execution & Plan Calibration (7d: hit/inv/early/open, slip_bps,      [G1]  |
 |        arr_bps, unfilled_off_bps, fill_by_offset bands)                              |
-|      - Active Cycle Cost Anchors, xStocks/HL summaries                         [G2]  |
+|      - Active Cycle Cost Anchors [G1] & xStocks/HL summaries                     [G2]  |
 |      - Recent Fills per symbol (by=AI/BOT/MANUAL + tranches)                   [G1]  |
 +======================================================================================+
 | ### 2. MACRO, REGIME & CROSS-MARKET:                                 [G0 + G1/G2/G3] |

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
 
 from botcore import topic_spec
@@ -282,3 +282,239 @@ def test_long_horizon_collector_prompt_rendering_warm_elision_and_chart_cli(tmp_
     assert rc == 0
     captured = capsys.readouterr().out
     assert "=== BTCUSDC (1w," in captured
+
+
+def test_cycle2_unactionable_wall_trapped_suppression_equities_live_lh_and_cycle_anchors_g1() -> None:
+    """Verify Cycle 2 audit fixes:
+    1. Delta-Gate and Section 0 Trigger ignore unactionable wall_trapped front-runs whose RR < min_target_rr,
+       while still waking/promoting actionable front-runs (RR >= min_target_rr) and unlinked orders.
+    2. Equities-scope Long_Horizon live-recalculates BTCUSDC & SPY from cross-market/benchmarks live prices.
+    3. Active Cycle Cost & Drawdown Anchors (venue_cycles) elide cleanly under G1 on WARM turns and wake on fill changes,
+       while WARM turns explicitly retain verify_tools/chart_view.py read access.
+    """
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    # 1. Delta-Gate suppresses unactionable BTCUSDC front_run (RR=0.41x < 0.5x)
+    base_ps: Dict[str, Any] = {
+        "open_limit_orders": [
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "order_id": "10976647800",
+                "price": 59680.0,
+                "qty": 0.015,
+                "filled_qty": 0.0,
+                "status": "NEW",
+                "dist_from_spot_pct": -0.95,
+                "fill_prob_1h_pct": 44.0,
+                "recommended_front_run_px": 60164.62,
+            }
+        ],
+        "active_ai_trade_plans": [
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "order_state": "RESTING",
+                "entry_px": 59680.0,
+                "target_px": 60850.0,
+                "invalidation_px": 58500.0,
+                "status": "ACTIVE",
+            }
+        ],
+    }
+    snap_bad_rr = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0 + 360.0,
+        prices_and_trends={"BTCUSDC": {"price": 60250.0}},
+        portfolio_summary=base_ps,
+    )
+    prev_eval = {
+        "ts": t0,
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 60250.0},
+            "open_order_ids": ["10976647800"],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+    skip_bad, rsn_bad, _, meta_bad = evaluate_crypto_executor_delta_gate(
+        snap_bad_rr, prev_eval, now_ts=t0 + 360.0, min_target_rr=0.5
+    )
+    assert skip_bad is True and rsn_bad.startswith("quiet_flat")
+    assert meta_bad["order_attention_flags"] == {}
+
+    # Adding an actionable HYPEUSDC front_run (RR=1.45x >= 0.5x) wakes Delta-Gate AND Trigger highlights ONLY HYPEUSDC
+    ps_mixed = {
+        "open_limit_orders": [
+            *base_ps["open_limit_orders"],
+            {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "order_id": "617202101915",
+                "price": 59.5,
+                "qty": 16.8,
+                "filled_qty": 0.0,
+                "status": "NEW",
+                "dist_from_spot_pct": -0.58,
+                "fill_prob_1h_pct": 80.0,
+                "recommended_front_run_px": 59.506,
+            },
+        ],
+        "active_ai_trade_plans": [
+            *base_ps["active_ai_trade_plans"],
+            {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "order_state": "RESTING",
+                "entry_px": 59.5,
+                "target_px": 61.4,
+                "invalidation_px": 58.2,
+                "status": "ACTIVE",
+            },
+        ],
+    }
+    snap_mixed = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0 + 360.0,
+        prices_and_trends={"BTCUSDC": {"price": 60250.0}, "HYPEUSDC": {"price": 59.85}},
+        portfolio_summary=ps_mixed,
+    )
+    prev_mixed = {
+        "ts": t0,
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 60250.0, "HYPEUSDC": 59.85},
+            "open_order_ids": ["10976647800", "617202101915"],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+    skip_ok, rsn_ok, _, meta_ok = evaluate_crypto_executor_delta_gate(
+        snap_mixed, prev_mixed, now_ts=t0 + 360.0, min_target_rr=0.5
+    )
+    assert (skip_ok, rsn_ok) == (False, "open_order_wall_trapped")
+    assert meta_ok["order_attention_flags"] == {"617202101915": "open_order_wall_trapped"}
+    trig_prompt = build_supervisor_prompt(
+        snap_mixed,
+        LogEventSummary(0, 0, 0),
+        spec=topic_spec("auto_cryptotrade_executor"),
+        compact_rules=False,
+        wake_reason="open_order_wall_trapped",
+    )
+    assert "- Trigger: open_order_wall_trapped | HYPEUSDC wall_trapped(front_run=59.506,RR=1.45x)" in trig_prompt
+    assert "BTCUSDC wall_trapped" not in trig_prompt
+    s3_txt = trig_prompt[trig_prompt.index("### 3. TRADABLE MARKETS"):]
+    assert s3_txt.index("  * HYPEUSDC:") < s3_txt.index("  * BTCUSDC:")
+
+    # 2. Equities-scope Long_Horizon live-recalculates BTCUSDC & SPY from cross_market_context & macro_benchmarks
+    # 3. Active Cycle Cost & Drawdown Anchors elide cleanly on WARM turns under G1 and return [NEW] on fill change
+    lh_eq_snap = {
+        "ts": t0 - 1800.0,
+        "months": 36,
+        "horizon_label": "3y",
+        "items": {
+            "BTCUSDC": {
+                "symbol": "BTCUSDC",
+                "last_close": 60800.0,
+                "ytd_ref": 87500.0,
+                "ytd_pct": -30.51,
+                "low_52w": 55100.0,
+                "high_52w": 98000.0,
+                "pos_52w_pct": 13.3,
+                "low_horizon": 36700.0,
+                "high_horizon": 126300.0,
+                "pos_horizon_pct": 26.9,
+                "ma50": 74700.0,
+                "vs_ma50_pct": -18.61,
+                "ma200": 71900.0,
+                "vs_ma200_pct": -15.44,
+                "swings": [{"ym": "25-10", "px": 126300.0, "kind": "H"}, {"ym": "26-11", "px": 55100.0, "kind": "L"}],
+            },
+            "SPY": {
+                "symbol": "SPY",
+                "last_close": 716.7,
+                "ytd_ref": 682.0,
+                "ytd_pct": 5.09,
+                "low_52w": 629.0,
+                "high_52w": 782.0,
+                "pos_52w_pct": 57.3,
+                "low_horizon": 453.0,
+                "high_horizon": 782.0,
+                "pos_horizon_pct": 80.2,
+                "ma50": 758.0,
+                "vs_ma50_pct": -5.45,
+                "ma200": 733.0,
+                "vs_ma200_pct": -2.22,
+                "swings": [{"ym": "26-10", "px": 782.0, "kind": "H"}],
+            },
+        },
+    }
+    eq_ps = {
+        "cross_market_context": {"crypto_bellwethers": {"BTC": {"price": 58000.0, "chg_24h_pct": -2.0}}},
+        "t212_cycles": {
+            "NVDA_US_EQ": {
+                "qty": 1.69,
+                "cost_usd": 249.22,
+                "avg_cost_px": 147.47,
+                "entry_price": 147.47,
+                "last_buy_price": 147.47,
+                "last_sell_price": 156.15,
+                "dca_buys": 0,
+                "pnl_vs_avg_pct": 2.6,
+            }
+        },
+    }
+    eq_sensors = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0,
+        macro_benchmarks={"items": {"SPY": {"price": 730.0}}, "summary_line": "SPY=$730.00"},
+        macro_calendar={"session_label": "US_RTH", "next_high_impact_event": "FOMC"},
+        prices_and_trends={"NVDA_US_EQ": {"price": 151.3, "chg_24h_pct": 1.0, "low_24h": 148.0, "high_24h": 152.0}},
+        long_horizon=lh_eq_snap,
+        portfolio_summary=eq_ps,
+    )
+    eq_p1 = evaluate_prompt_delta_plan(eq_sensors, asset_scope="equities", now_ts=t0, is_warm_resume=False, conversation_id="eq-c2")
+    eq_cold = build_supervisor_prompt(eq_sensors, LogEventSummary(0, 0, 0), spec=topic_spec("auto_sharetrade_executor"), compact_rules=False, delta_plan=eq_p1)
+    # BTCUSDC recalculated live to 58.0K (not stale 60.8K), SPY recalculated live to 730.0 (not stale 716.7)
+    assert "now:58.0K" in eq_cold and "now:60.8K" not in eq_cold
+    assert "now:730.0" in eq_cold and "now:716.7" not in eq_cold
+    assert "Trading212 Active Cycle Cost & Drawdown Anchors:" in eq_cold
+
+    # Warm turn elides unchanged Cycle_Anchors (even when live pnl_vs_avg_pct ticks) and includes chart_view.py in rules
+    eq_ps_t2 = {
+        **eq_ps,
+        "t212_cycles": {"NVDA_US_EQ": {**eq_ps["t212_cycles"]["NVDA_US_EQ"], "pnl_vs_avg_pct": 3.1}},
+    }
+    eq_sensors_t2 = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0 + 360.0,
+        macro_benchmarks=eq_sensors.macro_benchmarks,
+        macro_calendar=eq_sensors.macro_calendar,
+        prices_and_trends={"NVDA_US_EQ": {"price": 152.0, "chg_24h_pct": 1.5, "low_24h": 148.0, "high_24h": 152.5}},
+        long_horizon=lh_eq_snap,
+        portfolio_summary=eq_ps_t2,
+    )
+    eq_p2 = evaluate_prompt_delta_plan(
+        eq_sensors_t2, asset_scope="equities", now_ts=t0 + 360.0, is_warm_resume=True, prev_state=eq_p1.next_state, conversation_id="eq-c2"
+    )
+    eq_warm = build_supervisor_prompt(eq_sensors_t2, LogEventSummary(0, 0, 0), spec=topic_spec("auto_sharetrade_executor"), compact_rules=True, delta_plan=eq_p2)
+    assert "Cycle_Anchors(1/3)" in eq_warm
+    assert "Active Cycle Cost & Drawdown Anchors" not in eq_warm
+    assert "verify_tools/chart_view.py" in eq_warm
+
+    # Fill changing qty/dca_buys immediately shows Active Cycle Cost & Drawdown Anchors [NEW]
+    eq_ps_t3 = {
+        **eq_ps,
+        "t212_cycles": {"NVDA_US_EQ": {**eq_ps["t212_cycles"]["NVDA_US_EQ"], "qty": 2.69, "dca_buys": 1}},
+    }
+    eq_sensors_t3 = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0 + 720.0,
+        macro_benchmarks=eq_sensors.macro_benchmarks,
+        macro_calendar=eq_sensors.macro_calendar,
+        prices_and_trends=eq_sensors_t2.prices_and_trends,
+        long_horizon=lh_eq_snap,
+        portfolio_summary=eq_ps_t3,
+    )
+    eq_p3 = evaluate_prompt_delta_plan(
+        eq_sensors_t3, asset_scope="equities", now_ts=t0 + 720.0, is_warm_resume=True, prev_state=eq_p2.next_state, conversation_id="eq-c2"
+    )
+    eq_warm_new = build_supervisor_prompt(eq_sensors_t3, LogEventSummary(0, 0, 0), spec=topic_spec("auto_sharetrade_executor"), compact_rules=True, delta_plan=eq_p3)
+    assert "Trading212 Active Cycle Cost & Drawdown Anchors [NEW]:" in eq_warm_new

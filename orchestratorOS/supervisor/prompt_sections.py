@@ -94,6 +94,10 @@ from providers.ai_survival_guard import (
     format_ai_decision_scorecard_line,
     format_signed_usd,
 )
+from providers.intent_telemetry import (
+    compute_order_plan_rr,
+    match_open_order_resting_plan,
+)
 from providers.order_id_context import format_actor_tag
 
 
@@ -758,10 +762,23 @@ def _format_macro_and_news_section(
         lh_snap = _resolve_macro_sensor(sensors, macro, "long_horizon")
         if lh_snap:
             lh_tag = delta_plan.tag_for("long_horizon") if delta_plan is not None else ""
+            lh_extra_px: Dict[str, float] = {}
+            if isinstance(mb_bench, dict):
+                bench_items = mb_bench.get("items") if isinstance(mb_bench.get("items"), dict) else {}
+                for bk, bv in bench_items.items():
+                    if isinstance(bv, dict) and (bp := safe_pos_float(bv.get("price"), default=None)) is not None:
+                        lh_extra_px[str(bk).strip().upper()] = bp
+            if isinstance(ps.get("cross_market_context"), dict):
+                cb_map = ps["cross_market_context"].get("crypto_bellwethers")
+                if isinstance(cb_map, dict):
+                    for ck, cv in cb_map.items():
+                        if isinstance(cv, dict) and (cp := safe_pos_float(cv.get("price"), default=None)) is not None:
+                            lh_extra_px[str(ck).strip().upper()] = cp
             lines.extend(
                 format_long_horizon_section_lines(
                     lh_snap,
                     prices_and_trends=getattr(sensors, "prices_and_trends", None),
+                    extra_live_prices=lh_extra_px or None,
                     asset_scope=scope_s,
                     tag=lh_tag,
                 )
@@ -1982,34 +1999,6 @@ def _format_venue_specs_table(
     return out
 
 
-def _compute_order_plan_rr(
-    entry_px: Any,
-    side: Any,
-    target_px: Any,
-    invalidation_px: Any,
-) -> Optional[float]:
-    """Compute gross reward-to-risk ratio from entry_px to target_px vs invalidation_px symmetrically."""
-    e_px = safe_pos_float(entry_px, default=None)
-    t_px = safe_pos_float(target_px, default=None)
-    i_px = safe_pos_float(invalidation_px, default=None)
-    if e_px is None or t_px is None or i_px is None:
-        return None
-    side_u = str(side or "").strip().upper()
-    if side_u == "BUY":
-        reward = t_px - e_px
-        risk = e_px - i_px
-    elif side_u == "SELL":
-        reward = e_px - t_px
-        risk = i_px - e_px
-    else:
-        return None
-    if risk <= 0.0:
-        return None
-    if reward <= 0.0:
-        return 0.0
-    return reward / risk
-
-
 def _format_open_limit_orders_table(
     clean_open_orders: List[Any],
     *,
@@ -2029,31 +2018,14 @@ def _format_open_limit_orders_table(
     linked_plan_indices: set[int] = set()
     if active_plans:
         for o_idx, o in enumerate(dict_orders):
-            o_ven = str(o.get("venue") or "").strip().lower()
-            o_sym = str(o.get("symbol") or "").strip().upper()
             o_side = str(o.get("side") or "").strip().upper()
             o_px = safe_pos_float(o.get("price"), default=None)
-            best_p_idx: Optional[int] = None
-            best_diff = math.inf
-            for p_idx, pl in enumerate(active_plans):
-                if p_idx in linked_plan_indices or not isinstance(pl, dict):
-                    continue
-                if str(pl.get("order_state") or "").strip().upper() != "RESTING":
-                    continue
-                if (
-                    str(pl.get("venue") or "").strip().lower() != o_ven
-                    or str(pl.get("symbol") or "").strip().upper() != o_sym
-                    or str(pl.get("side") or "").strip().upper() != o_side
-                ):
-                    continue
-                p_epx = safe_pos_float(pl.get("entry_px"), default=None)
-                diff = abs(p_epx - o_px) / max(o_px, 1e-12) if (p_epx is not None and o_px is not None) else 0.0
-                if diff < best_diff:
-                    best_diff = diff
-                    best_p_idx = p_idx
-            if best_p_idx is not None and best_diff <= 0.05:
+            best_p_idx, matched_pl = match_open_order_resting_plan(
+                o, active_plans, used_plan_indices=linked_plan_indices
+            )
+            if best_p_idx is not None and isinstance(matched_pl, dict):
                 linked_plan_indices.add(best_p_idx)
-                pl = active_plans[best_p_idx]
+                pl = matched_pl
                 linked_plan_by_order_idx[o_idx] = pl
                 t_px_v = safe_pos_float(pl.get("target_px"), default=None)
                 i_px_v = safe_pos_float(pl.get("invalidation_px"), default=None)
@@ -2077,7 +2049,7 @@ def _format_open_limit_orders_table(
                     if pl.get("invalidation_px") is not None and i_dist is not None
                     else (str(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
                 )
-                rr_cur = _compute_order_plan_rr(o_px, o_side, pl.get("target_px"), pl.get("invalidation_px"))
+                rr_cur = compute_order_plan_rr(o_px, o_side, pl.get("target_px"), pl.get("invalidation_px"))
                 rr_sfx = f" RR@limit={rr_cur:.2f}x" if rr_cur is not None else ""
                 st_lbl = str(pl.get("status") or "ACTIVE")
                 plan_by_order_idx[o_idx] = f"{t_s}/{i_s}{rr_sfx} [{st_lbl}]"
@@ -2136,7 +2108,7 @@ def _format_open_limit_orders_table(
             fr_px = o["recommended_front_run_px"]
             linked_pl = linked_plan_by_order_idx.get(o_idx)
             rr_fr = (
-                _compute_order_plan_rr(fr_px, side, linked_pl.get("target_px"), linked_pl.get("invalidation_px"))
+                compute_order_plan_rr(fr_px, side, linked_pl.get("target_px"), linked_pl.get("invalidation_px"))
                 if linked_pl is not None
                 else None
             )
@@ -2585,7 +2557,7 @@ def _format_portfolio_section(
                 p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
             anc_px = pl.get("entry_px") if is_lim_anc else pl.get("spot_px")
             rr_lbl = "RR@limit" if is_lim_anc else "RR@spot"
-            if (rr_u := _compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
+            if (rr_u := compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
                 p_parts.append(f"{rr_lbl}={rr_u:.2f}x")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
             meta_p = [ord_st]
@@ -2611,10 +2583,12 @@ def _format_portfolio_section(
         if cal_tag and ": " in cal_line:
             cal_line = cal_line.replace(": ", f"{cal_tag}: ", 1)
         lines.append(f"  * {cal_line}")
-    for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
-        lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors:")
-        for c_sym, c_data in cyc_items:
-            lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
+    if (delta_plan is None or delta_plan.should_show("venue_cycles")) and view["venue_cycles"]:
+        vc_tag = delta_plan.tag_for("venue_cycles") if delta_plan is not None else ""
+        for venue_lbl, venue_id, cyc_items in view["venue_cycles"]:
+            lines.append(f"  * {venue_lbl} Active Cycle Cost & Drawdown Anchors{vc_tag}:")
+            for c_sym, c_data in cyc_items:
+                lines.append(_format_venue_cycle_line(venue_id, c_sym, c_data))
     if (delta_plan is None or delta_plan.should_show("kraken_xstocks")) and (xs_view := view["kraken_xstocks"]):
         xs_tag = delta_plan.tag_for("kraken_xstocks") if delta_plan is not None else ""
         lines.append(_format_kraken_xstocks_line(xs_view, scope_s=scope_s, tag=xs_tag))

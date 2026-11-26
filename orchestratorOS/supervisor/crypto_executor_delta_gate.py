@@ -24,8 +24,13 @@ from instrument_registry import (
 from intelligence.macro.lexicon_ssot import has_acute_shock_keywords
 from intelligence.macro_sentiment_ssot import normalize_threat_level
 from intelligence.sentiment.llm_quota_router import is_degraded_trading_model
-from providers.intent_state import decision_has_cancel_directive, eval_doc_was_actionable
-from providers.intent_telemetry import evaluate_trade_plan_status
+from providers.ai_circuit_breaker import DEFAULT_MIN_TARGET_RR
+from providers.intent_state import eval_doc_was_actionable
+from providers.intent_telemetry import (
+    compute_order_plan_rr,
+    evaluate_trade_plan_status,
+    match_open_order_resting_plan,
+)
 
 _ATR_15M_DELTA_GATE_MULT = 0.75
 
@@ -293,15 +298,21 @@ def _collect_delta_gate_prices(
 def _collect_open_order_attention(
     ps_map: Mapping[str, Any],
     prev_order_flags: Optional[Mapping[str, str]] = None,
+    *,
+    min_target_rr: float = DEFAULT_MIN_TARGET_RR,
 ) -> Tuple[List[str], Dict[str, str], str]:
     """Return sorted unique open order IDs, active per-order attention flags, and first transition wakeup reason."""
     raw_open = ps_map.get("open_limit_orders")
     if not isinstance(raw_open, list):
         raw_open = ps_map.get("open_orders") if isinstance(ps_map.get("open_orders"), list) else []
+    raw_plans = ps_map.get("active_ai_trade_plans")
+    active_plans = raw_plans if isinstance(raw_plans, list) else []
+    eff_min_rr = max(0.0, safe_float(min_target_rr, default=DEFAULT_MIN_TARGET_RR) or 0.0)
     prev_flags = prev_order_flags if isinstance(prev_order_flags, Mapping) else {}
     open_order_ids: List[str] = []
     order_attention_flags: Dict[str, str] = {}
     attention_reason = ""
+    used_plan_indices: set[int] = set()
     for oo in raw_open:
         if not isinstance(oo, Mapping):
             continue
@@ -318,6 +329,7 @@ def _collect_open_order_attention(
         filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
         dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
         fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
+        fr_px = safe_pos_float(oo.get("recommended_front_run_px"), default=None)
         cur_flag = ""
         cur_reason = ""
         if st == "PARTIALLY_FILLED" or filled_q > 0.0:
@@ -326,9 +338,22 @@ def _collect_open_order_attention(
         elif (fill_prob is not None and fill_prob <= 5.0) or (dist_pct is not None and abs(dist_pct) > 4.0):
             cur_flag = "open_order_stale_or_far"
             cur_reason = "open_order_stale_or_far"
-        elif safe_pos_float(oo.get("recommended_front_run_px"), default=None) is not None:
-            cur_flag = "open_order_wall_trapped"
-            cur_reason = "open_order_wall_trapped"
+        elif fr_px is not None:
+            p_idx, linked_pl = match_open_order_resting_plan(
+                oo, active_plans, used_plan_indices=used_plan_indices
+            )
+            if p_idx is not None:
+                used_plan_indices.add(p_idx)
+            rr_fr = (
+                compute_order_plan_rr(
+                    fr_px, oo.get("side"), linked_pl.get("target_px"), linked_pl.get("invalidation_px")
+                )
+                if linked_pl is not None
+                else None
+            )
+            if rr_fr is None or eff_min_rr <= 0.0 or rr_fr >= eff_min_rr:
+                cur_flag = "open_order_wall_trapped"
+                cur_reason = "open_order_wall_trapped"
         elif oo.get("ob_flag") == "[ob_stale]" and prev_flags.get(oid) == "open_order_wall_trapped":
             cur_flag = "open_order_wall_trapped"
         if oid and cur_flag:
@@ -538,6 +563,7 @@ def evaluate_crypto_executor_delta_gate(
     max_idle_sec: float = 1080.0,
     high_effort_price_move_pct: float = 1.0,
     ui_turn_pending: bool = False,
+    min_target_rr: float = DEFAULT_MIN_TARGET_RR,
 ) -> Tuple[bool, str, bool, Dict[str, Any]]:
     """Pure SSOT Delta-Gate and dynamic reasoning effort evaluator for ``auto_cryptotrade_executor``.
 
@@ -589,7 +615,7 @@ def evaluate_crypto_executor_delta_gate(
         else {}
     )
     open_order_ids, order_attention_flags, open_order_attention_reason = _collect_open_order_attention(
-        ps_map, prev_order_flags
+        ps_map, prev_order_flags, min_target_rr=min_target_rr
     )
     prev_plan_states_raw = prev_meta.get("plan_states")
     prev_plan_states: Dict[str, str] = (

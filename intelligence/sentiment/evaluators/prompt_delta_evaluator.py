@@ -78,6 +78,7 @@ PROMPT_DELTA_BLOCK_SPECS: Tuple[PromptDeltaBlockSpec, ...] = (
     PromptDeltaBlockSpec("equity_bellwethers", "US_Equities", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "equities"),
     PromptDeltaBlockSpec("scorecard", "Scorecard", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
     PromptDeltaBlockSpec("calibration", "Calibration", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
+    PromptDeltaBlockSpec("venue_cycles", "Cycle_Anchors", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
     PromptDeltaBlockSpec("recent_orders", "Recent_Fills", "G1", PROMPT_DELTA_GROUP_CADENCES["G1"], "execution"),
     # G2: Slow / near-static context (refresh every 5 unchanged warm turns, or immediately on change)
     PromptDeltaBlockSpec("venue_specs", "Venue_Specs", "G2", PROMPT_DELTA_GROUP_CADENCES["G2"], "execution"),
@@ -347,6 +348,20 @@ def _extract_block_fingerprints(
             block_hashes["scorecard"] = _hash_payload(sc_line)
         if cal_line := format_ai_calibration_feedback_line(pview.get("ai_calibration_feedback")):
             block_hashes["calibration"] = _hash_payload(cal_line)
+        if vc_rows := pview.get("venue_cycles"):
+            vc_fp = [
+                (
+                    v_id,
+                    [
+                        (c_sym, _strip_volatile_keys(c_data))
+                        for c_sym, c_data in cyc_items
+                        if isinstance(c_data, Mapping)
+                    ],
+                )
+                for _, v_id, cyc_items in vc_rows
+            ]
+            if vc_fp:
+                block_hashes["venue_cycles"] = _hash_payload(vc_fp)
         if xs_view := pview.get("kraken_xstocks"):
             block_hashes["kraken_xstocks"] = _hash_payload(_strip_volatile_keys(xs_view))
         if eq_bw := pview.get("equity_bellwethers"):

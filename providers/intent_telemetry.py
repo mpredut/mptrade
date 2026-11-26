@@ -1,6 +1,7 @@
 """Pure deterministic AI trade intent cycle telemetry, fill resolution, and slippage evaluation."""
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
@@ -1232,6 +1233,71 @@ def summarize_active_ai_trade_plans(
     return list(reversed(plans_rev))
 
 
+def compute_order_plan_rr(
+    entry_px: Any,
+    side: Any,
+    target_px: Any,
+    invalidation_px: Any,
+) -> Optional[float]:
+    """Compute gross reward-to-risk ratio from entry_px to target_px vs invalidation_px symmetrically."""
+    e_px = safe_pos_float(entry_px, default=None)
+    t_px = safe_pos_float(target_px, default=None)
+    i_px = safe_pos_float(invalidation_px, default=None)
+    if e_px is None or t_px is None or i_px is None:
+        return None
+    side_u = str(side or "").strip().upper()
+    if side_u == "BUY":
+        reward = t_px - e_px
+        risk = e_px - i_px
+    elif side_u == "SELL":
+        reward = e_px - t_px
+        risk = i_px - e_px
+    else:
+        return None
+    if risk <= 0.0:
+        return None
+    if reward <= 0.0:
+        return 0.0
+    return reward / risk
+
+
+def match_open_order_resting_plan(
+    order: Mapping[str, Any],
+    active_plans: Optional[Sequence[Mapping[str, Any]]],
+    *,
+    used_plan_indices: Optional[set[int]] = None,
+    max_rel_diff: float = 0.05,
+) -> tuple[Optional[int], Optional[Mapping[str, Any]]]:
+    """Match a resting exchange open order to its closest active RESTING AI trade plan by venue/symbol/side/price."""
+    if not isinstance(order, Mapping) or not active_plans:
+        return None, None
+    o_ven = str(order.get("venue") or "").strip().lower()
+    o_sym = str(order.get("symbol") or "").strip().upper()
+    o_side = str(order.get("side") or "").strip().upper()
+    o_px = safe_pos_float(order.get("price"), default=None)
+    best_idx: Optional[int] = None
+    best_diff = math.inf
+    for p_idx, pl in enumerate(active_plans):
+        if (used_plan_indices is not None and p_idx in used_plan_indices) or not isinstance(pl, Mapping):
+            continue
+        if str(pl.get("order_state") or "").strip().upper() != "RESTING":
+            continue
+        if (
+            str(pl.get("venue") or "").strip().lower() != o_ven
+            or str(pl.get("symbol") or "").strip().upper() != o_sym
+            or str(pl.get("side") or "").strip().upper() != o_side
+        ):
+            continue
+        p_epx = safe_pos_float(pl.get("entry_px"), default=None)
+        diff = abs(p_epx - o_px) / max(o_px, 1e-12) if (p_epx is not None and o_px is not None) else 0.0
+        if diff < best_diff:
+            best_diff = diff
+            best_idx = p_idx
+    if best_idx is not None and best_diff <= max_rel_diff:
+        return best_idx, active_plans[best_idx]
+    return None, None
+
+
 __all__ = [
     "TERMINAL_TRADE_PLAN_STATUSES",
     "_attach_intent_age_fields",
@@ -1240,9 +1306,11 @@ __all__ = [
     "_resolve_executed_open_resting_detail",
     "_resolve_intent_execution_details",
     "build_last_cycle_execution_status",
+    "compute_order_plan_rr",
     "evaluate_trade_plan_path_status",
     "evaluate_trade_plan_status",
     "extract_frozen_trade_plan_status",
+    "match_open_order_resting_plan",
     "resolve_symbol_price_bars",
     "summarize_active_ai_trade_plans",
     "summarize_recent_ai_intents",

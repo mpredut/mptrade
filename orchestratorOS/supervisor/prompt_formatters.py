@@ -62,6 +62,10 @@ from providers.ai_circuit_breaker import (
     DEFAULT_XSTOCK_SELL_MIN_TARGET_DROP_PCT,
     parse_intent_circuit_breaker_config,
 )
+from providers.intent_telemetry import (
+    compute_order_plan_rr,
+    match_open_order_resting_plan,
+)
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _LIVE_DOMAIN_AGE_KEYS = frozenset({
@@ -86,6 +90,7 @@ def _build_section0_trigger_context(
     known_symbols: set[str],
     *,
     now_ts: Optional[float] = None,
+    min_target_rr: float = DEFAULT_MIN_TARGET_RR,
 ) -> Tuple[Optional[str], set[str]]:
     """Build Section 0 Trigger line and extract symbols that should be promoted to top of Section 3."""
     parts: List[str] = []
@@ -112,6 +117,13 @@ def _build_section0_trigger_context(
         if isinstance(portfolio_summary, dict) and isinstance(portfolio_summary.get("open_limit_orders"), list)
         else (portfolio_summary.get("open_orders") if isinstance(portfolio_summary, dict) else None)
     )
+    raw_plans = (
+        portfolio_summary.get("active_ai_trade_plans")
+        if isinstance(portfolio_summary, dict) and isinstance(portfolio_summary.get("active_ai_trade_plans"), list)
+        else []
+    )
+    eff_min_rr = max(0.0, safe_float(min_target_rr, default=DEFAULT_MIN_TARGET_RR) or 0.0)
+    used_wt_plans: set[int] = set()
     if isinstance(raw_open, list):
         for oo in raw_open:
             if not isinstance(oo, dict):
@@ -133,8 +145,22 @@ def _build_section0_trigger_context(
                 parts.append(f"{sym} partial_fill {_fmt_plain_float(filled_v)}{qty_s}{rem_s}")
                 trigger_syms.add(sym)
             if "open_order_wall_trapped" in wake_lc and (fr_v := safe_pos_float(oo.get("recommended_front_run_px"), default=None)) is not None:
-                parts.append(f"{sym} wall_trapped(front_run={fr_v:g})")
-                trigger_syms.add(sym)
+                p_idx, linked_pl = match_open_order_resting_plan(
+                    oo, raw_plans, used_plan_indices=used_wt_plans
+                )
+                if p_idx is not None:
+                    used_wt_plans.add(p_idx)
+                rr_fr = (
+                    compute_order_plan_rr(
+                        fr_v, oo.get("side"), linked_pl.get("target_px"), linked_pl.get("invalidation_px")
+                    )
+                    if linked_pl is not None
+                    else None
+                )
+                if rr_fr is None or eff_min_rr <= 0.0 or rr_fr >= eff_min_rr:
+                    rr_sfx = f",RR={rr_fr:.2f}x" if rr_fr is not None else ""
+                    parts.append(f"{sym} wall_trapped(front_run={fr_v:g}{rr_sfx})")
+                    trigger_syms.add(sym)
             if "open_order_stale_or_far" in wake_lc:
                 dist_v = safe_float(oo.get("dist_from_spot_pct"), None)
                 fp_v = safe_float(oo.get("fill_prob_1h_pct"), None)
@@ -351,6 +377,7 @@ def build_supervisor_prompt(
     microstructure = getattr(sensors, "microstructure", None) or {}
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
     trigger_syms: set[str] = set()
+    gw_th = _resolve_gateway_survival_prompt_thresholds()
     if not is_pure_sre:
         known_syms = set(prices_and_trends.keys()) | set(microstructure.keys())
         trigger_line, trigger_syms = _build_section0_trigger_context(
@@ -359,6 +386,7 @@ def build_supervisor_prompt(
             portfolio_summary,
             known_syms,
             now_ts=eval_now_ts,
+            min_target_rr=gw_th["min_target_rr"],
         )
         if trigger_line:
             context_items.append(trigger_line)
@@ -498,7 +526,6 @@ def build_supervisor_prompt(
         schema.append(
             f'  "summary": "1-2 sentence executive assessment of {scope_spec.summary_scope_lbl} market posture and trading decisions"'
         )
-    gw_th = _resolve_gateway_survival_prompt_thresholds()
     xs_min_profit_pct = gw_th["xstock_sell_min_profit_pct"]
     xs_min_drop_pct = gw_th["xstock_sell_min_target_drop_pct"]
     xs_min_conf = gw_th["xstock_sell_min_confidence"]
@@ -680,7 +707,7 @@ def build_supervisor_prompt(
         )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
-            f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `mptrade` read access to `cachedb/`, `statedb/`, `logs/`; "
+            f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `mptrade` read access to `cachedb/`, `statedb/`, `logs/` & `verify_tools/chart_view.py`; "
             f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
             "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (use `CANCEL`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R).\n"
             + compact_entry_bullet

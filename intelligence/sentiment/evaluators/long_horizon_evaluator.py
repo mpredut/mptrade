@@ -397,6 +397,7 @@ def format_long_horizon_section_lines(
     snapshot: Optional[Mapping[str, Any]],
     *,
     prices_and_trends: Optional[Mapping[str, Any]] = None,
+    extra_live_prices: Optional[Mapping[str, Any]] = None,
     asset_scope: str = "all",
     tag: str = "",
 ) -> List[str]:
@@ -409,6 +410,7 @@ def format_long_horizon_section_lines(
     scope_s = str(asset_scope or "all").strip().lower()
     is_eq_scope = scope_s in ("equities", "equity")
     pt_map = prices_and_trends if isinstance(prices_and_trends, Mapping) else {}
+    ex_map = extra_live_prices if isinstance(extra_live_prices, Mapping) else {}
     eff_months = resolve_long_horizon_months(safe_int(snapshot.get("months"), default=None) if snapshot.get("months") else None)
     hor_lbl = str(snapshot.get("horizon_label") or format_horizon_label(eff_months))
 
@@ -433,6 +435,12 @@ def format_long_horizon_section_lines(
         live_px = None
         if isinstance(pt_map.get(sym_s), Mapping):
             live_px = safe_pos_float(pt_map[sym_s].get("price"), default=None)
+        if live_px is None and ex_map:
+            live_px = safe_pos_float(ex_map.get(sym_s), default=None) or safe_pos_float(
+                ex_map.get(sym_s.upper()), default=None
+            )
+            if live_px is None and not is_eq and not is_tok:
+                live_px = safe_pos_float(ex_map.get(canonical_base_asset(sym_s)), default=None)
         rec = recalculate_long_horizon_with_live_price(item, live_px)
         selected.append((sym_s, rec))
 
