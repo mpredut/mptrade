@@ -2163,6 +2163,140 @@ def test_pass5_futures_since_close_and_lexicon_noise_coherence() -> None:
     )
 
 
+def test_pass6_sentiment_advisor_real_vol_vp_and_geo_shield_macro_delta(tmp_path) -> None:
+    """Verify SentimentAdvisor upgrades BTC/ETH VP to REAL_VOL matching crypto executor and aged Geo Shield flags live futures/skew divergence."""
+    import re
+    from types import SimpleNamespace
+    from cachepaths import cache_24_price_filename, cache_ohlc_24h_filename
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+    from state_io import save_json_state
+
+    now_s = 1_795_682_400.0
+    # 1. SentimentAdvisor upgrades TPO VP to REAL_VOL using cached 24h OHLCV (matching auto_cryptotrade_executor)
+    prices_dir = tmp_path / "prices"
+    prices_dir.mkdir(parents=True, exist_ok=True)
+    # Time spent mostly around 60750 (so TPO POC ~= 60750), while heavy real volume occurred at 60180 (REAL_VOL POC ~= 60180)
+    pts_24h = []
+    ohlc_24h = []
+    for i in range(96):
+        ts_ms = int((now_s - (95 - i) * 900.0) * 1000.0)
+        px = 60180.0 if i < 20 else 60750.0
+        vol = 5000.0 if i < 20 else 50.0
+        pts_24h.append([ts_ms, px])
+        ohlc_24h.append([ts_ms, px, vol])
+    save_json_state(str(prices_dir / cache_24_price_filename("BTCUSDC", ext=".json")), {"items": {"BTCUSDC": pts_24h}})
+    save_json_state(str(prices_dir / cache_ohlc_24h_filename("BTCUSDC")), {"points": ohlc_24h})
+
+    class _CaptureClient:
+        def __init__(self) -> None:
+            self.last_prompt = ""
+
+        def query_json(self, prompt: str, **kwargs):
+            self.last_prompt = prompt
+            return {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.7,
+                "summary": "Balanced tape.",
+                "key_risks": [],
+                "recommended_action": "HOLD",
+            }
+
+    cap = _CaptureClient()
+    adv = SentimentAdvisor(
+        gemini_client=cap,
+        cache_file=str(tmp_path / "macro" / "sentiment_eval.json"),
+        start_sync=False,
+    )
+    adv.review(now_ts=now_s, force_refresh=True, allow_llm=True)
+    m_vp = re.search(r"BTC Intraday Structure:.*VP\(VAL=\$([0-9.]+), POC=\$([0-9.]+), VAH=\$([0-9.]+)\)", cap.last_prompt)
+    assert m_vp is not None
+    poc_val = float(m_vp.group(2))
+    assert abs(poc_val - 60180.0) < 100.0, f"Expected REAL_VOL POC near 60180, got {poc_val}"
+
+    # 2. Aged Geopolitical Threat Shield claiming advancing futures & steady vol gets live_macro_delta when live Fut_Lead turned negative & skew jumped
+    mb_bear = {
+        "ts": now_s - 120.0,
+        "btc_skew_25d_pct": 5.62,
+        "items": {
+            "SPY": {"price": 716.70, "chg_24h_pct": 0.23, "market_state": "CLOSED", "bar_age_min": 450.0},
+            "QQQ": {"price": 633.93, "chg_24h_pct": -0.23, "market_state": "CLOSED", "bar_age_min": 450.0},
+            "ES=F": {"price": 7219.00, "chg_24h_pct": 0.32, "since_cash_close_pct": -0.23, "bar_age_min": 12.0},
+            "NQ=F": {"price": 26174.50, "chg_24h_pct": 0.28, "since_cash_close_pct": -0.26, "bar_age_min": 12.0},
+        },
+    }
+    sec1_bear = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor=None,
+                geopolitical_threat={
+                    "risk_score": 0.25,
+                    "ts": now_s - 3000.0,
+                    "summary": "Cross-asset markets remain calm, with US equity futures advancing (ES=F +0.44%, NQ=F +0.62%) and crypto implied volatility steady.",
+                },
+                macro_benchmarks=mb_bear,
+                microstructure={},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "live_macro_delta=(Fut_Lead=-0.26%, Skew_25d=+5.62% vs 50.0m-old summary)" in sec1_bear
+
+    # Symmetric bullish flip: aged shield claims falling futures while live Futures_Lead rallied +0.45%
+    mb_bull = {
+        "ts": now_s - 120.0,
+        "btc_skew_25d_pct": 1.2,
+        "items": {
+            "SPY": {"price": 716.70, "chg_24h_pct": -0.50, "market_state": "CLOSED", "bar_age_min": 450.0},
+            "QQQ": {"price": 633.93, "chg_24h_pct": -0.80, "market_state": "CLOSED", "bar_age_min": 450.0},
+            "ES=F": {"price": 7250.00, "chg_24h_pct": 0.40, "since_cash_close_pct": 0.40, "bar_age_min": 12.0},
+            "NQ=F": {"price": 26400.00, "chg_24h_pct": 0.45, "since_cash_close_pct": 0.45, "bar_age_min": 12.0},
+        },
+    }
+    sec1_bull = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor=None,
+                geopolitical_threat={
+                    "risk_score": 0.55,
+                    "ts": now_s - 1800.0,
+                    "summary": "US equity futures falling (ES=F -0.60%, NQ=F -0.85%) on tariff headlines.",
+                },
+                macro_benchmarks=mb_bull,
+                microstructure={},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "live_macro_delta=(Fut_Lead=+0.45% vs 30.0m-old summary)" in sec1_bull
+
+    # Fresh shield (<15m) does not emit redundant live_macro_delta
+    sec1_fresh = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor=None,
+                geopolitical_threat={
+                    "risk_score": 0.25,
+                    "ts": now_s - 300.0,
+                    "summary": "US equity futures advancing (ES=F +0.44%, NQ=F +0.62%).",
+                },
+                macro_benchmarks=mb_bear,
+                microstructure={},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "live_macro_delta=" not in sec1_fresh
+
+
+
 
 
 

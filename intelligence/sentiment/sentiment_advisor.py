@@ -457,6 +457,17 @@ class SentimentAdvisor(CachedTopicAssessmentAgent):
                     if parsed_pts
                     else (safe_pos_float(c_m.get("high_24h"), default=0.0) or 0.0)
                 )
+                _mc.upgrade_tpo_vp_from_ohlc(
+                    usdc_pair,
+                    c_m,
+                    last_px,
+                    now,
+                    last_series_pt=parsed_pts[-1] if parsed_pts else None,
+                    cache_dir=cache_dir,
+                    allow_network=False,
+                    series_24h_start_ms=parsed_pts[0][0] if parsed_pts else None,
+                    series_24h=c_pts,
+                )
                 chg_24h_v = safe_float(c_m.get("chg_24h_pct"), default=0.0) or 0.0
                 if ccy == "BTC":
                     btc_chg_24h_live = chg_24h_v

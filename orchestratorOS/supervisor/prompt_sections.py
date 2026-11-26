@@ -561,6 +561,49 @@ def _format_macro_and_news_section(
         gt_summary = gt_summary_raw
     gt_age_m = _resolve_sensor_age_min(gt, now_ts=ref_now)
     gt_sum_low = gt_summary.lower()
+    gt_live_macro_delta = ""
+    if (
+        isinstance(gt, dict)
+        and gt_age_m is not None
+        and gt_age_m >= 15.0
+        and isinstance(mb_bench, dict)
+        and mb_bench
+        and not gt.get("live_deescalation_note")
+    ):
+        gt_d_parts: List[str] = []
+        gt_fl = safe_float(compute_futures_premarket_lead(mb_bench).get("futures_lead_pct"), None)
+        if gt_fl is None and any(tok in gt_sum_low for tok in ("es=f", "nq=f", "futures")):
+            mb_it_gt = mb_bench.get("items") if isinstance(mb_bench.get("items"), dict) else mb_bench
+            for _fsym in ("NQ=F", "ES=F"):
+                if (_scc := resolve_futures_since_cash_close_pct(mb_it_gt, _fsym)) is not None:
+                    gt_fl = _scc
+                    break
+        if gt_fl is not None and (
+            (
+                gt_fl <= -0.15
+                and any(
+                    tok in gt_sum_low
+                    for tok in ("futures advancing", "futures rising", "futures higher", "futures climbing", "futures rally", "es=f +", "nq=f +")
+                )
+            )
+            or (
+                gt_fl >= 0.15
+                and any(
+                    tok in gt_sum_low
+                    for tok in ("futures falling", "futures dropping", "futures sliding", "futures lower", "futures selloff", "es=f -", "nq=f -")
+                )
+            )
+        ):
+            gt_d_parts.append(f"Fut_Lead={fmt_signed(gt_fl, 2)}%")
+        if (
+            (btc_sk := safe_float(mb_bench.get("btc_skew_25d_pct"), None)) is not None
+            and abs(btc_sk) >= 4.0
+            and any(tok in gt_sum_low for tok in ("calm", "steady", "subdued"))
+            and (gt_d_parts or any(tok in gt_sum_low for tok in ("volatility", "dvol", "options", "skew")))
+        ):
+            gt_d_parts.append(f"Skew_25d={fmt_signed(btc_sk, 2)}%")
+        if gt_d_parts:
+            gt_live_macro_delta = f"({', '.join(gt_d_parts)} vs {gt_age_m}m-old summary)"
     gt_stale_ctx_note = (
         "historical_eval_gt_90m_verify_live_section1"
         if (
@@ -568,7 +611,7 @@ def _format_macro_and_news_section(
             and gt_age_m is not None
             and gt_age_m >= 90.0
             and not gt.get("live_deescalation_note")
-            and any(tok in gt_sum_low for tok in ("90-minute window", "spy", "qqq", "vix", "past 15 minutes", "1h)"))
+            and any(tok in gt_sum_low for tok in ("90-minute window", "spy", "qqq", "vix", "es=f", "nq=f", "futures", "dvol", "dxy", "past 15 minutes", "1h)"))
         )
         else ""
     )
@@ -576,6 +619,7 @@ def _format_macro_and_news_section(
         f"risk_score={gt.get('risk_score', 'N/A')}{_age_sfx(gt, now_ts=ref_now)}"
         + (f" | live_deescalation={gt.get('live_deescalation_note')}" if gt.get("live_deescalation_note") else "")
         + (f" | live_unassessed={gt.get('live_unassessed_high_sev_note')}" if gt.get("live_unassessed_high_sev_note") else "")
+        + (f" | live_macro_delta={gt_live_macro_delta}" if gt_live_macro_delta else "")
         + (f" | shield_note={gt_stale_ctx_note}" if gt_stale_ctx_note else "")
         + f" | summary={gt_summary}"
         if gt else "None"
