@@ -4817,7 +4817,7 @@ class _HyperliquidAccountTradeBridge:
                         last_err = str(exc)
                         log(f"[hyperliquid_cache][ws] invalidated fills REST resync {sym_s} failed: {exc}")
                 if ok_syms:
-                    sync_ms = max(ts_ms, resolve_now_ms())
+                    sync_ms = ts_ms if blocking else max(ts_ms, resolve_now_ms())
                     fo_path = _sibling_order_filled_path(fills_file, "hyperliquid")
                     before_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
                         fo_path,
@@ -4825,7 +4825,25 @@ class _HyperliquidAccountTradeBridge:
                         allow_legacy=False,
                         allow_trade_fallback=False,
                     )
-                    before_count = sum(len(v) for v in before_items.values() if isinstance(v, list))
+
+                    def _fill_sig(items_map: Mapping[str, Any]) -> dict[tuple[str, str], tuple[float, int]]:
+                        sig: dict[tuple[str, str], tuple[float, int]] = {}
+                        for sym_k, rows_k in (items_map or {}).items():
+                            if not isinstance(rows_k, list):
+                                continue
+                            for row in rows_k:
+                                if not isinstance(row, dict):
+                                    continue
+                                oid_s = clean_order_id(extract_order_id(row, default=None)) or ""
+                                qty_f = round(
+                                    safe_nonneg_float(extract_executed_qty(row, default=0.0), default=0.0) or 0.0,
+                                    10,
+                                )
+                                fids = row.get("_fillIds")
+                                sig[(str(sym_k), oid_s)] = (qty_f, len(fids) if isinstance(fids, list) else 0)
+                        return sig
+
+                    before_sig = _fill_sig(before_items)
                     CacheTradeManager.merge_venue_fills_snapshot(
                         fills_file,
                         fills_by_sym,
@@ -4844,10 +4862,7 @@ class _HyperliquidAccountTradeBridge:
                         touch_create_missing=True,
                     )
                     after_items = merged_fo.get("items") if isinstance(merged_fo, dict) else {}
-                    after_count = sum(
-                        len(v) for v in (after_items or {}).values() if isinstance(v, list)
-                    )
-                    if after_count > before_count:
+                    if _fill_sig(after_items or {}) != before_sig:
                         request_venue_account_refresh("hyperliquid", include_open_orders=True)
                     if len(ok_syms) == len(symbols):
                         _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)

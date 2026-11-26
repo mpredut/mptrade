@@ -1485,4 +1485,108 @@ def test_touch_venue_ws_fetchtimes_does_not_resurrect_nonpositive_fetchtime():
     assert cache_obj["fetchtime"]["SOLUSDC"] == t0_ms
 
 
+def test_hyperliquid_rest_resync_triggers_refresh_on_same_oid_partial_fill_upgrade(tmp_path, monkeypatch):
+    """REST recovery must trigger balance/open-order refresh when an existing orderId receives an additional partial fill slice, and skip refresh when fills are unchanged."""
+    import threading
+
+    acct_dir = tmp_path / "account"
+    acct_dir.mkdir(parents=True)
+    tr_path = acct_dir / "cache_trade_hyperliquid.json"
+    fo_path = acct_dir / "cache_order_filled_hyperliquid.json"
+
+    t0_ms = 1_795_750_000_000
+    slice_1 = {
+        "coin": "@107",
+        "px": "62.00",
+        "sz": "5.0",
+        "side": "B",
+        "time": t0_ms - 30_000,
+        "oid": 617441855947,
+        "tid": 734038162456301,
+        "fee": "0.002",
+        "feeToken": "HYPE",
+    }
+    slice_2 = {
+        "coin": "@107",
+        "px": "62.10",
+        "sz": "14.33",
+        "side": "B",
+        "time": t0_ms - 5_000,
+        "oid": 617441855947,
+        "tid": 734038162456302,
+        "fee": "0.005732",
+        "feeToken": "HYPE",
+    }
+
+    cacheaccount.CacheTradeManager.merge_venue_fills_snapshot(
+        str(tr_path), {"HYPEUSDC": [slice_1]}, now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+    cacheaccount.CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+        str(fo_path), {"HYPEUSDC": [slice_1]}, venue="hyperliquid", now_ms=t0_ms, is_snapshot=True, touch_symbols=("HYPEUSDC",), touch_create_missing=True
+    )
+
+    refresh_calls: list[tuple[str, bool]] = []
+    health_calls: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        cacheaccount,
+        "request_venue_account_refresh",
+        lambda v, *, include_open_orders=False, blocking=False: refresh_calls.append((v, include_open_orders)) or True,
+    )
+    monkeypatch.setattr(
+        cacheaccount,
+        "_record_venue_health_sync",
+        lambda v, s, *, now_ms=None: health_calls.append((v, s, int(now_ms or 0))) or True,
+    )
+
+    remote_rows = [slice_1]
+
+    class _FakeHLProv:
+        def __init__(self, *, token=None):
+            self.token = token
+
+        def fetch_remote_trades(self, symbol: str, start_time_ms: int = 0):
+            return list(remote_rows)
+
+        @staticmethod
+        def resolve_ws_user_address(addr, resolve_env=None):
+            return addr or "0xabc"
+
+    monkeypatch.setattr(
+        MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda cls, v: _FakeHLProv if v == "hyperliquid" else None),
+    )
+
+    class _DummyWs:
+        _lock = threading.Lock()
+        _symbols = ["HYPEUSDC"]
+        _fills_ws_seeded = True
+        _last_fills_touch_ms = t0_ms
+
+    ws = _DummyWs()
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(ws, user_address="0xabc", fills_cache_path=str(tr_path))
+
+    # 1. Unchanged fills (only slice_1): no spurious balance/open-order refresh, deterministic sync_ms == ts_ms.
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(tr_path))
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(fo_path))
+    t1_ms = t0_ms + 20_000
+    assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(tr_path), t1_ms, blocking=True) is True
+    assert refresh_calls == []
+    assert ("hyperliquid", "filled_orders", t1_ms) in health_calls
+
+    # 2. Same orderId upgraded with slice_2 (order row count stays 1, but qty 5.0 -> 19.33 & _fillIds 1 -> 2):
+    #    MUST trigger request_venue_account_refresh("hyperliquid", include_open_orders=True)!
+    remote_rows.append(slice_2)
+    cacheaccount.CacheTradeManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(tr_path))
+    cacheaccount.CacheOrderFilledManager.invalidate_venue_fills_snapshot("HYPEUSDC", str(fo_path))
+    t2_ms = t0_ms + 40_000
+    assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(tr_path), t2_ms, blocking=True) is True
+    assert refresh_calls == [("hyperliquid", True)]
+    fo_items, fo_ft = cacheaccount.CacheOrderFilledManager.read_venue_filled_orders_snapshot(str(fo_path), venue="hyperliquid")
+    assert len(fo_items["HYPEUSDC"]) == 1
+    assert fo_items["HYPEUSDC"][0]["quantity"] == pytest.approx(19.33)
+    assert fo_ft["HYPEUSDC"] == t2_ms
+
+
+
 
