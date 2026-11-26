@@ -1067,6 +1067,68 @@ def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_
     bad_oo_pct = oo_amended_lines.replace("61200.0(+2.00%)", "61200.0(+5.00%)")
     assert any(v.code == "PROMPT_OPEN_ORDER_RR_MATH" and v.subject.endswith(":target") for v in audit_rendered_prompt_text(bad_oo_pct))
 
+    # 5. Terminal plans (INVALIDATED / TARGET_HIT) omit misleading forward RR@spot, and active_retry_queue renders cleanly without raw dict repr.
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    sec1_lines = "\n".join(
+        _format_portfolio_section(
+            {
+                "active_ai_trade_plans": [
+                    {
+                        "venue": "binance",
+                        "symbol": "ARBUSDC",
+                        "side": "BUY",
+                        "order_state": "FILLED",
+                        "entry_px": 0.1125,
+                        "spot_px": 0.1112,
+                        "target_px": 0.1156,
+                        "target_dist_pct": 3.96,
+                        "invalidation_px": 0.11,
+                        "invalidation_dist_pct": -1.08,
+                        "status": "INVALIDATED",
+                        "age_h": 2.0,
+                    },
+                    {
+                        "venue": "hyperliquid",
+                        "symbol": "HYPEUSDC",
+                        "side": "BUY",
+                        "order_state": "FILLED",
+                        "entry_px": 59.5,
+                        "spot_px": 60.0,
+                        "target_px": 61.5,
+                        "target_dist_pct": 2.5,
+                        "invalidation_px": 58.5,
+                        "invalidation_dist_pct": -2.5,
+                        "status": "ACTIVE",
+                        "age_h": 0.5,
+                    },
+                ],
+                "active_retry_queue": [
+                    {
+                        "venue": "binance",
+                        "symbol": "ARBUSDC",
+                        "side": "BUY",
+                        "qty": 63039.4,
+                        "requested_price": 0.110611,
+                        "kind": "trend_confirmed_up",
+                        "attempts": 1,
+                        "last_failure_reason": "qty_zero_after_policy",
+                        "age_min": 19.9,
+                    }
+                ],
+            },
+            asset_scope="crypto",
+            now_ts=t0,
+        )
+    )
+    arb_plan_ln = next(l for l in sec1_lines.splitlines() if "ARBUSDC BUY@0.1125" in l)
+    hype_plan_ln = next(l for l in sec1_lines.splitlines() if "HYPEUSDC BUY@59.5" in l)
+    assert "[INVALIDATED]" in arb_plan_ln and "RR@spot=" not in arb_plan_ln
+    assert "RR@spot=1.00x [ACTIVE]" in hype_plan_ln
+    assert "{'venue':" not in sec1_lines
+    assert "[binance] ARBUSDC BUY (qty=63039.4, px=0.110611, kind=trend_confirmed_up, attempts=1, reason=qty_zero_after_policy, age=19.9m)" in sec1_lines
+    assert audit_rendered_prompt_text(sec1_lines) == []
+
 
 def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> None:
     """Verify full mathematical audit suite across snapshot and rendered prompt text (clean passes, every corruption caught)."""

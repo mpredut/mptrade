@@ -1576,7 +1576,7 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert ctx._suggested_scale_by_side["BUY"] == pytest.approx(1.0)
         assert ctx._suggested_scale_by_side["SELL"] == pytest.approx(0.25)
 
-    def test_batch8_orderbook_wall_downscale_propagation_and_gateway_ssot(self, monkeypatch):
+    def test_batch8_orderbook_wall_downscale_propagation_and_gateway_ssot(self, monkeypatch, tmp_path):
         """Verify OrderbookWallGuard DOWNSCALE_QTY propagates in check_external_order_guards,
         and AutonomousIntentGateway uses order_guard._load_margins and extract_order_id."""
 
@@ -1599,8 +1599,15 @@ class TestBatch6IntelligenceAndRoutingFixes:
         assert scale == pytest.approx(0.4)
         assert reason == "orderbook_wall_downscale_test"
 
-        # Verify AutonomousIntentGateway extracts Kraken txid via extract_order_id
-        gw = AutonomousIntentGateway(mode="enforce", max_notional_usd=500.0, min_confidence=0.80, notify_enabled=True)
+        # Verify AutonomousIntentGateway extracts Kraken txid via extract_order_id (isolated from live cachedb)
+        (tmp_path / "cachedb").mkdir(parents=True, exist_ok=True)
+        gw = AutonomousIntentGateway(
+            workspace_dir=str(tmp_path),
+            mode="enforce",
+            max_notional_usd=500.0,
+            min_confidence=0.80,
+            notify_enabled=True,
+        )
         notified = []
         monkeypatch.setattr(gw, "_dispatch_notify", lambda title, body, symbol: notified.append((title, body, symbol)) or True)
         monkeypatch.setattr(order_guard, "daily_limit_guard", lambda *a, **k: (True, None))

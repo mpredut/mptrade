@@ -2175,6 +2175,30 @@ def _format_exec_intent_item(item: Any) -> str:
     return f"{hdr} ({', '.join(details)})" if details else hdr
 
 
+def _format_retry_queue_item(item: Any) -> str:
+    """Format a single active retry-queue record cleanly without raw Python dict quotes."""
+    if not isinstance(item, dict):
+        return str(item)
+    ven = item.get("venue") or "-"
+    sym = item.get("symbol") or "-"
+    side = item.get("side") or "-"
+    hdr = f"[{ven}] {sym} {side}"
+    details: List[str] = []
+    if item.get("qty") is not None:
+        details.append(f"qty={_fmt_plain_float(item['qty'])}")
+    if item.get("requested_price") is not None:
+        details.append(f"px={_fmt_plain_float(item['requested_price'])}")
+    if item.get("kind"):
+        details.append(f"kind={item['kind']}")
+    if item.get("attempts") is not None:
+        details.append(f"attempts={item['attempts']}")
+    if item.get("last_failure_reason"):
+        details.append(f"reason={item['last_failure_reason']}")
+    if item.get("age_min") is not None:
+        details.append(f"age={item['age_min']}m")
+    return f"{hdr} ({', '.join(details)})" if details else hdr
+
+
 def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: str = "") -> str:
     """Format Kraken tokenized xStocks cross-venue context concisely without raw dict repr."""
     xs = xs_view.get("payload")
@@ -2556,10 +2580,12 @@ def _format_portfolio_section(
                 id_v = pl.get("invalidation_dist_pct")
                 id_s = f" ({fmt_signed(id_v)}% {anc_lbl})" if id_v is not None else ""
                 p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
-            anc_px = pl.get("entry_px") if is_lim_anc else pl.get("spot_px")
-            rr_lbl = "RR@limit" if is_lim_anc else "RR@spot"
-            if (rr_u := compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
-                p_parts.append(f"{rr_lbl}={rr_u:.2f}x")
+            pl_st = str(pl.get("status") or "ACTIVE").strip().upper()
+            if pl_st not in ("INVALIDATED", "TARGET_HIT", "CLOSED_EARLY"):
+                anc_px = pl.get("entry_px") if is_lim_anc else pl.get("spot_px")
+                rr_lbl = "RR@limit" if is_lim_anc else "RR@spot"
+                if (rr_u := compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
+                    p_parts.append(f"{rr_lbl}={rr_u:.2f}x")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
             meta_p = [ord_st]
             if not is_lim_anc and pl.get("spot_px") is not None:
@@ -2669,6 +2695,10 @@ def _format_portfolio_section(
             lines.append(f"  * {st_label}:")
             for it in st_val:
                 lines.append(f"    - {_format_exec_intent_item(it)}")
+        elif st_key == "active_retry_queue" and isinstance(st_val, list):
+            lines.append(f"  * {st_label}:")
+            for it in st_val:
+                lines.append(f"    - {_format_retry_queue_item(it)}")
         else:
             lines.append(f"  * {st_label}: {st_val}")
     return lines
