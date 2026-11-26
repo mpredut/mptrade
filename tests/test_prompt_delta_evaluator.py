@@ -762,7 +762,7 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     )
     assert "- Trigger: open_order_partial_fill | HYPEUSDC partial_fill 6.8/16.8(rem=10)" in txt
     assert "6.8(rem=10)" in txt
-    assert "RR=1.46x [ACTIVE]" in txt
+    assert "RR@limit=1.46x [ACTIVE]" in txt
     assert "front_run=60.0(RR=0.78x)" in txt
     assert "[per-order max_buy <= $2000; simultaneous BUYs share venue free cash above]" in txt
     # HYPEUSDC promoted ahead of BTCUSDC in Section 3 because of partial fill trigger
@@ -793,7 +793,7 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     assert audit_rendered_prompt_text(warm_txt) == []
 
     # Invariant verifier catches corrupted R:R and corrupted rem= math inside open_limit_orders table
-    bad_rr = txt.replace("RR=1.46x [ACTIVE]", "RR=2.99x [ACTIVE]")
+    bad_rr = txt.replace("RR@limit=1.46x [ACTIVE]", "RR@limit=2.99x [ACTIVE]")
     assert bad_rr != txt
     assert any(v.code == "PROMPT_OPEN_ORDER_RR_MATH" for v in audit_rendered_prompt_text(bad_rr))
     bad_fr_rr = txt.replace("front_run=60.0(RR=0.78x)", "front_run=60.0(RR=1.90x)")
@@ -827,7 +827,7 @@ def test_trigger_promotion_inline_rr_partial_fill_and_warm_source_age() -> None:
     ]
     txt_sib = build_supervisor_prompt(sensors_sib, logs, compact_rules=False, wake_reason="new_fill")
     assert "- Trigger: new_fill | HYPEUSD BUY FILLED@41.0" in txt_sib
-    assert "RR=2.00x [ACTIVE]" in txt_sib
+    assert "RR@spot=2.00x [ACTIVE]" in txt_sib
     s3_sib = txt_sib[txt_sib.index("### 3. TRADABLE MARKETS"):]
     assert s3_sib.index("  * HYPEUSDC") < s3_sib.index("  * BTCUSDC:")
     assert audit_rendered_prompt_text(txt_sib) == []

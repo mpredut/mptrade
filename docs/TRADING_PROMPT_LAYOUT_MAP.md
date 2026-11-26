@@ -47,9 +47,9 @@ MPTrade uses stateful multi-turn threads (`agy --conversation <id>`):
 |        [G2: every 5 warm turns or on change].                                        |
 |  1C. Open Orders & Linked Trade Plans (fused table)                            [G0]  |
 |      - Columns: Venue | Symbol | Side | Price | Qty | Filled(rem=...) | ID | Actor | |
-|                 Age | Dist | Fill1h | Plan (Tgt/Inv + RR=...x [ACTIVE]) |            |
+|                 Age | Dist | Fill1h | Plan (Tgt/Inv + RR@limit=...x [ACTIVE]) |      |
 |                 Note (front_run=...(RR=...x), [ob_stale])                            |
-|      - Unlinked / FILLED Active AI Trade Plans below (with live symmetric RR=...x).  |
+|      - Unlinked Active AI Trade Plans below (`RR@spot=...x` FILLED / `RR@limit=...x` RESTING). |
 |  1D. Execution Feedback, Scorecard, Calibration & Fills                              |
 |      - Last Cycle Execution Status & Recent Autonomous Intents (clean key=val; [G0]) |
 |      - AI Decision Scorecard (48h: W/BE/L, avg, net)                           [G1]  |
@@ -122,7 +122,7 @@ Every rendered prompt is verified deterministically against:
 - `PROMPT_NAV_CONSERVATION`: `nav == invested + free_cash + locked_quote == sum(venues)`
 - `PROMPT_NO_NON_TRADABLE_GHOSTS`: disabled/observe-only symbols never appear in Section 1 tradable positions
 - `PROMPT_FREE_QUOTE_BREAKDOWN` & `PROMPT_VENUE_PRECISION` & `PROMPT_SUB_GATEWAY_MIN_CAP`
-- `PROMPT_OPEN_ORDER_RR_MATH`: inline `Plan RR=...x` and `front_run=...(RR=...x)` match exact symmetric gross `reward / risk` used by `providers/ai_survival_guard.py::evaluate_ai_target_ev_guard`
+- `PROMPT_OPEN_ORDER_RR_MATH`: inline `Plan RR@limit=...x` and `front_run=...(RR=...x)` match exact symmetric gross `reward / risk` used by `providers/ai_survival_guard.py::evaluate_ai_target_ev_guard` (and `PROMPT_ACTIVE_PLAN_RR_MATH` verifies unlinked `RR@spot=...x` / `RR@limit=...x` anchors)
 - `PROMPT_OPEN_ORDER_REM_MATH`: partial fill `filled + rem == qty`
 - `PROMPT_RANGE_POS_MATH`, `PROMPT_VOL_PROFILE_ORDER`, `PROMPT_VOL_PROFILE_DELTA`, `PROMPT_SESSION_VWAP_DELTA`
 - `PROMPT_OB_IMBALANCE_MATH`, `PROMPT_OB_WALL_ORDERING`, `PROMPT_CROSS_VENUE_ARB_SYMMETRY`

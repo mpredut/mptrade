@@ -559,6 +559,8 @@ def clamp_notional_to_wallet_balance(
     *,
     min_notional_usd: float = 10.0,
     symbol: Optional[str] = None,
+    max_quote_balance: Optional[float] = None,
+    effective_balance_out: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, float, str]:
     """Single Source of Truth to clamp desired USD notional to real spot wallet liquidity."""
     desired_f = safe_pos_float(desired_usd, default=None)
@@ -603,9 +605,17 @@ def clamp_notional_to_wallet_balance(
         return True, desired_usd, "Wallet balance check skipped (non-numeric)"
     if bal < 0.0:
         return True, desired_usd, "Wallet balance check skipped (non-finite)"
+    if side_u == "BUY" and max_quote_balance is not None:
+        cap_q = safe_nonneg_float(max_quote_balance, default=None)
+        if cap_q is not None and cap_q < bal:
+            bal = cap_q
 
     raw_venue = getattr(inst, "provider_name", None) or getattr(provider, "name", "")
     venue_l = normalize_venue_name(str(raw_venue or ""))
+    if effective_balance_out is not None:
+        effective_balance_out["venue"] = venue_l
+        effective_balance_out["asset"] = target_asset.upper()
+        effective_balance_out["balance"] = bal
     capped_bal = venue_fee_cap_quantity(
         venue_l, side_u, price, bal, default_buy_buf=0.998, provider=provider
     )

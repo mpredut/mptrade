@@ -20,11 +20,12 @@ Operational Architecture:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import os
 import sys
 import time
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger("orchestratorTrade.autonomous_intent_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -42,6 +43,7 @@ from botcore import (
     disable_auto_start_websockets_default,
     extract_order_id,
     extract_order_price,
+    extract_order_side,
     extract_timestamp_s,
     first_pos_float,
     format_notify_price,
@@ -148,9 +150,10 @@ from providers.intent_telemetry import (
     extract_frozen_trade_plan_status,
 )
 from providers.order_id_context import extract_client_order_id, resolve_order_actor
+from providers.order_ohlc_utils import extract_remaining_qty
 from providers.order_status_ssot import NON_FILL_ORDER_STATUSES
 from providers.portfolio_state_store import resolve_kraken_trade_cache_position
-from providers.quantity import clamp_notional_to_wallet_balance
+from providers.quantity import clamp_notional_to_wallet_balance, resolve_assets
 from providers.venue_fee_maintenance import read_persisted_venue_fee_spec
 from state_io import cachedb_exists, read_json_dict
 
@@ -230,6 +233,64 @@ class AutonomousIntentGateway:
         self.xstock_sell_cooldown_hours: float = cb_cfg["xstock_sell_cooldown_hours"]
         self.xstock_sell_crash_min_target_drop_pct: float = cb_cfg["xstock_sell_crash_min_target_drop_pct"]
         self.xstock_sell_crash_min_confidence: float = cb_cfg["xstock_sell_crash_min_confidence"]
+        self._cycle_quote_caps: Optional[Dict[Tuple[str, str], float]] = None
+        self._last_cycle_clamp_balance: Optional[Dict[str, Any]] = None
+        self._active_intent_freed_buy_quote: float = 0.0
+
+    @contextlib.contextmanager
+    def cycle_shared_cash_scope(self) -> Iterator[None]:
+        """Track per-(venue, quote) BUY quote commitments across simultaneous intents within one cycle."""
+        prev_caps = getattr(self, "_cycle_quote_caps", None)
+        prev_bal = getattr(self, "_last_cycle_clamp_balance", None)
+        prev_freed = getattr(self, "_active_intent_freed_buy_quote", 0.0)
+        self._cycle_quote_caps = {}
+        self._last_cycle_clamp_balance = None
+        self._active_intent_freed_buy_quote = 0.0
+        try:
+            yield
+        finally:
+            self._cycle_quote_caps = prev_caps
+            self._last_cycle_clamp_balance = prev_bal
+            self._active_intent_freed_buy_quote = prev_freed
+
+    @staticmethod
+    def _resolve_cycle_quote_key(inst: Any) -> Optional[Tuple[str, str]]:
+        provider = getattr(inst, "_provider", None)
+        raw_venue = getattr(inst, "provider_name", None) or (getattr(provider, "name", None) if provider is not None else "")
+        venue_l = normalize_venue_name(str(raw_venue or ""))
+        raw_sym = getattr(inst, "symbol", "")
+        raw_base, raw_quote = getattr(inst, "base", None), getattr(inst, "quote", None)
+        _, quote_asset = resolve_assets(
+            str(raw_sym or ""),
+            raw_base if isinstance(raw_base, str) else None,
+            raw_quote if isinstance(raw_quote, str) else None,
+        )
+        return (venue_l, quote_asset.upper()) if (venue_l and quote_asset) else None
+
+    @staticmethod
+    def _sum_canceled_buy_quote(canceled_order_snapshots: List[Dict[str, Any]]) -> float:
+        total = 0.0
+        for snap in canceled_order_snapshots:
+            if not isinstance(snap, dict) or extract_order_side(snap) != "BUY":
+                continue
+            px = extract_order_price(snap, default=0.0) or 0.0
+            qty = extract_remaining_qty(snap)
+            if px > 0.0 and qty is not None and qty > 0.0:
+                total += px * qty
+        return total
+
+    def _commit_cycle_quote_spend(self, decision: str, committed_usd: float) -> None:
+        cycle_caps = getattr(self, "_cycle_quote_caps", None)
+        if not isinstance(cycle_caps, dict) or str(decision or "").strip().upper() != "BUY":
+            return
+        bal_info = getattr(self, "_last_cycle_clamp_balance", None)
+        if not isinstance(bal_info, dict) or committed_usd <= 0.0:
+            return
+        ven = bal_info.get("venue")
+        asset = bal_info.get("asset")
+        pre_bal = safe_nonneg_float(bal_info.get("balance"), default=None)
+        if ven and asset and pre_bal is not None:
+            cycle_caps[(str(ven), str(asset).upper())] = max(0.0, pre_bal - committed_usd)
 
     def load_all_intents(self) -> List[Dict[str, Any]]:
         """Loads all intents from the durable JSON queue with `.previous` crash recovery."""
@@ -390,6 +451,24 @@ class AutonomousIntentGateway:
         desired_usd: float,
     ) -> Tuple[bool, float, str]:
         """Clamp desired USD notional to real spot wallet liquidity via unified SSOT in providers.quantity."""
+        cycle_caps = getattr(self, "_cycle_quote_caps", None)
+        if isinstance(cycle_caps, dict) and str(decision or "").strip().upper() == "BUY":
+            max_q: Optional[float] = None
+            if (q_key := self._resolve_cycle_quote_key(inst)) is not None and q_key in cycle_caps:
+                freed_q = safe_nonneg_float(getattr(self, "_active_intent_freed_buy_quote", 0.0), default=0.0) or 0.0
+                max_q = cycle_caps[q_key] + freed_q
+            bal_info: Dict[str, Any] = {}
+            res = clamp_notional_to_wallet_balance(
+                inst,
+                decision,
+                price,
+                desired_usd,
+                min_notional_usd=self.min_notional_usd,
+                max_quote_balance=max_q,
+                effective_balance_out=bal_info,
+            )
+            self._last_cycle_clamp_balance = bal_info if bal_info else None
+            return res
         return clamp_notional_to_wallet_balance(
             inst,
             decision,
@@ -1008,41 +1087,53 @@ class AutonomousIntentGateway:
     ) -> Tuple[bool, bool, float, str]:
         """Clamp notional to live wallet balance, canceling bot-owned locking orders on enforce when needed."""
         requested_effective_usd = effective_usd
-        guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-            inst, decision, price, requested_effective_usd
+        self._last_cycle_clamp_balance = None
+        prev_freed = getattr(self, "_active_intent_freed_buy_quote", 0.0)
+        self._active_intent_freed_buy_quote = (
+            self._sum_canceled_buy_quote(canceled_order_snapshots)
+            if str(decision or "").strip().upper() == "BUY"
+            else 0.0
         )
-        is_balance_constrained = (
-            (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
-            or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
-        )
-        # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
-        # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
-        if (
-            mode == "enforce"
-            and replace_open
-            and not (cancel_bot_open or target_oids or thesis_cancels_bot_order)
-            and is_balance_constrained
-        ):
-            ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
-                inst,
-                intent,
-                intent_id=intent_id,
-                decision=decision,
-                now_ts=now_ts,
-                canceled_order_snapshots=canceled_order_snapshots,
-                rollback_reason="unlock_cancel_failed",
-                include_bot_orders=True,
-                only_bot_orders=True,
-                extra_intent_key="canceled_bot_open_orders",
-                intents=all_intents,
+        try:
+            guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                inst, decision, price, requested_effective_usd
             )
-            if not ok_unlock:
-                return False, guard_allowed, effective_usd, guard_reason
-            if unlocked_ids:
-                guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
-                    inst, decision, price, requested_effective_usd
+            is_balance_constrained = (
+                (not guard_allowed and "insufficient free" in str(guard_reason or "").lower())
+                or (guard_allowed and effective_usd < requested_effective_usd * 0.95)
+            )
+            # Only same-side resting orders lock the asset this intent spends (quote for BUY, base for SELL);
+            # opposite-side orders (trailing stops, take-profits, SL) free nothing and must stay active.
+            if (
+                mode == "enforce"
+                and replace_open
+                and not (cancel_bot_open or target_oids or thesis_cancels_bot_order)
+                and is_balance_constrained
+            ):
+                ok_unlock, unlocked_ids = self._cancel_prior_orders_or_abort(
+                    inst,
+                    intent,
+                    intent_id=intent_id,
+                    decision=decision,
+                    now_ts=now_ts,
+                    canceled_order_snapshots=canceled_order_snapshots,
+                    rollback_reason="unlock_cancel_failed",
+                    include_bot_orders=True,
+                    only_bot_orders=True,
+                    extra_intent_key="canceled_bot_open_orders",
+                    intents=all_intents,
                 )
-        return True, guard_allowed, effective_usd, guard_reason
+                if not ok_unlock:
+                    return False, guard_allowed, effective_usd, guard_reason
+                if unlocked_ids:
+                    if str(decision or "").strip().upper() == "BUY":
+                        self._active_intent_freed_buy_quote = self._sum_canceled_buy_quote(canceled_order_snapshots)
+                    guard_allowed, effective_usd, guard_reason = self._clamp_notional_to_wallet_balance(
+                        inst, decision, price, requested_effective_usd
+                    )
+            return True, guard_allowed, effective_usd, guard_reason
+        finally:
+            self._active_intent_freed_buy_quote = prev_freed
 
     def _record_advisory_guard_overrides(
         self,
@@ -1230,7 +1321,7 @@ class AutonomousIntentGateway:
             target_qty = effective_usd / price if effective_usd > 0 else 0.0
 
             if mode == "shadow":
-                return record_shadow_intent_observation(
+                shadow_res = record_shadow_intent_observation(
                     inst,
                     intent,
                     decision=decision,
@@ -1247,6 +1338,9 @@ class AutonomousIntentGateway:
                     dispatch_notify_fn=self._dispatch_notify,
                     log=logger,
                 )
+                if guard_allowed:
+                    self._commit_cycle_quote_spend(decision, effective_usd)
+                return shadow_res
 
             if mode != "enforce":
                 logger.info("[LLM TRADER] Gateway mode is %r \u2014 skipping execution for intent %s", mode, intent_id)
@@ -1285,6 +1379,7 @@ class AutonomousIntentGateway:
             last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
             if res_intent.get("execution_payload"):
                 preempt_tx.commit()
+                self._commit_cycle_quote_spend(decision, effective_usd)
             elif last_hist.get("category") == "deferred":
                 preempt_tx.mark_deferred()
             elif last_hist.get("submission_state") == "unknown" or last_hist.get("reason") == "submit_ambiguous":
@@ -1412,24 +1507,25 @@ class AutonomousIntentGateway:
         instruments_map = self.load_tradable_instruments() or None
 
         processed: List[Dict[str, Any]] = []
-        for idx in pending_indices:
-            item = intents[idx]
-            prev_st = str(item.get("status") or "").strip().upper()
-            item["status"] = "PENDING_EXECUTION"
-            if not upsert_durable_intent(self.intents_file, item, reconcile_fn=self.reconcile_intents, log=logger):
-                continue
-            if prev_st == "PENDING_EXECUTION":
-                item["_resume_reconcile_cid"] = True
-            raw_cap = item.get("max_mode")
-            item_mode = (
-                min(self.mode, _normalize_max_mode(raw_cap), key=lambda m: MODE_RANK.get(m, 0))
-                if raw_cap is not None
-                else self.mode
-            )
-            updated = self.process_intent(item, instruments_map=instruments_map, mode=item_mode)
-            intents[idx] = updated
-            processed.append(updated)
-            upsert_durable_intent(self.intents_file, updated, reconcile_fn=self.reconcile_intents, log=logger)
+        with self.cycle_shared_cash_scope():
+            for idx in pending_indices:
+                item = intents[idx]
+                prev_st = str(item.get("status") or "").strip().upper()
+                item["status"] = "PENDING_EXECUTION"
+                if not upsert_durable_intent(self.intents_file, item, reconcile_fn=self.reconcile_intents, log=logger):
+                    continue
+                if prev_st == "PENDING_EXECUTION":
+                    item["_resume_reconcile_cid"] = True
+                raw_cap = item.get("max_mode")
+                item_mode = (
+                    min(self.mode, _normalize_max_mode(raw_cap), key=lambda m: MODE_RANK.get(m, 0))
+                    if raw_cap is not None
+                    else self.mode
+                )
+                updated = self.process_intent(item, instruments_map=instruments_map, mode=item_mode)
+                intents[idx] = updated
+                processed.append(updated)
+                upsert_durable_intent(self.intents_file, updated, reconcile_fn=self.reconcile_intents, log=logger)
 
         return processed
 

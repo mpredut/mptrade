@@ -5377,6 +5377,158 @@ def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(
     assert '`urgency:"NORMAL"`' in full_p and '`urgency:"NORMAL"`' in comp_p
 
 
+def test_simultaneous_buys_share_cycle_venue_quote_cash_budget(tmp_path):
+    """Simultaneous BUYs on the same (venue, quote) within one cycle share a cumulative quote cap without double-deducting live balance refreshes."""
+    from orchestratorOS.lib.technical_repair_ssot import submit_supervisor_trading_decisions
+
+    ws = tmp_path / "ws"
+    (ws / "cachedb").mkdir(parents=True)
+    (ws / "order_guard.conf").write_text(
+        "autonomous_trading_mode = enforce\n"
+        "autonomous_trading_min_notional_usd = 10.0\n"
+        "autonomous_trading_max_notional_usd = 2000.0\n"
+        "autonomous_trading_min_confidence = 0.85\n"
+        "autonomous_trading_notify = 0\n",
+        encoding="utf-8",
+    )
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb", mode="enforce")
+
+    def _make_inst(venue: str, sym: str, base: str, quote: str, px: float, bal_box: dict):
+        inst = MagicMock()
+        inst.symbol = sym
+        inst.provider_name = venue
+        inst.base = base
+        inst.quote = quote
+        inst._provider = MagicMock()
+        inst._provider.name = venue
+        inst._provider.free_balance.side_effect = lambda asset: bal_box.get(str(asset).upper(), 0.0)
+        inst._provider.get_open_orders.return_value = []
+        inst._provider.get_orders.return_value = []
+        inst.open_orders.return_value = []
+        inst.cancel_order.return_value = True
+        inst.get_price.return_value = px
+
+        def _place(**kwargs):
+            if bal_box.get("_live_deduct"):
+                bal_box[quote] = max(0.0, bal_box[quote] - float(kwargs.get("qty", 0.0)) * float(kwargs.get("price", px)))
+            return {"orderId": f"oid_{sym}_{int(kwargs.get('price', px) * 100)}", "status": "NEW"}
+
+        inst.place.side_effect = _place
+        return inst
+
+    # 1. Stale balance cache ($2000 stays static across back-to-back calls):
+    #    BUY #1 BTC $1500 executes, BUY #2 ARB $1500 clamps to ~$499 (500 * 0.998), BUY #3 ADA $500 is blocked;
+    #    meanwhile Hyperliquid BUY $1200 uses its own independent venue quote cash unaffected by Binance spend.
+    bn_bal_stale = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0, "ADA": 0.0}
+    hl_bal_stale = {"USDC": 1500.0, "HYPE": 0.0}
+    btc_inst = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_stale)
+    arb_inst = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_stale)
+    ada_inst = _make_inst("binance", "ADAUSDC", "ADA", "USDC", 0.15, bn_bal_stale)
+    hype_inst = _make_inst("hyperliquid", "HYPEUSDC", "HYPE", "USDC", 60.0, hl_bal_stale)
+    inst_map = {
+        ("binance", "BTCUSDC"): btc_inst,
+        ("binance", "ARBUSDC"): arb_inst,
+        ("binance", "ADAUSDC"): ada_inst,
+        ("hyperliquid", "HYPEUSDC"): hype_inst,
+    }
+    gw.resolve_instrument = lambda sym, venue=None, instruments_map=None: inst_map[(str(venue).lower(), str(sym).upper())]
+    gw._get_live_price = lambda inst: inst.get_price()
+
+    plan_stale = {
+        "market_trading_decisions": [
+            {"decision": "BUY", "venue": "binance", "symbol": "BTCUSDC", "order_type": "LIMIT", "limit_price": 59900.0, "target_px": 62000.0, "invalidation_px": 58500.0, "confidence": 0.92, "suggested_notional_usd": 1500.0, "thesis": "BTC dip"},
+            {"decision": "BUY", "venue": "binance", "symbol": "ARBUSDC", "order_type": "LIMIT", "limit_price": 0.1095, "target_px": 0.1160, "invalidation_px": 0.1050, "confidence": 0.91, "suggested_notional_usd": 1500.0, "thesis": "ARB dip"},
+            {"decision": "BUY", "venue": "binance", "symbol": "ADAUSDC", "order_type": "LIMIT", "limit_price": 0.1490, "target_px": 0.1580, "invalidation_px": 0.1440, "confidence": 0.90, "suggested_notional_usd": 500.0, "thesis": "ADA dip"},
+            {"decision": "BUY", "venue": "hyperliquid", "symbol": "HYPEUSDC", "order_type": "LIMIT", "limit_price": 59.5, "target_px": 63.0, "invalidation_px": 57.5, "confidence": 0.92, "suggested_notional_usd": 1200.0, "thesis": "HYPE dip"},
+        ]
+    }
+    _, _, emitted_stale, _, any_exec = submit_supervisor_trading_decisions(
+        plan_stale,
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert any_exec is True
+    assert len(emitted_stale) == 4
+    by_sym_stale = {e["symbol"]: e for e in emitted_stale}
+    assert by_sym_stale["BTCUSDC"]["status"] == "EXECUTED" and by_sym_stale["BTCUSDC"]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    assert by_sym_stale["ARBUSDC"]["status"] == "EXECUTED" and by_sym_stale["ARBUSDC"]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
+    assert by_sym_stale["ADAUSDC"]["status"] == "BLOCKED_BY_GUARD"
+    assert by_sym_stale["HYPEUSDC"]["status"] == "EXECUTED" and by_sym_stale["HYPEUSDC"]["clamped_notional_usd"] == pytest.approx(1200.0, abs=0.05)
+    ada_inst.place.assert_not_called()
+
+    # 2. Live balance refresh between BUY #1 and BUY #2 must NOT double-deduct:
+    #    $2000 -> live drops to $500 after BUY #1 -> BUY #2 still gets ~$499 (not $0).
+    gw2 = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb", mode="enforce")
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_live = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0, "_live_deduct": True}
+    btc_live = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_live)
+    arb_live = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_live)
+    live_map = {("binance", "BTCUSDC"): btc_live, ("binance", "ARBUSDC"): arb_live}
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: live_map[(str(venue).lower(), str(sym).upper())]
+    gw2._get_live_price = lambda inst: inst.get_price()
+
+    _, _, emitted_live, _, _ = submit_supervisor_trading_decisions(
+        {"market_trading_decisions": plan_stale["market_trading_decisions"][:2]},
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert emitted_live[0]["status"] == "EXECUTED" and emitted_live[0]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    assert emitted_live[1]["status"] == "EXECUTED" and emitted_live[1]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
+
+    # 3. Replacing a resting BUY order in BUY #2 credits its freed quote notional cleanly; shadow mode enforces identical cap.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    bn_bal_rep = {"USDC": 2000.0, "BTC": 0.0, "ARB": 0.0}
+    btc_rep = _make_inst("binance", "BTCUSDC", "BTC", "USDC", 60000.0, bn_bal_rep)
+    arb_rep = _make_inst("binance", "ARBUSDC", "ARB", "USDC", 0.11, bn_bal_rep)
+    arb_rep.open_orders.return_value = [
+        {"orderId": "old_arb_1", "clientOrderId": "AI_intent_1_buy_arbusdc", "side": "BUY", "price": "0.10", "origQty": "9000", "executedQty": "0"}
+    ]
+    rep_map = {("binance", "BTCUSDC"): btc_rep, ("binance", "ARBUSDC"): arb_rep}
+    gw2.resolve_instrument = lambda sym, venue=None, instruments_map=None: rep_map[(str(venue).lower(), str(sym).upper())]
+    plan_rep = {
+        "market_trading_decisions": [
+            plan_stale["market_trading_decisions"][0],
+            {**plan_stale["market_trading_decisions"][1], "replace_open_orders": True, "suggested_notional_usd": 1200.0},
+        ]
+    }
+    _, _, emitted_rep, _, _ = submit_supervisor_trading_decisions(
+        plan_rep,
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="enforce",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert emitted_rep[0]["status"] == "EXECUTED" and emitted_rep[0]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    # Remaining $500 + $900 canceled ARB BUY = $1400 cap -> full $1200 replacement fits cleanly!
+    assert emitted_rep[1]["status"] == "EXECUTED" and emitted_rep[1]["clamped_notional_usd"] == pytest.approx(1200.0, abs=0.05)
+
+    # 4. Shadow mode also clamps simultaneous BUYs sharing venue cash.
+    (ws / "cachedb" / "autonomous_trade_intents.json").unlink(missing_ok=True)
+    arb_rep.open_orders.return_value = []
+    _, _, emitted_sh, _, _ = submit_supervisor_trading_decisions(
+        {"market_trading_decisions": plan_stale["market_trading_decisions"][:2]},
+        topic_spec("auto_cryptotrade_executor"),
+        topic_key="auto_cryptotrade_executor",
+        mode="shadow",
+        now_ts=time.time(),
+        intent_gateway=gw2,
+        is_rth_open_fn=lambda _: True,
+    )
+    assert emitted_sh[0]["status"] == "OBSERVED_SHADOW" and emitted_sh[0]["clamped_notional_usd"] == pytest.approx(1500.0, abs=0.05)
+    assert emitted_sh[1]["status"] == "OBSERVED_SHADOW" and emitted_sh[1]["clamped_notional_usd"] == pytest.approx(499.0, abs=1.5)
+
+
+
 
 
 

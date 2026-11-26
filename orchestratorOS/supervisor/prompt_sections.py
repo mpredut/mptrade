@@ -2055,18 +2055,30 @@ def _format_open_limit_orders_table(
                 linked_plan_indices.add(best_p_idx)
                 pl = active_plans[best_p_idx]
                 linked_plan_by_order_idx[o_idx] = pl
+                t_px_v = safe_pos_float(pl.get("target_px"), default=None)
+                i_px_v = safe_pos_float(pl.get("invalidation_px"), default=None)
+                t_dist = (
+                    round(((t_px_v - o_px) / o_px) * 100.0, 2)
+                    if (o_px is not None and t_px_v is not None)
+                    else pl.get("target_dist_pct")
+                )
+                i_dist = (
+                    round(((i_px_v - o_px) / o_px) * 100.0, 2)
+                    if (o_px is not None and i_px_v is not None)
+                    else pl.get("invalidation_dist_pct")
+                )
                 t_s = (
-                    f"{pl['target_px']}({fmt_signed(pl.get('target_dist_pct'))}%)"
-                    if pl.get("target_px") is not None and pl.get("target_dist_pct") is not None
+                    f"{pl['target_px']}({fmt_signed(t_dist)}%)"
+                    if pl.get("target_px") is not None and t_dist is not None
                     else (str(pl.get("target_px")) if pl.get("target_px") is not None else "-")
                 )
                 i_s = (
-                    f"{pl['invalidation_px']}({fmt_signed(pl.get('invalidation_dist_pct'))}%)"
-                    if pl.get("invalidation_px") is not None and pl.get("invalidation_dist_pct") is not None
+                    f"{pl['invalidation_px']}({fmt_signed(i_dist)}%)"
+                    if pl.get("invalidation_px") is not None and i_dist is not None
                     else (str(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
                 )
                 rr_cur = _compute_order_plan_rr(o_px, o_side, pl.get("target_px"), pl.get("invalidation_px"))
-                rr_sfx = f" RR={rr_cur:.2f}x" if rr_cur is not None else ""
+                rr_sfx = f" RR@limit={rr_cur:.2f}x" if rr_cur is not None else ""
                 st_lbl = str(pl.get("status") or "ACTIVE")
                 plan_by_order_idx[o_idx] = f"{t_s}/{i_s}{rr_sfx} [{st_lbl}]"
 
@@ -2562,8 +2574,9 @@ def _format_portfolio_section(
                 id_s = f" ({fmt_signed(id_v)}% {anc_lbl})" if id_v is not None else ""
                 p_parts.append(f"invalidation={pl['invalidation_px']}{id_s}")
             anc_px = pl.get("entry_px") if is_lim_anc else pl.get("spot_px")
+            rr_lbl = "RR@limit" if is_lim_anc else "RR@spot"
             if (rr_u := _compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
-                p_parts.append(f"RR={rr_u:.2f}x")
+                p_parts.append(f"{rr_lbl}={rr_u:.2f}x")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
             meta_p = [ord_st]
             if not is_lim_anc and pl.get("spot_px") is not None:

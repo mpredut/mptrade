@@ -1008,17 +1008,61 @@ def test_cycle14_section0_recent_order_new_fill_rules_parity_and_active_plan_rr_
     assert "Audit `open_limit_orders` (`Dist`, `Fill1h`)" in rules_eq
     assert "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`)" in rules_eq
 
-    # 3. PROMPT_ACTIVE_PLAN_RR_MATH validates unlinked FILLED & RESTING plans symmetrically.
+    # 3. PROMPT_ACTIVE_PLAN_RR_MATH validates unlinked FILLED & RESTING plans symmetrically (explicit @spot/@limit and legacy bare RR=).
     good_plans = (
-        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+2.12% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR=0.75x [ACTIVE]\n"
-        "    - [t212] NVDA_US_EQ SELL@155.0 (RESTING, age=1.0h): target=145.0 (-6.45% vs_limit), invalidation=160.0 (+3.23% vs_limit), RR=2.00x [ACTIVE]\n"
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+2.12% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR@spot=0.75x [ACTIVE]\n"
+        "    - [t212] NVDA_US_EQ SELL@155.0 (RESTING, age=1.0h): target=145.0 (-6.45% vs_limit), invalidation=160.0 (+3.23% vs_limit), RR@limit=2.00x [ACTIVE]\n"
     )
     assert audit_rendered_prompt_text(good_plans) == []
     bad_plan_rr = (
-        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+5.00% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR=1.99x [ACTIVE]\n"
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+5.00% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR@spot=1.99x [ACTIVE]\n"
     )
     bad_vs = [v for v in audit_rendered_prompt_text(bad_plan_rr) if v.code == "PROMPT_ACTIVE_PLAN_RR_MATH"]
     assert len(bad_vs) == 2
+    bad_anchor_tag = (
+        "    - [binance] ARBUSDC BUY@0.1125 (FILLED, spot=0.1132, age=0.4h): target=0.1156 (+2.12% vs_spot), invalidation=0.11 (-2.83% vs_spot), RR@limit=0.75x [ACTIVE]\n"
+    )
+    bad_anc_vs = [v for v in audit_rendered_prompt_text(bad_anchor_tag) if v.code == "PROMPT_ACTIVE_PLAN_RR_MATH"]
+    assert len(bad_anc_vs) == 1 and "rr_anchor" in bad_anc_vs[0].subject
+
+    # 4. Linked open-order plan aligns dist% and RR@limit= to displayed exchange order price o_px even after an amend drift.
+    from orchestratorOS.supervisor.prompt_sections import _format_open_limit_orders_table
+
+    oo_amended_lines = "\n".join(
+        _format_open_limit_orders_table(
+            [
+                {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "price": 60000.0,
+                    "qty": 0.01,
+                    "filled_qty": 0.0,
+                    "order_id": "202",
+                    "actor": "AI",
+                    "age": "0.5h",
+                    "dist_from_spot_pct": -0.5,
+                    "fill_prob_1h_pct": 40,
+                }
+            ],
+            active_plans=[
+                {
+                    "venue": "binance",
+                    "symbol": "BTCUSDC",
+                    "side": "BUY",
+                    "order_state": "RESTING",
+                    "entry_px": 59500.0,
+                    "target_px": 61200.0,
+                    "target_dist_pct": 2.86,
+                    "invalidation_px": 58800.0,
+                    "invalidation_dist_pct": -1.18,
+                    "status": "ACTIVE",
+                }
+            ],
+        )
+    )
+    assert "61200.0(+2.00%)/58800.0(-2.00%) RR@limit=1.00x [ACTIVE]" in oo_amended_lines
+    assert audit_rendered_prompt_text(oo_amended_lines) == []
 
 
 def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> None:
@@ -1200,7 +1244,7 @@ def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> No
         "    - [kraken] SPCXxUSD: free_SPCXx=10.0 ($1298.50 USD), px=129.85, avg_cost=134.84 (pnl_vs_cost=-3.70%), limits(max_buy=$0.0, max_sell=$1298.5)\n"
         "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
         "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -1.00% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR=2.00x [ACTIVE] | - |\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -1.00% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR@limit=2.00x [ACTIVE] | - |\n"
         "    - [kraken] SPCXxUSD: qty=10.0, cost=$1348.40, avg_cost=134.84, pnl_vs_cost=-3.70%\n"
         "  * Kraken xStocks: SPCX=$128.95, EXT_CLOSE, xstock_vs_underlying=+0.70%\n"
         "### 3. TRADABLE MARKETS:\n"
@@ -1222,7 +1266,7 @@ def test_full_mathematical_audit_snapshot_and_rendered_prompt_invariants() -> No
         "    - [kraken] SPCXxUSD: free_SPCXx=10.0 ($1298.50 USD), px=129.85, avg_cost=134.84 (pnl_vs_cost=-3.70%), limits(max_buy=$0.0, max_sell=$1298.5)\n"
         "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |\n"
         "    |---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
-        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -5.50% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR=2.00x [ACTIVE] | - |\n"
+        "    | binance | BTCUSDC | BUY | 59400.0 | 0.01 | 0 | 1 | AI | 1.0h | -5.50% | 20% | 60600.0(+2.02%)/58800.0(-1.01%) RR@limit=2.00x [ACTIVE] | - |\n"
         "    - [kraken] SPCXxUSD: qty=10.0, cost=$1348.40, avg_cost=141.00, pnl_vs_cost=-3.70%\n"
         "  * Kraken xStocks: SPCX=$128.95, EXT_CLOSE, xstock_vs_underlying=+4.20%\n"
         "### 3. TRADABLE MARKETS:\n"

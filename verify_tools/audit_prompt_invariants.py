@@ -91,7 +91,7 @@ _OPEN_ORDER_ROW_RE = re.compile(
 )
 _DIST_PCT_CELL_RE = re.compile(r"^([+-]?[0-9.]+)%$")
 _FILLED_REM_RE = re.compile(r"^([0-9.]+)\(rem=([0-9.]+)\)$")
-_PLAN_RR_RE = re.compile(r"([0-9.]+)(?:\([^)]*\))?/([0-9.]+)(?:\([^)]*\))?\s+RR=([0-9.]+)x")
+_PLAN_RR_RE = re.compile(r"([0-9.]+)(?:\([^)]*\))?/([0-9.]+)(?:\([^)]*\))?\s+RR(?:@limit)?=([0-9.]+)x")
 _FRONT_RUN_RR_RE = re.compile(r"front_run=([0-9.]+)\(RR=([0-9.]+)x\)")
 _ACTIVE_PLAN_LINE_RE = re.compile(
     r"^\s*-\s*\[([a-z0-9_]+)\]\s+([A-Za-z0-9_]+)\s+(BUY|SELL)@([0-9.]+)\s*\(([^)]+)\):\s*(.+)$",
@@ -100,7 +100,7 @@ _ACTIVE_PLAN_LINE_RE = re.compile(
 _ACTIVE_PLAN_SPOT_RE = re.compile(r"\bspot=([0-9.]+)")
 _ACTIVE_PLAN_TGT_RE = re.compile(r"\btarget=([0-9.]+)(?:\s*\(([+-]?[0-9.]+)%\s*(vs_spot|vs_limit)\))?")
 _ACTIVE_PLAN_INV_RE = re.compile(r"\binvalidation=([0-9.]+)(?:\s*\(([+-]?[0-9.]+)%\s*(vs_spot|vs_limit)\))?")
-_ACTIVE_PLAN_RR_RE = re.compile(r"\bRR=([0-9.]+)x\b")
+_ACTIVE_PLAN_RR_RE = re.compile(r"\bRR(?:@(spot|limit))?=([0-9.]+)x\b")
 _VENUE_CASH_BD_RE = re.compile(r"\b([a-z0-9_]+)\s+([A-Z]+)=\$([0-9,]+\.?\d*)\s*\(([^)]+)\)")
 _COMPACT_USD_MULT: dict[str, float] = {"K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}
 _OB_MID_RE = re.compile(r"ob_mid=([0-9.]+)")
@@ -1140,7 +1140,17 @@ def audit_rendered_prompt_text(
                             )
                         )
             if tgt_p is not None and inv_p is not None and (m_rrp := _ACTIVE_PLAN_RR_RE.search(body_p)) is not None:
-                rep_rrp = safe_nonneg_float(m_rrp.group(1), default=None)
+                rr_anc_tag = m_rrp.group(1)
+                exp_anc_tag = "limit" if is_resting_p else "spot"
+                if rr_anc_tag is not None and rr_anc_tag != exp_anc_tag:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_ACTIVE_PLAN_RR_MATH",
+                            f"{ven_p}:{sym_p}:rr_anchor",
+                            f"active plan RR@{rr_anc_tag} mismatches order_state (expected RR@{exp_anc_tag})",
+                        )
+                    )
+                rep_rrp = safe_nonneg_float(m_rrp.group(2), default=None)
                 rew_p = (tgt_p - anc_p) if side_p == "BUY" else (anc_p - tgt_p)
                 rsk_p = (anc_p - inv_p) if side_p == "BUY" else (inv_p - anc_p)
                 if rep_rrp is not None and rsk_p > 0.0:
@@ -1150,7 +1160,7 @@ def audit_rendered_prompt_text(
                             InvariantViolation(
                                 "PROMPT_ACTIVE_PLAN_RR_MATH",
                                 f"{ven_p}:{sym_p}",
-                                f"active plan RR={rep_rrp:.2f}x != expected {exp_rrp:.2f}x (anc={anc_p}, tgt={tgt_p}, inv={inv_p})",
+                                f"active plan RR@{exp_anc_tag}={rep_rrp:.2f}x != expected {exp_rrp:.2f}x (anc={anc_p}, tgt={tgt_p}, inv={inv_p})",
                             )
                         )
 

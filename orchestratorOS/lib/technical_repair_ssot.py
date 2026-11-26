@@ -10,6 +10,7 @@ Centralizes:
 from __future__ import annotations
 
 import configparser
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import os
@@ -2100,12 +2101,14 @@ def submit_supervisor_trading_decisions(
             )
         effective_max_mode = "shadow"
     any_executed = False
-    for dec in submit_decs:
-        dec_payload = {**dec, "model_used": clean_model_used} if clean_model_used else dec
-        if isinstance(emitted := intent_gateway.submit(dec_payload, source=topic_key, max_mode=effective_max_mode), dict):
-            intents_emitted.append(emitted)
-            if effective_max_mode == "enforce" and emitted.get("status") in ("EXECUTED", "CANCELED", "CANCEL_PARTIAL"):
-                any_executed = True
+    scope_fn = getattr(intent_gateway, "cycle_shared_cash_scope", None)
+    with (scope_fn() if callable(scope_fn) else contextlib.nullcontext()):
+        for dec in submit_decs:
+            dec_payload = {**dec, "model_used": clean_model_used} if clean_model_used else dec
+            if isinstance(emitted := intent_gateway.submit(dec_payload, source=topic_key, max_mode=effective_max_mode), dict):
+                intents_emitted.append(emitted)
+                if effective_max_mode == "enforce" and emitted.get("status") in ("EXECUTED", "CANCELED", "CANCEL_PARTIAL"):
+                    any_executed = True
     return decisions_list, market_decision, intents_emitted, (intents_emitted[0] if intents_emitted else None), any_executed
 
 
