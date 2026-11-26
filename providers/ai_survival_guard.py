@@ -1869,7 +1869,7 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             a_n = safe_nonneg_int(sc.get("ACTIVE"), default=0)
             res_by_side[sk] = t_n + i_n
             if (t_n + i_n + e_n + a_n) > 0:
-                side_parts.append(f"{sk}:{t_n}T/{i_n}I/{e_n}E/{a_n}A")
+                side_parts.append(f"{sk}:{t_n}hit/{i_n}inv/{e_n}early/{a_n}open")
         hit_r = safe_float(calibration.get("resolved_hit_rate_pct"), default=None)
         if hit_r is not None:
             b_res, s_res = res_by_side.get("BUY", 0), res_by_side.get("SELL", 0)
@@ -1898,16 +1898,16 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             lim_s = safe_float(vt.get("avg_limit_slippage_bps"), default=None)
             arr_s = safe_float(vt.get("avg_arrival_shortfall_bps"), default=None)
             if lim_s is not None:
-                lim_hdr += f" slip={fmt_signed(lim_s, 1)}bps"
+                lim_hdr += f" slip_bps={fmt_signed(lim_s, 1)}"
             if arr_s is not None:
-                lim_hdr += f" arr={fmt_signed(arr_s, 1)}bps"
+                lim_hdr += f" arr_bps={fmt_signed(arr_s, 1)}"
             unf_off = safe_float(vt.get("med_unfilled_offset_bps"), default=None)
             if lim_u >= 3 and unf_off is not None:
-                lim_hdr += f" unf_off={fmt_signed(unf_off, 0)}bps"
+                lim_hdr += f" unfilled_off_bps={fmt_signed(unf_off, 0)}"
             v_bits.append(lim_hdr)
         if mkt_f > 0:
             mkt_s = safe_float(vt.get("avg_market_slippage_bps"), default=None)
-            mkt_hdr = f"MKT {mkt_f}" + (f" slip={fmt_signed(mkt_s, 1)}bps" if mkt_s is not None else "")
+            mkt_hdr = f"MKT {mkt_f}" + (f" slip_bps={fmt_signed(mkt_s, 1)}" if mkt_s is not None else "")
             v_bits.append(mkt_hdr)
         if v_bits:
             venue_parts.append(f"{ven}: {' | '.join(v_bits)}")
@@ -1936,7 +1936,7 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
             lbl = clean_scalar_str(bkt.get("label")) or default_lbl
             off_parts.append(f"{lbl}:{b_fr:.0f}%[{b_f}/{b_t}]")
         if off_parts and off_tot >= 5 and off_unf >= 1:
-            segments.append(f"lim_off({', '.join(off_parts)})")
+            segments.append(f"fill_by_offset({', '.join(off_parts)})")
 
     if not segments:
         return ""

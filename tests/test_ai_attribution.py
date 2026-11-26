@@ -811,7 +811,7 @@ def test_faza4_closed_loop_calibration_feedback_and_section_3c_prompt():
 
     cal_line = format_ai_calibration_feedback_line(cal_crypto)
     assert cal_line.startswith("AI Execution & Plan Calibration (7d): ")
-    assert "plans=2 (BUY:1T/0I/0E/0A, SELL:0T/1I/0E/0A, hit=50%)" in cal_line
+    assert "plans=2 (BUY:1hit/0inv/0early/0open, SELL:0hit/1inv/0early/0open, hit=50%)" in cal_line
     assert "binance: LIM 2/3[67%]" in cal_line
     assert "kraken: LIM 1" in cal_line
     assert "t212" not in cal_line
@@ -887,7 +887,7 @@ def test_planned_reentry_exit_row_plans_are_evaluated_consistently():
     assert cal["by_side"]["BUY"]["INVALIDATED"] == 1
     assert cal["resolved_hit_rate_pct"] == pytest.approx(50.0)
     line = format_ai_calibration_feedback_line(cal)
-    assert "plans=2 (BUY:0T/1I/0E/0A, SELL:1T/0I/0E/0A, hit=50%)" in line
+    assert "plans=2 (BUY:0hit/1inv/0early/0open, SELL:1hit/0inv/0early/0open, hit=50%)" in line
 
     attr = evaluate_ai_attribution(intents, now_ts=now_s, live_prices=live_px, lookback_days=7.0, scope="crypto")
     plans = attr["trade_plan_calibration"]

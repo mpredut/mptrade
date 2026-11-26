@@ -2292,12 +2292,12 @@ def test_scope_all_off_rth_domain_ages_and_multilot_lifo_reconciliation(temp_cac
     assert vwap_rec == pytest.approx(209.0)
     assert fills["active_avg_buy_px"] == pytest.approx(209.0)
 
-    # Partial 4-lot subset (<90% of held_qty) must not emit misleading Remaining LIFO Avg BUY
+    # Partial 4-lot subset (<90% of held_qty) must not emit misleading lifo_avg
     sub_parts = format_recent_fill_subcycle_parts(
         {"active_avg_buy_px": 220.0, "held_qty": 30.0, "open_lots": fresh_lots[-4:]},
         open_lots=fresh_lots[-4:],
     )
-    assert not any(p.startswith("Remaining LIFO Avg BUY=") for p in sub_parts)
+    assert not any(p.startswith("lifo_avg=") for p in sub_parts)
 
     # UNKNOWN/FAILED orders without explicit executedQty must not pollute recent fills as 0-qty last_sell/last_buy
     assert (

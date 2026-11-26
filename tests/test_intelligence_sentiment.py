@@ -1963,7 +1963,7 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
             "pnl_vs_avg_pct": None,
         }
     )
-    assert "avg_buy_px=100.0 (pnl_vs_avg=5.0%)" in line_with_px
+    assert "avg_cost=100.0 (pnl_vs_cost=5.0%)" in line_with_px
     assert "None%" not in line_with_px
 
     line_without_px = _format_tradable_position_line(
@@ -1980,7 +1980,7 @@ def test_patch_uniqueness_and_news_semantic_cleanup_and_position_pct_fallback(tm
             "pnl_vs_avg_pct": None,
         }
     )
-    assert "avg_buy_px=100.0" in line_without_px
+    assert "avg_cost=100.0" in line_without_px
     assert "None%" not in line_without_px
 
 
@@ -2283,8 +2283,8 @@ def test_subcycle_lifo_pnl_reset_open_order_deep_passive_and_cycle_wallet_sync(m
             "dd_from_peak_pct": -5.99,
         }
     )
-    assert "avg_buy_px=91.209992" in pos_line
-    assert "trail_peak=" not in pos_line
+    assert "avg_cost=91.209992" in pos_line
+    assert "peak_px=" not in pos_line
     assert "tactical_avg_px=" not in pos_line
     assert "last_buy_px=87.267" in pos_line
 
@@ -2937,7 +2937,7 @@ def test_open_lots_lowest_buy_px_geopolitical_deescalation_and_hl_nsigfigs3(monk
             "last_buy_px": 77578.56,
         }
     )
-    assert "avg_buy_px=77959.914388" in btc_pos_line
+    assert "avg_cost=77959.914388" in btc_pos_line
     assert "tactical_avg_px=77590.206667" in btc_pos_line
     assert "swing_avg_px=77376.950854" in btc_pos_line
     assert "last_buy_px=77578.56" in btc_pos_line
@@ -3460,7 +3460,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
         },
         now_ms,
     )
-    assert "Active Cycle Avg BUY=86.861664" in hype_ro_line
+    assert "avg_cost=86.861664" in hype_ro_line
     assert "Swing Sub-Cycle Avg BUY=" not in hype_ro_line
 
     cm_bimodal = build_cross_market_context(
@@ -4128,7 +4128,7 @@ def test_sentiment_advisor_subdomain_cache_dir_pretrade_walls_fills_and_tracebac
     )
     pt_tao_58 = ptc_mod.collect_pretrade_telemetry("TAOUSDC", cachedb_dir=str(cdir_36))
     assert "90s=+0.00125" in pt_tao_58.get("Dynamic Multi-Window Slopes", "")
-    assert "Active Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
+    assert "avg_cost=" in pt_tao_58.get("Recent Venue Fills", "")
     assert "Tactical Sub-Cycle Avg BUY=" in pt_tao_58.get("Recent Venue Fills", "")
     assert "Sub-Cycle LIFO Realized PnL=+$1.00" in pt_tao_58.get("Recent Venue Fills", "")
 
@@ -6565,7 +6565,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     rvf_harvested = pt_harvested.get("Recent Venue Fills", "")
     assert "Last BUY=0.01 @ 77580.0 (by=BOT, lot_harvested)" in rvf_harvested
     assert "Open LIFO Lots=[0.01@77350.0]" in rvf_harvested
-    assert "Active Cycle Avg BUY=77465.0" in rvf_harvested
+    assert "avg_cost=77465.0" in rvf_harvested
 
     (orders_dir / "cache_order_binance.json").write_text(
         json.dumps(
@@ -6620,7 +6620,7 @@ def test_asset_value_inner_timestamp_age_partisan_election_news_filter_and_pretr
     )
     pt_higher_sub = collect_pretrade_telemetry("BTCUSDC", cachedb_dir=str(cdir))
     rvf_higher_sub = pt_higher_sub.get("Recent Venue Fills", "")
-    assert "Active Cycle Avg BUY=" in rvf_higher_sub
+    assert "avg_cost=" in rvf_higher_sub
     assert "Tactical Sub-Cycle Avg BUY=" not in rvf_higher_sub
     assert "Swing Sub-Cycle Avg BUY=" not in rvf_higher_sub
 
@@ -9930,7 +9930,7 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
             ],
         }
     )
-    assert "lifo_rem_avg_px=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_pos_line
+    assert "lifo_avg=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_pos_line
     assert "older_core_qty=" not in nvda_pos_line
 
     nvda_cyc_line = _format_venue_cycle_line(
@@ -9951,7 +9951,7 @@ def test_ai_data_coherence_and_quota_fingerprint_fixes(tmp_path, monkeypatch):
             ],
         },
     )
-    assert "lifo_rem_avg=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_cyc_line
+    assert "lifo_avg=205.816829 (pnl_vs_lifo=+0.55%)" in nvda_cyc_line
 
     btc_pos_line = _format_tradable_position_line(
         {
@@ -10326,7 +10326,7 @@ def test_short_venue_cycle_pnl_symmetry_and_shared_fallback_recent_fills(tmp_pat
 
     fmt_short = _format_venue_cycle_line("hyperliquid", "HYPEUSDC", short_cyc)
     assert "direction=SHORT" in fmt_short
-    assert "pnl_vs_avg=+10.00%" in fmt_short
+    assert "pnl_vs_cost=+10.00%" in fmt_short
     assert "pnl_vs_last_buy=+8.16%" in fmt_short
 
     # Wallet sync preserves SHORT sign when price rises above avg (110 vs 100 -> -10% drawdown).

@@ -778,14 +778,14 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
         lot_base_lbl = p_map.get("base") or canonical_base_asset(str(p_map.get("symbol") or "")) or "BASE"
         anchors: List[Dict[str, Any]] = []
         for px_k, lbl, pct_lbl, pct_k, dedup_keys in (
-            ("active_avg_buy_px", "avg_buy_px", "pnl_vs_avg", "pnl_vs_avg_pct", ()),
+            ("active_avg_buy_px", "avg_cost", "pnl_vs_cost", "pnl_vs_avg_pct", ()),
             ("tactical_avg_buy_px", "tactical_avg_px", "pnl_vs_tactical", "pnl_vs_tactical_avg_pct", ("active_avg_buy_px", "last_buy_px")),
             ("swing_subcycle_avg_px", "swing_avg_px", "pnl_vs_swing", "pnl_vs_swing_avg_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
             ("cycle_avg_cost_px", "cycle_avg_cost", "pnl_vs_cycle_cost", "pnl_vs_cycle_cost_pct", ("active_avg_buy_px",)),
             ("last_buy_px", "last_buy_px", "pnl_vs_last_buy", "pnl_vs_last_buy_pct", ()),
             ("lowest_buy_px", "lowest_buy_px", "pnl_vs_lowest_buy", "pnl_vs_lowest_buy_pct", ("active_avg_buy_px", "tactical_avg_buy_px", "last_buy_px")),
             ("last_sell_px", "last_sell_px", "chg_vs_last_sell", "chg_vs_last_sell_pct", ()),
-            ("trailing_peak", "trail_peak", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
+            ("trailing_peak", "peak_px", "dd_from_peak", "dd_from_peak_pct", ("active_avg_buy_px",)),
         ):
             if p_map.get(px_k) is not None and not any(same_anchor_px(p_map.get(px_k), p_map.get(dk)) for dk in dedup_keys):
                 if (

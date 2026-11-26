@@ -377,13 +377,13 @@ def build_supervisor_prompt(
             "   - SPOT 'LIMIT' EXECUTION (PASSIVE OR NEAR-SPOT): All AI orders submit as `\"order_type\": \"LIMIT\"` (never taker MARKET) to control fill price and capture bid-ask spread "
             "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; explicit near-spot `limit_price` with `urgency: \"NORMAL\"` for momentum entries; `limit_price: null` with `urgency: \"HIGH\"` only for urgent defensive exits/reversals). "
             "Audit `open_limit_orders` (`dist_from_spot_pct` & heuristic `fill_prob_1h_pct` anchored to live spot), "
-            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
+            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr_bps`/`slip_bps` (negative = favorable price improvement), `unfilled_off_bps`, & `fill_by_offset` fill-rate bands: "
             "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
             else (
                 "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: All AI orders submit as post-only `\"order_type\": \"LIMIT\"` (never taker MARKET; gateway re-checks live price and auto-steps 1 tick onto maker book) to capture spread and cut fees (check maker vs taker bps; "
                 "passive `limit_price` at bid/ask walls for swings; explicit live spot/BBO `limit_price` with `urgency: \"NORMAL\"` for breakouts; `limit_price: null` with `urgency: \"HIGH\"` only for urgent defensive exits/reversals). "
-                "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr`/`slip`/`unf_off`/`lim_off` bps: "
+                "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr_bps`/`slip_bps`/`unfilled_off_bps`/`fill_by_offset`: "
                 "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) or wall-trapped (`recommended_front_run_px`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` leaves resting orders untouched.\n"
             )
         )
@@ -442,7 +442,7 @@ def build_supervisor_prompt(
             + "     3) Targeting specific orders with `cancel_order_ids: [...]` cancels only those exact IDs "
             "(standalone `CANCEL` cancels listed AI or bot orders; on `BUY`/`SELL` without `cancel_order_ids`, only same-side orders cancel; if cancel fails, replacement aborts).\n"
             f"   - UNBIASED QUANTITATIVE FREEDOM & DYNAMIC POSITION SIZING: Decide freely WHEN/WHAT/HOW MUCH/WHICH venue ({venue_list_desc}). "
-            f"Cost basis (`avg_buy_px`, `lifo_rem_avg_px`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way {'equities' if is_equities else 'pairs'}: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
+            f"Cost basis (`avg_cost`, `lifo_avg`, `open_lifo_lots`) is informational, NEVER a constraint on 2-way {'equities' if is_equities else 'pairs'}: harvest profitable LIFO tranches or up to `50%\u2013100%` of `value_usd` "
             f"(up to {max_usd:g} USD), OR trim/exit via near-market `LIMIT` even at breakeven or below cost basis on breakdown{xs_exception_sfx}.\n"
             + dip_flow_rule
             + limit_exec_rule

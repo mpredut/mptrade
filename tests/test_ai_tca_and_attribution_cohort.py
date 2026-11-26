@@ -196,8 +196,8 @@ def test_limit_passive_offset_fill_rate_tca_and_section_3c_feedback():
 
     line = format_ai_calibration_feedback_line(cal)
     assert "kraken: LIM 1/4[25%]" in line
-    assert "unf_off=+130bps" in line
-    assert "lim_off(<=40bp:100%[2/2], >100bp:0%[0/3])" in line
+    assert "unfilled_off_bps=+130" in line
+    assert "fill_by_offset(<=40bp:100%[2/2], >100bp:0%[0/3])" in line
 
     rep = evaluate_ai_attribution(intents, now_ts=now_s, scope="crypto")
     assert rep["execution_quality"]["by_venue"]["kraken"]["med_unfilled_offset_bps"] == pytest.approx(130.0)
@@ -246,9 +246,12 @@ def test_equity_bellwethers_strip_synthetic_perp_funding_and_whale_placeholders(
     assert "funding_annualized_pct" not in spcx_bw
     assert spcx_bw["whale_long_pct"] == pytest.approx(0.62)
 
-    # Prompt instructions reference unf_off and lim_off objectively alongside arr/slip
+    # Prompt instructions reference unfilled_off_bps and fill_by_offset objectively alongside arr_bps/slip_bps
     for tk in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
         p_txt = build_supervisor_prompt(SimpleNamespace(), {}, topic_key=tk, max_usd=1000.0)
-        assert "`unf_off` bps, & `lim_off` fill-rate bands" in p_txt
-        assert "negative bps = favorable price improvement" in p_txt
+        assert "`arr_bps`/`slip_bps`" in p_txt
+        assert "`unfilled_off_bps`" in p_txt and "`fill_by_offset`" in p_txt
+        assert "`unf_off`" not in p_txt and "`lim_off`" not in p_txt
+        if tk == "auto_sharetrade_executor":
+            assert "negative = favorable price improvement" in p_txt
 

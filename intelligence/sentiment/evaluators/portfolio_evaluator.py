@@ -463,7 +463,7 @@ def format_recent_fill_subcycle_parts(
     lb_px = _anch(last_buy_px)
     act_avg = _anch(fills.get("active_avg_buy_px"))
     if act_avg is not None and act_avg > 0.0:
-        parts.append(f"Active Cycle Avg BUY={act_avg}")
+        parts.append(f"avg_cost={act_avg}")
         if lots_seq:
             lifo_avg, _, _ = compute_open_lots_vwap(
                 lots_seq,
@@ -474,7 +474,7 @@ def format_recent_fill_subcycle_parts(
                 min_coverage_ratio=0.90 if eff_held_q is not None else 0.0,
             )
             if lifo_avg is not None:
-                parts.append(f"Remaining LIFO Avg BUY={lifo_avg}")
+                parts.append(f"lifo_avg={lifo_avg}")
     tac_avg = _anch(fills.get("tactical_avg_buy_px"))
     if (
         tac_avg is not None

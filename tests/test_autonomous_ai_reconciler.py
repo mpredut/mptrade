@@ -1331,7 +1331,7 @@ def test_harvest_and_synthesize_surfaces_active_avg_buy_tranches_and_open_orders
     reconciler.synthesize_and_diagnose(sensors, reconciler.harvest_log_anomalies(), topic_key="auto_trade_executor")
     assert len(captured_prompts) == 1
     prompt_text = captured_prompts[0]
-    assert "avg_buy_px=255.0" in prompt_text
+    assert "avg_cost=255.0" in prompt_text
     assert "last_buy_px=240.0 (pnl_vs_last_buy=6.25%)" in prompt_text
     assert "Active Open Orders on Exchange (Locking Liquidity)" in prompt_text
     assert "Recent BUY Tranches=[3.0@260.0, 1.0@240.0]" in prompt_text
@@ -2715,7 +2715,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     assert cyc_ada["dd_pct"] == -12.13
     fmt_line = _format_venue_cycle_line("kraken", "ADAUSD", cyc_ada)
     assert "(None)" not in fmt_line
-    assert "dd=-12.13%" in fmt_line
+    assert "pnl_vs_cost=-12.13%" in fmt_line
     assert "realized_pnl=-$3.19" in fmt_line
 
     # 2. Cross-venue isolation: Hyperliquid HYPEUSDC & TAOUSDC do not inherit Kraken's stale trailing_peak
@@ -2799,7 +2799,7 @@ def test_prompt_telemetry_accuracy_and_cross_venue_isolation(tmp_path, monkeypat
     # Hyperliquid HYPEUSDC must NOT have Kraken's 82.23 peak or positive dd_from_peak
     assert "dd_from_peak=13." not in crypto_prompt
     # Hyperliquid TAOUSDC must use its own cycle anchor (248.46) rather than Binance's 241.9
-    assert "[hyperliquid] TAOUSDC: free_TAO=1.0 ($228.5 USD), px=228.5, avg_buy_px=248.46" in crypto_prompt
+    assert "[hyperliquid] TAOUSDC: free_TAO=1.0 ($228.5 USD), px=228.5, avg_cost=248.46" in crypto_prompt
     assert "hyperliquid USDC=$32.50" in crypto_prompt
     # Orderbook wall distance uses ob_mid_price (78.865) instead of mismatched 93.35 (-16%)
     assert "bid_wall=78.39 ($36.0K, dist=-0.60%)" in crypto_prompt
@@ -6078,7 +6078,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     1. Sub-$1 coin (ARBUSDC) slopes, g_coeff, grad_fast/eps scientific notation when < 1e-4.
     2. cvd_15m regime correlated with chg_15m_pct and CVD sign (ask_absorbing vs spot_absorbing vs aggressive_buying vs aggressive_market_dumps).
     3. Section 3B ob_mid display and bid_wall/ask_wall dist anchored to ob_mid.
-    4. Section 3C pnl_vs_avg=+X.XX% when positive vs dd=-X.XX% when negative, plus dd_from_peak on pos_peak.
+    4. Section 3C signed pnl_vs_cost=+/-X.XX%, plus dd_from_peak on peak_px.
     5. build_last_cycle_execution_status preserves active OPEN_RESTING limit orders from earlier cycles on other symbols.
     6. News severity keyword filter strips generic stopwords, publisher names, and substring stem false positives.
     """
@@ -6149,7 +6149,7 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert "bid_wall=77746.99 ($120.0K, dist=+0.00%)" in joined_3b
     assert "cvd_15m=+9.75 BTC (+$758.0K)" in joined_3b
 
-    # 4. Section 3C pnl_vs_avg=+6.89% when positive vs dd=-17.89% when negative + dd_from_peak on pos_peak
+    # 4. Section 3C signed pnl_vs_cost (+6.89% / -17.89%) + dd_from_peak on peak_px
     cyc_hl = parse_venue_cycle_state(
         {"qty": 0.90913, "cost_usd": 79.19, "avg_cost": 87.109854, "pos_peak": 95.0, "realized_pnl": 179.25},
         "HYPEUSDC",
@@ -6158,15 +6158,15 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     assert cyc_hl["pnl_vs_avg_pct"] == pytest.approx(6.89, abs=0.01)
     assert cyc_hl["dd_from_peak_pct"] == pytest.approx(-1.99, abs=0.01)
     line_hl = _format_venue_cycle_line("hyperliquid", "HYPEUSDC", cyc_hl)
-    assert "pnl_vs_avg=+6.89%" in line_hl
-    assert "pos_peak=95.0 (dd_from_peak=-1.99%)" in line_hl
+    assert "pnl_vs_cost=+6.89%" in line_hl
+    assert "peak_px=95.0 (dd_from_peak=-1.99%)" in line_hl
 
     line_krk = _format_venue_cycle_line(
         "kraken",
         "TAOUSD",
         {"qty": 1.5, "cost_usd": 500.0, "avg_cost_px": 333.33, "dd_pct": -17.89},
     )
-    assert "dd=-17.89%" in line_krk
+    assert "pnl_vs_cost=-17.89%" in line_krk
 
     # 5. build_last_cycle_execution_status preserves resting open order on HYPEUSDC when a later cycle updates BTCUSDC
     intents_multi = [
@@ -8859,7 +8859,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
             "mt_lost_pct": 3.7188,
         }
     )
-    assert "avg_buy_px=0.155995 (pnl_vs_avg=2.25%)" in pos_line_arb
+    assert "avg_cost=0.155995 (pnl_vs_cost=2.25%)" in pos_line_arb
     assert "tactical_avg_px=" not in pos_line_arb
     assert "bot_ref_gain=" not in pos_line_arb
 

@@ -5274,7 +5274,7 @@ def test_wave30_open_lots_vwap_short_trend_freshness_and_shutdown_border_cases(t
             "_open_lots": lots_sample,
         },
     )
-    assert "lifo_rem_avg=120.0 (pnl_vs_lifo=+5.00%)" in cyc_line
+    assert "lifo_avg=120.0 (pnl_vs_lifo=+5.00%)" in cyc_line
     ro_line = ps_mod._format_recent_order_line(
         "SOLUSDC",
         {
@@ -5284,7 +5284,7 @@ def test_wave30_open_lots_vwap_short_trend_freshness_and_shutdown_border_cases(t
         },
         now_ms,
     )
-    assert "Remaining LIFO Avg BUY=120.0" in ro_line
+    assert "lifo_avg=120.0" in ro_line
 
     # 2. summarize_current_price_cache_freshness rejects corrupted future timestamps and string "false" market_open_fn
     stale_with_future_poison = {

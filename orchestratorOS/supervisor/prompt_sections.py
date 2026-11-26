@@ -7,7 +7,7 @@ resolution from telemetry harvesting and order execution in
 Intentional prompt compression & cycle-boundary invariants (BY DESIGN -- DO NOT REVERT):
 - Section numbering (`### 1.` -> `### 3.`): Sections `2/2B/2C` (SRE/logs/VPN) are emitted only for `can_self_heal` topics and omitted on trading topics.
 - `bottom_6h(...)` (Section 3): Conditional pattern detector emitted only when an active 6h bottom structure forms (`pos_6h <= 70%` with meaningful drawdown).
-- `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_buy_px`/`last_buy_px`).
+- `open_lifo_lots` (Section 3C): Capped to the latest 4 lots (`<=14d`) for top-of-stack LIFO harvesting and omitted when `len(open_lots) <= 1` (already covered by `avg_cost`/`last_buy_px`).
 - `last_cycle_execution_status` (Section 3C): Emitted when recent (`<=60m`) executions/fills/rejections or newly resting (`<=30m`) orders exist; omitted when idle or when all `OPEN_RESTING`/`PARTIALLY_FILLED` orders are `>30m` old and already displayed in `open_limit_orders`.
 - `equity_bellwethers` on `scope="crypto"` (Section 3C): Micro-cap `RGNT_US_EQ` is omitted when major US tech/AI bellwethers (`NVDA_US_EQ`, `SPCX_US_EQ`) are present, and `t212_cycle` is omitted on `scope="crypto"` because `SPCX_US_EQ`'s cycle is already shown in `kraken_xstocks.t212_sibling_cycle` and `auto_cryptotrade_executor` cannot trade T212 shares (full cycles remain on `scope="equities"` and `scope="all"`).
 - `last_exit_kind` & `realized_pnl` across cycle boundaries (Section 3C): A prior cycle's exit label (e.g. `SL`) is never reclassified against a newer cycle's re-entry cost (`last_sell_ts < entry_ts`), and multi-cycle cumulative PnL (`cum_cycles`) is preserved alongside active `subcycle` PnL.
@@ -124,7 +124,7 @@ def _format_lifo_rem_avg_tag(
     ref_avg_px: Optional[float],
     spot_px: Optional[float],
     *,
-    label: str = "lifo_rem_avg_px",
+    label: str = "lifo_avg",
 ) -> str:
     vwap, _, _ = compute_open_lots_vwap(
         lots,
@@ -159,7 +159,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
         pk_dd = safe_float(cyc.get("dd_from_peak_pct"), None)
         pk_dd_val = (pk_dd + 0.0) if pk_dd is not None else cyc.get("dd_from_peak_pct")
         pk_sfx = f" (dd_from_peak={pk_dd_val}%)" if pk_dd_val is not None else ""
-        extra_parts.append(f"pos_peak={cyc.get('pos_peak')}{pk_sfx}")
+        extra_parts.append(f"peak_px={cyc.get('pos_peak')}{pk_sfx}")
     if (
         isinstance(open_lots_c_init := cyc.get("_open_lots"), list)
         and open_lots_c_init
@@ -171,7 +171,7 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
             safe_float(cyc.get("qty"), 0.0) or 0.0,
             avg_c_f,
             spot_px_f,
-            label="lifo_rem_avg",
+            label="lifo_avg",
         ):
             extra_parts.append(lifo_c_tag)
     if cyc.get("realized_pnl_usd") is not None:
@@ -196,9 +196,9 @@ def _format_venue_cycle_line(venue: str, sym: str, cyc: Dict[str, Any]) -> str:
     dd_val = cyc.get("pnl_vs_avg_pct") if cyc.get("pnl_vs_avg_pct") is not None else cyc.get("dd_pct")
     dd_f = safe_float(dd_val, None)
     dd_field = (
-        f"pnl_vs_avg={fmt_signed(dd_f)}%"
-        if dd_f is not None and dd_f > 0.0
-        else f"dd={f'{dd_val}%' if dd_val is not None else 'N/A'}"
+        f"pnl_vs_cost={fmt_signed(dd_f)}%"
+        if dd_f is not None
+        else "pnl_vs_cost=N/A"
     )
     lb_pnl_sfx = ""
     if (
@@ -1564,7 +1564,7 @@ def _format_tradable_position_line(
     if (lifo_vwap := pv["lifo_rem_vwap"]) is not None:
         vwap, vwap_pnl = lifo_vwap
         vwap_sfx = f" (pnl_vs_lifo={fmt_signed(vwap_pnl)}%)" if vwap_pnl is not None else ""
-        t_extra += f", lifo_rem_avg_px={vwap}{vwap_sfx}"
+        t_extra += f", lifo_avg={vwap}{vwap_sfx}"
     if (lifo_p := pv["lifo_realized_pnl_usd"]) is not None:
         t_extra += f", lifo_realized_pnl={format_signed_usd(lifo_p, decimals=2)}"
     lim_parts: List[str] = []
@@ -1724,10 +1724,10 @@ def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: s
         if sib_c.get("avg_cost_px") is not None:
             sc_parts.append(f"avg_cost={sib_c['avg_cost_px']}")
         if sib_c.get("dd_pct") is not None:
-            sc_parts.append(f"dd={sib_c['dd_pct']}%")
+            sc_parts.append(f"pnl_vs_cost={fmt_signed(sib_c['dd_pct'])}%")
         if sib_c.get("pos_peak") is not None:
             dd_pk = f"[{sib_c['dd_from_peak_pct']}%]" if sib_c.get("dd_from_peak_pct") is not None else ""
-            sc_parts.append(f"peak={sib_c['pos_peak']}{dd_pk}")
+            sc_parts.append(f"peak_px={sib_c['pos_peak']}{dd_pk}")
         if sib_c.get("last_sell_price") is not None:
             ek = f"({sib_c['last_exit_kind']})" if sib_c.get("last_exit_kind") else ""
             sc_parts.append(f"last_sell={sib_c['last_sell_price']}{ek}")
