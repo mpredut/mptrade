@@ -346,6 +346,8 @@ def build_supervisor_prompt(
         venue_schema = scope_spec.venue_schema
         venue_list_desc = scope_spec.venue_list_desc
         ex_sym = scope_spec.example_symbol
+        half_max_usd = round(max_usd * 0.5)
+        full_max_usd = round(max_usd)
         dip_flow_rule = (
             "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
             "`bottom_6h`, RTH CLV bar flow (`cvd_5m`/`cvd_15m`, `taker_ratio`), `spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), "
@@ -354,10 +356,11 @@ def build_supervisor_prompt(
             if is_equities
             else (
                 "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, `slopes`, "
-                "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, no double-count with `ob_imbalance`), `rvol`, `taker_ratio`, L2 walls. "
-                "Deep dips (deceleration+absorption): size decisively (50%\u2013100% `max_usd`); "
-                "breakouts/momentum (positive `vel/acc`+`rvol`+`cvd`): enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) despite high `pos_15m`; "
-                "de-risk on negative `vel`+unabsorbed selling.\n"
+                "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance`), `rvol`, `taker_ratio`, L2 walls. "
+                f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when free cash is ample (avoid timid $500 tickets). "
+                "2) Confirmed breakouts (`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
+                "enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if capped by an ask wall or decelerating/distributing. "
+                "3) De-risk on negative velocity + unabsorbed selling.\n"
             )
         )
         limit_exec_rule = (
@@ -368,12 +371,10 @@ def build_supervisor_prompt(
             "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
             else (
-                "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: All AI orders submit as post-only `\"order_type\": \"LIMIT\"` (never taker MARKET; gateway re-checks live price and auto-steps 1 tick onto maker book) to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
-                "passive `limit_price` at bid/ask walls for swings; right at live spot/BBO or `limit_price: null` with `urgency: \"HIGH\"` for urgent entries/reversals). "
-                "Audit `open_limit_orders` (`dist_from_spot_pct` & heuristic `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
-                "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
-                "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) "
-                "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
+                "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: All AI orders submit as post-only `\"order_type\": \"LIMIT\"` (never taker MARKET; gateway re-checks live price and auto-steps 1 tick onto maker book) to capture spread and cut fees (check maker vs taker bps; "
+                "passive `limit_price` at bid/ask walls for swings; live spot/BBO or `limit_price: null` with `urgency: \"HIGH\"` for breakouts/reversals). "
+                "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr`/`slip`/`unf_off`/`lim_off` bps: "
+                "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) or wall-trapped (`recommended_front_run_px`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"` + `cancel_order_ids` or `HOLD` only on poor R:R); `'HOLD'` leaves resting orders untouched.\n"
             )
         )
         structure_macro_rule = (
@@ -424,8 +425,8 @@ def build_supervisor_prompt(
                 else (
                     "spot `LIMIT` (`\"order_type\": \"LIMIT\"`) "
                     "right at live BBO (`best_bid` for BUY / `best_ask` for SELL):\n"
-                    "     1) If a bot SOLD prematurely or when it should NOT have, submit a corrective `BUY` `LIMIT` right at live spot/`best_bid` to restore at maker fee.\n"
-                    "     2) If a bot BOUGHT prematurely or when it should NOT have (confirmed structural breakdown), submit a corrective `SELL` `LIMIT` right at live spot/`best_ask`.\n"
+                    "     1) If a bot SOLD prematurely or when it should NOT have, submit corrective `BUY` `LIMIT` at `best_bid` (maker fee).\n"
+                    "     2) If a bot BOUGHT prematurely or when it should NOT have (breakdown), submit corrective `SELL` `LIMIT` at `best_ask`.\n"
                 )
             )
             + "     3) Targeting specific orders with `cancel_order_ids: [...]` cancels only those exact IDs "
@@ -482,12 +483,24 @@ def build_supervisor_prompt(
             surv_bits.append(f"{max_hr_rep}/h-replace")
         surv_bits.extend(("daily-buy-cap", "scorecard"))
         compact_surv = ", ".join(surv_bits)
+        compact_half_usd = round(max_usd * 0.5)
+        compact_full_usd = round(max_usd)
+        compact_entry_bullet = (
+            ""
+            if is_equities
+            else (
+                f"- Entry playbook: (1) Deep dips (deceleration+absorption): size decisively at ${compact_half_usd:g}\u2013${compact_full_usd:g} when cash is ample; "
+                "(2) Confirmed breakouts (`vel_90s/5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
+                "enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) even at high `pos_15m`.\n"
+            )
+        )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
             f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `cachedb/` & `statedb/` read access; "
             f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
-            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (participate via near-BBO maker `LIMIT` on confirmed high-velocity breakouts/momentum and size decisively on high-conviction deep dips; use `CANCEL`+`cancel_order_ids` or `HOLD` only on poor R:R).\n"
-            "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
+            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (`CANCEL`+`cancel_order_ids` or `HOLD` only on poor R:R).\n"
+            + compact_entry_bullet
+            + "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
             "- Format your response in TWO parts:\n"
             "  1) Concise Markdown in **Romanian** (`### \u23f1\ufe0f Raport Execu\u021bie [HH:MM:SS EET]`): "
             f"on routine pure `HOLD` cycles (no BUY/SELL/cancel, no Section 4 priority symbols, no user chat), output ONLY "
