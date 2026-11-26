@@ -53,6 +53,7 @@ new_coin = 12 / 25
 BTC = 6 / 10      # inline comment
 ETH = 5 / 9
 cooldown_minutes = 45
+escalation_step_ratio = 0.35
 lookback_hours = 24
 max_monitored = 20
 max_new_coins = 8
@@ -643,3 +644,190 @@ def test_cache_all_price_fetcher_accepts_data_sync_mode_and_clears_recovered_typ
     )
     anom = harvest_log_anomalies_from_dirs([str(tmp_path)], lookback_hours=24.0)
     assert anom.error_count == 0
+
+
+def test_price_checker_hybrid_cooldown_separates_verification_from_escalation(tmp_path):
+    """Verification always runs; cooldown_minutes gates notifications while worsening moves escalate."""
+    from market_monitor.pricefetcher import resolve_max_price_history, resolve_price_sync_interval_sec
+    from state_io import save_json_state
+
+    assert resolve_price_sync_interval_sec(60) == 60
+    assert resolve_price_sync_interval_sec(10) == 30
+    assert resolve_price_sync_interval_sec(None) == 300
+    assert resolve_max_price_history(30, lookback_hours=24) >= 3000
+
+    now_ms = int(time.time() * 1000)
+    cfg = {
+        "per_coin": {"HYPE": {"up_percent": 8.1, "down_percent": 7.4}},
+        "cooldown_minutes": 180,
+        "escalation_step_ratio": 0.35,  # step = 7.4 * 0.35 = 2.59pp (DOWN), 8.1 * 0.35 = 2.835pp (UP)
+    }
+    sf = str(tmp_path / "cooldowns.json")
+
+    # 1) Initial DOWN breach (-7.50% vs 24h high 100.0 -> 92.5) fires tier=1
+    history = [
+        {"timestamp": now_ms - 3600 * 1000, "price": 100.0},
+        {"timestamp": now_ms - 60 * 1000, "price": 92.5},
+    ]
+    mgr = DummyPriceManager(latest_price=92.5, history=history)
+    checker = PriceChecker(mgr, config=cfg, state_file=sf)
+    a1 = checker.check_symbol("HYPE")
+    assert len(a1) == 1
+    assert a1[0].alert_type == "down"
+    assert a1[0].escalation_tier == 1
+    assert a1[0].previous_percent_change is None
+
+    # 2) Slight worsening (-8.50%, < 7.50 + 2.59 = 10.09%): verification still detects breach, notification muted
+    mgr._latest_price = 91.5
+    mgr._history.append({"timestamp": now_ms - 30 * 1000, "price": 91.5})
+    _, raw_breaches = checker.evaluate_symbol("HYPE")
+    assert len(raw_breaches) == 1 and raw_breaches[0]["alert_type"] == "down"
+    assert checker.check_symbol("HYPE") == []
+
+    # 3) Material worsening (-10.20%, >= 10.09%) inside 180m cooldown fires escalation tier=2 immediately
+    mgr._latest_price = 89.8
+    mgr._history.append({"timestamp": now_ms - 10 * 1000, "price": 89.8})
+    a2 = checker.check_symbol("HYPE")
+    assert len(a2) == 1
+    assert a2[0].alert_type == "down"
+    assert a2[0].escalation_tier == 2
+    assert round(a2[0].previous_percent_change, 2) == -7.50
+    assert "[ESCALATION #2, prev -7.50%]" in str(a2[0])
+
+    # 4) Restart preserves hybrid state: -11.0% stays muted (needs 10.20 + 2.59 = 12.79%), -13.0% escalates to tier=3
+    checker_restarted = PriceChecker(mgr, config=cfg, state_file=sf)
+    mgr._latest_price = 89.0
+    assert checker_restarted.check_symbol("HYPE") == []
+    mgr._latest_price = 87.0
+    a3 = checker_restarted.check_symbol("HYPE")
+    assert len(a3) == 1 and a3[0].escalation_tier == 3
+
+    # 5) Symmetric UP escalation: +8.20% fires tier=1, +9.50% muted (< 8.20 + 2.835 = 11.035%), +11.20% escalates tier=2
+    mgr_up = DummyPriceManager(
+        latest_price=108.2,
+        history=[
+            {"timestamp": now_ms - 3600 * 1000, "price": 100.0},
+            {"timestamp": now_ms - 60 * 1000, "price": 108.2},
+        ],
+    )
+    checker_up = PriceChecker(mgr_up, config=cfg, state_file=str(tmp_path / "up_cooldowns.json"))
+    u1 = checker_up.check_symbol("HYPE")
+    assert len(u1) == 1 and u1[0].alert_type == "up" and u1[0].escalation_tier == 1
+    mgr_up._latest_price = 109.5
+    assert checker_up.check_symbol("HYPE") == []
+    mgr_up._latest_price = 111.2
+    u2 = checker_up.check_symbol("HYPE")
+    assert len(u2) == 1 and u2[0].alert_type == "up" and u2[0].escalation_tier == 2
+
+    # 6) escalation_step_ratio=0 disables escalation (strictly fixed cooldown)
+    fixed_checker = PriceChecker(mgr, config={**cfg, "escalation_step_ratio": 0.0}, state_file=sf)
+    mgr._latest_price = 70.0
+    assert fixed_checker.check_symbol("HYPE") == []
+
+    # 7) Legacy float-only cooldown file loads cleanly and escalates past threshold + step
+    legacy_sf = str(tmp_path / "legacy_cooldowns.json")
+    save_json_state(legacy_sf, {"HYPE_down": time.time() - 60.0})
+    mgr_leg = DummyPriceManager(
+        latest_price=89.5,
+        history=[
+            {"timestamp": now_ms - 3600 * 1000, "price": 100.0},
+            {"timestamp": now_ms - 60 * 1000, "price": 89.5},
+        ],
+    )
+    leg_checker = PriceChecker(mgr_leg, config=cfg, state_file=legacy_sf)
+    a_leg = leg_checker.check_symbol("HYPE")
+    assert len(a_leg) == 1 and a_leg[0].escalation_tier == 2
+
+
+def test_notify_engine_allows_escalated_price_alerts_through_dedup_gate(tmp_path, monkeypatch):
+    """Escalated price alerts (tier #2, #3) must pass common dedup gate while duplicate tier #1 is suppressed."""
+    state_file = tmp_path / "notify_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "1")
+    monkeypatch.setenv("NOTIFICATION_TOPIC_BULK_SECONDS", "1")
+    monkeypatch.setenv("NOTIFICATION_PRICE_DEDUP_SECONDS", "1800")
+
+    t0 = 1_750_000_000.0
+    a1 = PriceAlert("HYPE", "down", 92.5, 100.0, -7.5, 7.4, escalation_tier=1)
+    a1_dup = PriceAlert("HYPE", "down", 92.4, 100.0, -7.6, 7.4, escalation_tier=1)
+    a2 = PriceAlert("HYPE", "down", 89.8, 100.0, -10.2, 7.4, escalation_tier=2, previous_percent_change=-7.5)
+    a3 = PriceAlert("HYPE", "down", 87.0, 100.0, -13.0, 7.4, escalation_tier=3, previous_percent_change=-10.2)
+
+    ok1, _, _, _ = an.pass_common_gate("ntfy", "HYPE \u25bc -7.50%", "body", "high", "price-topic", [a1], now=t0)
+    assert ok1 is True
+
+    # Duplicate tier 1 inside 30m window is suppressed
+    ok_dup, reason_dup, _, _ = an.pass_common_gate(
+        "ntfy", "HYPE \u25bc -7.60%", "body", "high", "price-topic", [a1_dup], now=t0 + 120.0
+    )
+    assert ok_dup is False and reason_dup in ("duplicate", "similar_eliminated")
+
+    # Tier 2 and Tier 3 escalations inside 30m window pass immediately with distinct identity/similarity keys
+    ok2, reason2, _, _ = an.pass_common_gate(
+        "ntfy", "HYPE \u25bc -10.20% [ESC #2]", "body", "high", "price-topic", [a2], now=t0 + 300.0
+    )
+    assert ok2 is True, f"Expected tier-2 escalation to pass, got {reason2}"
+
+    ok3, reason3, _, _ = an.pass_common_gate(
+        "ntfy", "HYPE \u25bc -13.00% [ESC #3]", "body", "high", "price-topic", [a3], now=t0 + 600.0
+    )
+    assert ok3 is True, f"Expected tier-3 escalation to pass, got {reason3}"
+    assert "[ESC #2, prev -7.50%]" in AlertNotifier.format_batch_message([a2])
+
+
+def test_verify_tools_multi_venue_symmetry_for_hyperliquid(tmp_path, monkeypatch):
+    """pnl_report, watch_trade_decisions, and ownership_inventory handle Hyperliquid symmetrically."""
+    from verify_tools import ownership_inventory as oi, pnl_report, watch_trade_decisions as wtd
+
+    # 1) pnl_report.venue_symbol_pnl falls back to fetch_remote_trades for Hyperliquid
+    class _FakeHLProvider:
+        def fetch_remote_trades_with_client(self, sym, start_ms, strict=False):
+            return None
+
+        def fetch_remote_trades(self, sym, start_ms):
+            return [
+                {"price": "59.50", "qty": "10.0", "side": "BUY", "timestamp": 1000},
+                {"price": "60.50", "qty": "4.0", "side": "SELL", "timestamp": 2000},
+            ]
+
+    monkeypatch.setattr(pnl_report.mkt, "provider_by_name", lambda name: _FakeHLProvider() if name == "hyperliquid" else None)
+    monkeypatch.setattr(pnl_report.mkt, "get_current_price", lambda sym: 61.5)
+    res = pnl_report.venue_symbol_pnl("HYPEUSDC", provider_name="hyperliquid")
+    assert round(res["realized"], 2) == 4.00
+    assert round(res["pos"], 4) == 6.0
+    assert round(res["unreal"], 2) == 12.00
+    active_syms = {s.symbol for s in pnl_report._active_crypto_specs()}
+    assert {"BTCUSDC", "HYPEUSDC"}.issubset(active_syms)
+
+    # 2) watch_trade_decisions.free_qty routes through venue_for_symbol
+    seen_venues = []
+    monkeypatch.setattr(wtd, "venue_for_symbol", lambda sym, default="binance": "hyperliquid" if sym == "HYPEUSDC" else default)
+    monkeypatch.setattr(
+        wtd.mkt,
+        "free_balance",
+        lambda base, provider_name=None: (seen_venues.append((base, provider_name)) or 12.5),
+    )
+    assert wtd.free_qty("HYPEUSDC") == 12.5
+    assert seen_venues == [("HYPE", "hyperliquid")]
+
+    # 3) ownership_inventory tracks Hyperliquid tradeall & assetguardian roles from instruments.conf
+    (tmp_path / "procs.conf").write_text(
+        "tradeall.py|x||tradeall|||fleet\nassetguardian.py|x||assetguardian|||fleet\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "instruments.conf").write_text(
+        "[HYPERLIQUID_HYPE]\n"
+        "provider=hyperliquid\n"
+        "symbol=HYPEUSDC\n"
+        "base=HYPE\n"
+        "quote=USDC\n"
+        "enabled=yes\n"
+        "role.mt=no\n"
+        "role.tradeall_fire=yes\n"
+        "role.assetguardian=yes\n"
+        "role.trailing=no\n",
+        encoding="utf-8",
+    )
+    owners = oi.build_inventory(tmp_path, commands=[])
+    hl_owner_ids = {o.owner_id for o in owners if o.venue == "hyperliquid" and o.symbol == "HYPEUSDC"}
+    assert {"tradeall", "assetguardian"}.issubset(hl_owner_ids)

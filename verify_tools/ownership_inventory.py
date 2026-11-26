@@ -27,8 +27,12 @@ from botcore import (
     parse_procs_manifest,
     _parse_bool_flag,
 )
-from cachepaths import ensure_quote_suffix, normalize_venue_name, split_symbol_assets  # noqa: E402
-from instrument_registry import single_symbol_for, symbols_for  # noqa: E402
+from cachepaths import (  # noqa: E402
+    ensure_quote_suffix,
+    is_primary_stream_venue,
+    normalize_venue_name,
+    split_symbol_assets,
+)
 from providers.quantity import resolve_assets  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
 
@@ -110,31 +114,55 @@ def _running(pattern: str | None, commands: list[str] | None) -> bool | None:
         return any(marker in command for command in commands)
 
 
-def _python_symbols(root: Path) -> tuple[list[str], str]:
-    """Read configured Binance symbols and rtrade symbol from `instruments.conf`."""
-    syms: list[str] = []
-    tao = ""
+def _fleet_role_instruments(root: Path) -> dict[str, list[tuple[str, str, str, str]]]:
+    """Read per-role multi-venue instrument memberships from ``instruments.conf``.
+
+    Returns ``{owner_id: [(venue, symbol, base, quote), ...]}`` honoring explicit
+    ``role.*`` flags across every venue. Minimal test fixtures omitting ``role.*``
+    keys retain the legacy primary-venue fallback.
+    """
+    role_map: dict[str, list[tuple[str, str, str, str]]] = {
+        "tradeall": [],
+        "rtrade": [],
+        "assetguardian": [],
+        "binance-trailing": [],
+    }
     conf_path = root / "instruments.conf"
-    if conf_path.exists():
-        try:
-            syms = symbols_for("binance", path=conf_path)
-            try:
-                tao = single_symbol_for("binance", "rtrade", path=conf_path)
-            except Exception:
-                tao = "TAOUSDC" if "TAOUSDC" in syms else ""
-        except Exception:
-            parser = load_ini_config(conf_path, must_exist=False, inline_comments=True)
-            for section in parser.sections():
-                vals = parser[section]
-                if normalize_venue_name(vals.get("provider", "")) == "binance" and _parse_bool_flag(vals.get("enabled"), True):
-                    s = vals.get("symbol", "").strip()
-                    if s and s not in syms:
-                        syms.append(s)
-                    if _parse_bool_flag(vals.get("role.rtrade")) and s:
-                        tao = s
-            if not tao and "TAOUSDC" in syms:
-                tao = "TAOUSDC"
-    return syms, tao
+    if not conf_path.exists():
+        return role_map
+    parser = load_ini_config(conf_path, must_exist=False, inline_comments=True)
+    role_specs = (
+        ("tradeall", "role.tradeall_fire", False),
+        ("rtrade", "role.rtrade", False),
+        ("assetguardian", "role.assetguardian", False),
+        ("binance-trailing", "role.trailing", True),
+    )
+    seen: dict[str, set[tuple[str, str]]] = {k: set() for k in role_map}
+    for section in parser.sections():
+        vals = parser[section]
+        if not _parse_bool_flag(vals.get("enabled"), True):
+            continue
+        venue = normalize_venue_name(vals.get("provider", "")) or ""
+        sym = vals.get("symbol", "").strip()
+        if not venue or not sym:
+            continue
+        base = vals.get("base", "").strip()
+        quote = vals.get("quote", "").strip()
+        primary_venue = is_primary_stream_venue(venue)
+        for owner_id, role_key, primary_only in role_specs:
+            if primary_only and not primary_venue:
+                continue
+            raw_flag = vals.get(role_key)
+            if raw_flag is not None:
+                enabled_for_role = _parse_bool_flag(raw_flag)
+            elif primary_venue:
+                enabled_for_role = (sym == "TAOUSDC") if owner_id == "rtrade" else True
+            else:
+                enabled_for_role = False
+            if enabled_for_role and (venue, sym) not in seen[owner_id]:
+                seen[owner_id].add((venue, sym))
+                role_map[owner_id].append((venue, sym, base, quote))
+    return role_map
 
 
 def _record(
@@ -256,15 +284,15 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         True,
     )
     trade_enabled = bool(_parse_bool_flag(raw_trade_enabled, True))
+    venue_envs = {
+        "binance": root_env,
+        "kraken": kraken_env,
+        "hyperliquid": hl_env,
+        "t212": t212_env,
+    }
     instruments_path = root / "instruments.conf"
     if instruments_path.exists():
         parser = load_ini_config(instruments_path, must_exist=False, inline_comments=True)
-        venue_envs = {
-            "binance": root_env,
-            "kraken": kraken_env,
-            "hyperliquid": hl_env,
-            "t212": t212_env,
-        }
         live_gates = {
             "binance": True,
             "kraken": _parse_bool_flag(kraken_env.get("KRAKEN_LIVE_ORDERS")),
@@ -295,7 +323,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
                 base=values.get("base", "").strip(),
                 quote=values.get("quote", "").strip(), role="primary",
                 coordination=(
-                    "binance-order-pipeline" if venue == "binance" else "market-api"
+                    "binance-order-pipeline" if is_primary_stream_venue(venue) else "market-api"
                 ),
                 pattern=monitor_pattern, configured=monitor_configured,
                 enabled=enabled,
@@ -321,26 +349,37 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             source=f"212trading/{path.name}", commands=commands,
         ))
 
-    symbols, tao_symbol = _python_symbols(root)
-    binance_ref = _account_ref(root_env, "binance")
-    binance_specs = (
-        ("tradeall", "tradeall.py", symbols, "primary"),
-        ("rtrade", "rtrade.py", [tao_symbol] if tao_symbol else [], "primary"),
-        ("assetguardian", "assetguardian.py", symbols, "protective"),
-        ("binance-trailing", "binance_api/trailing_stop.py", symbols, "protective"),
+    role_instruments = _fleet_role_instruments(root)
+    fleet_specs = (
+        ("tradeall", "tradeall.py", "primary"),
+        ("rtrade", "rtrade.py", "primary"),
+        ("assetguardian", "assetguardian.py", "protective"),
+        ("binance-trailing", "binance_api/trailing_stop.py", "protective"),
     )
-    for owner_id, process, owned_symbols, role in binance_specs:
+    for owner_id, process, role in fleet_specs:
         configured = process in patterns
         enabled = True
         if owner_id == "binance-trailing":
             trailing = _env(root / "binance_api" / "trailing.conf", root / ".env")
             enabled = _parse_bool_flag(trailing.get("TRAILING_ENABLED"))
-        for symbol in owned_symbols:
+        for venue, symbol, base, quote in role_instruments.get(owner_id, ()):
+            env = venue_envs.get(venue, {})
             owners.append(_record(
-                owner_id=owner_id, venue="binance", account_ref=binance_ref,
-                symbol=symbol, role=role, coordination="binance-order-pipeline",
-                pattern=process, configured=configured, enabled=enabled,
-                source=process, commands=commands,
+                owner_id=owner_id,
+                venue=venue,
+                account_ref=_account_ref(env, venue),
+                symbol=symbol,
+                base=base,
+                quote=quote,
+                role=role,
+                coordination=(
+                    "binance-order-pipeline" if is_primary_stream_venue(venue) else "market-api"
+                ),
+                pattern=process,
+                configured=configured,
+                enabled=enabled,
+                source=process,
+                commands=commands,
             ))
 
     return sorted(owners, key=lambda item: (

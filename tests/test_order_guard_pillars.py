@@ -964,6 +964,7 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
             "NEW_COIN = 11.0 / 22.0",
             "btc = 3.0 / 6.0",
             "Cooldown_Minutes = 30",
+            "Escalation_Step_Ratio = 0.35",
             "Lookback_Hours = 24",
             "Max_Monitored = 15",
             "Max_New_Coins = 5",

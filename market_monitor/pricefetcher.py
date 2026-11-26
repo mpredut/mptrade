@@ -49,7 +49,24 @@ MAX_PRICE_HISTORY_PER_SYMBOL = 2000
 MAX_MONITORED_SYMBOLS = 20
 QUOTE_CURRENCY = "USDC"
 DEFAULT_SYMBOLS = ["BTC", "TAO", "HYPE"]
+PRICE_MULTI_MIN_SYNC_INTERVAL_SEC = 30
 PRICE_MULTI_SYNC_INTERVAL_SEC = 5 * 60
+
+
+def resolve_price_sync_interval_sec(scan_seconds: Optional[float] = None) -> int:
+    """Derive PriceMulti cache sync cadence from ``price_scan_seconds`` within safe bounds."""
+    scan_f = safe_pos_float(scan_seconds, default=None)
+    if scan_f is None:
+        return PRICE_MULTI_SYNC_INTERVAL_SEC
+    return max(PRICE_MULTI_MIN_SYNC_INTERVAL_SEC, min(PRICE_MULTI_SYNC_INTERVAL_SEC, math.trunc(scan_f)))
+
+
+def resolve_max_price_history(sync_interval_sec: float, lookback_hours: Optional[float] = None) -> int:
+    """Ensure retained per-symbol history covers at least the full ``lookback_hours`` window."""
+    sync_f = safe_pos_float(sync_interval_sec, default=PRICE_MULTI_SYNC_INTERVAL_SEC)
+    lb_h = safe_pos_float(lookback_hours, default=24.0)
+    needed = math.ceil((lb_h * 3600.0) / max(1.0, sync_f)) + 120
+    return min(100_000, max(MAX_PRICE_HISTORY_PER_SYMBOL, needed))
 
 
 class CacheAllPriceFetcherManager(CachePriceManagerBase):
@@ -66,9 +83,16 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         max_symbols: Optional[int] = None,
         *,
         data_sync_mode: Optional[str] = None,
+        max_history_per_symbol: Optional[int] = None,
     ):
         self.price_factory = PricePlatformFactory(cmc_api_key=cmc_api_key)
         self.max_monitored_symbols = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
+        resolved_sync = sync_ts() if callable(sync_ts) else sync_ts
+        self.sync_interval_sec = safe_pos_float(resolved_sync, default=PRICE_MULTI_SYNC_INTERVAL_SEC)
+        self.max_history_per_symbol = safe_pos_int(
+            max_history_per_symbol,
+            default=resolve_max_price_history(self.sync_interval_sec),
+        )
         initial_symbols = []
         seen_bases = set()
         for symbol in (symbols or ()):
@@ -365,11 +389,15 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 if removed > 0:
                     removed_count += removed
                     print(f"[Cleanup] {symbol}: removed {removed} old entries")
-                if len(self.cache[symbol]) > MAX_PRICE_HISTORY_PER_SYMBOL:
-                    over_limit = len(self.cache[symbol]) - MAX_PRICE_HISTORY_PER_SYMBOL
-                    self.cache[symbol] = self.cache[symbol][-MAX_PRICE_HISTORY_PER_SYMBOL:]
+                max_hist = safe_pos_int(
+                    getattr(self, "max_history_per_symbol", None),
+                    default=MAX_PRICE_HISTORY_PER_SYMBOL,
+                )
+                if len(self.cache[symbol]) > max_hist:
+                    over_limit = len(self.cache[symbol]) - max_hist
+                    self.cache[symbol] = self.cache[symbol][-max_hist:]
                     trimmed_count += over_limit
-                    print(f"[Cleanup] {symbol}: trimmed to the latest {MAX_PRICE_HISTORY_PER_SYMBOL} entries")
+                    print(f"[Cleanup] {symbol}: trimmed to the latest {max_hist} entries")
                 if not self.cache[symbol] and symbol not in self.active_symbols:
                     del self.cache[symbol]
                     self.fetchtime_per_symbol.pop(symbol, None)
@@ -446,7 +474,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
         return self.save_state_to_file()
 
 
-def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_symbols=None):
+def create_cachePriceAll(
+    cmc_api_key: Optional[str] = None,
+    symbols=None,
+    max_symbols=None,
+    *,
+    sync_interval_sec: Optional[float] = None,
+    lookback_hours: Optional[float] = None,
+):
     all_symbols = []
     seen_bases = set()
 
@@ -465,20 +500,23 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
             all_symbols.append(sym_default)
 
     eff_max = safe_pos_int(max_symbols, default=MAX_MONITORED_SYMBOLS)
+    eff_sync = resolve_price_sync_interval_sec(sync_interval_sec)
+    eff_max_hist = resolve_max_price_history(eff_sync, lookback_hours=lookback_hours)
     all_symbols = list(dict.fromkeys(all_symbols))
     all_symbols = [s for s in all_symbols if is_valid_symbol_for_monitoring(s)]
     all_symbols = all_symbols[:eff_max]
 
-    print(f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)}")
+    print(f"[pricefetcher] Valid symbols to monitor: {len(all_symbols)} (sync={eff_sync}s, max_history={eff_max_hist})")
     print(f"[pricefetcher] List: {all_symbols}")
 
     CacheFactory.register(
         "PriceMulti",
         CacheAllPriceFetcherManager,
         filename=CacheAllPriceFetcherManager.DEFAULT_FILENAME,
-        sync_ts=lambda: PRICE_MULTI_SYNC_INTERVAL_SEC,
+        sync_ts=lambda: eff_sync,
         cmc_api_key=cmc_api_key,
         max_symbols=eff_max,
+        max_history_per_symbol=eff_max_hist,
     )
     print("[Pricefetcher] Manager registered in CacheFactory as 'PriceMulti'")
     cachePriceAll = CacheFactory.get(
@@ -487,7 +525,9 @@ def create_cachePriceAll(cmc_api_key: Optional[str] = None, symbols=None, max_sy
         data_sync_mode=CachePriceManagerBase.MODE_PRODUCER,
     )
     cachePriceAll.max_monitored_symbols = eff_max
-    cachePriceAll.periodic_sync(sync_ts=PRICE_MULTI_SYNC_INTERVAL_SEC, save_state=True)
+    cachePriceAll.sync_interval_sec = eff_sync
+    cachePriceAll.max_history_per_symbol = eff_max_hist
+    cachePriceAll.periodic_sync(sync_ts=eff_sync, save_state=True)
 
     return cachePriceAll
 
@@ -503,6 +543,7 @@ __all__ = [
     "MAX_MONITORED_SYMBOLS",
     "MAX_PRICE_HISTORY_PER_SYMBOL",
     "PRICE_HISTORY_RETENTION_DAYS",
+    "PRICE_MULTI_MIN_SYNC_INTERVAL_SEC",
     "PRICE_MULTI_SYNC_INTERVAL_SEC",
     "PricePlatformFactory",
     "PricePlatformInterface",
@@ -512,6 +553,8 @@ __all__ = [
     "get_base_symbol",
     "is_rth_equity_symbol",
     "is_valid_symbol_for_monitoring",
+    "resolve_max_price_history",
+    "resolve_price_sync_interval_sec",
 ]
 
 

@@ -371,10 +371,10 @@ class HyperliquidPricePlatform(CryptoPricePlatformBase):
     PRIORITY_ORDER = 20
     platform_name = "Hyperliquid"
 
-    def __init__(self):
+    def __init__(self, refresh_interval: float = 60.0):
         self._url = "https://api.hyperliquid.xyz/info"
         self._all_mids: Dict[str, float] = {}
-        self._init_platform_refresh(300)
+        self._init_platform_refresh(refresh_interval)
 
     def _load_symbols(self):
         try:

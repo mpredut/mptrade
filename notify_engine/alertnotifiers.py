@@ -723,16 +723,24 @@ def _alert_identity(alert: Any) -> dict:
                 body_norm = _normalize_text_for_similarity(body_str)[:120]
                 identity["body_norm"] = body_norm
             return identity
-        return {
+        ident = {
             key: alert.get(key)
             for key in ("type", "symbol", "name", "source", "body", "url", "alert_type", "threshold")
         }
-    return {
+        esc_tier = exact_pos_int(alert.get("escalation_tier"), 1)
+        if esc_tier > 1:
+            ident["escalation_tier"] = esc_tier
+        return ident
+    ident = {
         "type": getattr(alert, "type", alert.__class__.__name__),
         "symbol": getattr(alert, "symbol", None),
         "alert_type": getattr(alert, "alert_type", None),
         "threshold": getattr(alert, "threshold", None),
     }
+    esc_tier = exact_pos_int(getattr(alert, "escalation_tier", 1), 1)
+    if esc_tier > 1:
+        ident["escalation_tier"] = esc_tier
+    return ident
 
 
 def _delivery_fingerprint(alerts: list[Any]) -> str:
@@ -844,6 +852,11 @@ def pass_common_gate(
         sig_raw = f"sim|{topic}|{norm_title}|{norm_body_head}"
     else:
         sig_raw = f"sim|{topic}|{norm_title}"
+    esc_tiers = tuple(
+        t for a in alerts_list if (t := exact_pos_int(obj_attr(a, "escalation_tier", 1), 1)) > 1
+    )
+    if esc_tiers:
+        sig_raw = f"{sig_raw}|esc={','.join(str(t) for t in esc_tiers)}"
     sim_key = hashlib.sha256(sig_raw.encode("utf-8")).hexdigest()
     gate_sec, topic_bulk_sec = _gate_and_topic_bulk_seconds()
     sim_window = max(gate_sec, topic_bulk_sec, _dedup_seconds(alerts_list, urgent))
@@ -1154,9 +1167,15 @@ class AlertNotifier:
                 AlertNotifier._extract_price_alert_fields(alert)
             )
             direction = "U" if alert_type == "up" else "D"
+            esc_tier = exact_pos_int(obj_attr(alert, "escalation_tier", 1), 1)
+            prev_pct = safe_float(obj_attr(alert, "previous_percent_change", None), default=None)
+            esc_tag = ""
+            if esc_tier > 1:
+                prev_part = f", prev {prev_pct:+.2f}%" if prev_pct is not None else ""
+                esc_tag = f" [ESC #{esc_tier}{prev_part}]"
 
             lines.append(
-                f"{symbol}: {direction} {pct_change:+.2f}% "
+                f"{symbol}: {direction} {pct_change:+.2f}%{esc_tag} "
                 f"| C ${current_price:.4f} | R ${ref_price:.4f} "
                 f"({reference_time})"
             )

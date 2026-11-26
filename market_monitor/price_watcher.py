@@ -233,7 +233,9 @@ def main():
     if ac["per_coin"]:
         pc = ", ".join(f"{k}(+{v['up_percent']}/-{v['down_percent']})" for k, v in ac["per_coin"].items())
         print(f"   per-coin: {pc}")
-    print(f"   cooldown {ac['cooldown_minutes']}min | lookback {ac['lookback_hours']}h | "
+    esc_ratio = safe_nonneg_float(ac.get("escalation_step_ratio"), default=0.0)
+    esc_desc = f"hybrid +{esc_ratio * 100:g}% of threshold" if esc_ratio > 0 else "fixed only"
+    print(f"   notify cooldown {ac['cooldown_minutes']}min ({esc_desc}) | lookback {ac['lookback_hours']}h | "
           f"price scan {cfg['price_scan_seconds']}s | new-coin scan {cfg['new_coins_scan_seconds']}s")
     print("=" * 70)
     print(
@@ -245,8 +247,13 @@ def main():
         return
 
     cmc_key_for_cache = CMC_API_KEY if (cfg.get("discover_new_coins") and ALERT_NEW_COIN) else None
-    cachePriceAll = create_cachePriceAll(cmc_api_key=cmc_key_for_cache,
-                                         symbols=cfg["watch"], max_symbols=cfg["max_monitored"])
+    cachePriceAll = create_cachePriceAll(
+        cmc_api_key=cmc_key_for_cache,
+        symbols=cfg["watch"],
+        max_symbols=cfg["max_monitored"],
+        sync_interval_sec=cfg["price_scan_seconds"],
+        lookback_hours=ac["lookback_hours"],
+    )
     print("Waiting for the first price sync (5s)...")
     time.sleep(5)
 
@@ -254,7 +261,7 @@ def main():
     price_checker = PriceChecker(
         cachePriceAll=cachePriceAll,
         alert_callback=lambda alert: AlertNotifier.send(alert, enable_phone_webhook=True, webhook_url=PRICE_WEBHOOK_URL),
-        config=ac,
+        config={**ac, "price_scan_seconds": cfg["price_scan_seconds"]},
         state_file=cache_path("cache_watcher_all_price.cooldowns.json"),
     )
     price_checker.start_monitoring(cfg["price_scan_seconds"])
@@ -278,10 +285,10 @@ def main():
         hb_syms = list(cfg.get("watch") or ())
         hb_itv = {"price_scan": cfg["price_scan_seconds"]}
         touch_module_heartbeat("price_watcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
+        print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
         while True:
             time.sleep(30)
             touch_module_heartbeat("price_watcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
-            print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
     except KeyboardInterrupt:
         print("\nStopping system...")
         if new_coins_checker is not None:

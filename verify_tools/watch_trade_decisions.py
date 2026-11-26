@@ -24,10 +24,16 @@ from providers.market_api import api as mkt  # noqa: E402
 from providers.order_ohlc_utils import summarize_order_position
 from providers.quantity import resolve_assets  # noqa: E402
 from botcore import safe_float, safe_pos_float  # noqa: E402
-from instrument_registry import casefold_get, load_registry, symbols_for  # noqa: E402
+from instrument_registry import (  # noqa: E402
+    casefold_get,
+    load_registry,
+    monitored_order_symbols,
+    symbols_for,
+    venue_for_symbol,
+)
 import pricewindow as pw  # noqa: E402
 
-SYMBOLS = symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
+SYMBOLS = monitored_order_symbols() or symbols_for("binance") or ["TAOUSDC", "BTCUSDC"]
 
 
 class _MarketOrdersAdapter:
@@ -40,7 +46,8 @@ apiorders = _MarketOrdersAdapter()
 
 
 def free_qty(symbol):
-    return safe_float(mkt.free_balance(resolve_assets(symbol)[0], provider_name="binance"), default=0.0)
+    venue = venue_for_symbol(symbol, default="binance")
+    return safe_float(mkt.free_balance(resolve_assets(symbol)[0], provider_name=venue), default=0.0)
 
 
 def position(symbol, maxage=17 * 24 * 3600):
@@ -82,7 +89,12 @@ def main():
         gain = (px - ref) / ref * 100 if ref else 0.0
         trend = "UP  " if gr > 0 else ("DOWN" if gr < 0 else "flat")
         hard_px = ref * (1 + hard_tp_pct / 100) if ref else 0.0
-        print(f"  {s}: px={px:.2f}  ref=LAST_buy {ref:.2f} (avg {avg:.2f})  gain={gain:+.1f}%")
+        venue_lbl = venue_for_symbol(s, default="binance")
+        prec = 4 if (0.0 < px < 10.0 or 0.0 < ref < 10.0) else 2
+        print(
+            f"  {s} [{venue_lbl}]: px={px:.{prec}f}  ref=LAST_buy {ref:.{prec}f} "
+            f"(avg {avg:.{prec}f})  gain={gain:+.1f}%"
+        )
         print(f"      trend_instant={trend} ({gr:+.4f})  |  free={free:.4f}  net={net:.4f}  sells={n_sells}")
         flags = []
         if gain >= hard_tp_pct:
@@ -90,9 +102,9 @@ def main():
         elif gain >= gain_pct and gr < 0:
             flags.append(f"A NORMAL SALE IS ARMED (gain>{gain_pct:.1f}% plus a DOWN trend -> it sells EVERYTHING)")
         elif gain >= gain_pct and gr >= 0:
-            flags.append(f"in profit but the trend is UP -> holding (HARD-TP at px {hard_px:.2f})")
+            flags.append(f"in profit but the trend is UP -> holding (HARD-TP at px {hard_px:.{prec}f})")
         else:
-            flags.append(f"below the thresholds (HARD-TP at px {hard_px:.2f})")
+            flags.append(f"below the thresholds (HARD-TP at px {hard_px:.{prec}f})")
         print(f"      => {'; '.join(flags)}")
     print("=" * 50)
 

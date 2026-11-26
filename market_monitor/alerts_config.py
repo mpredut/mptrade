@@ -25,6 +25,7 @@ from state_io import encode_json_payload, read_text_lines
 # Scalar key -> (type, destination: "ac" in alert_config or "top" in cfg).
 _SETTING_KEYS = {
     "cooldown_minutes": (int, "ac"),
+    "escalation_step_ratio": (float, "ac"),
     "lookback_hours": (int, "ac"),
     "max_monitored": (int, "top"),
     "max_new_coins": (int, "top"),
@@ -86,7 +87,7 @@ def load_config(path: str) -> dict:
                         if typ is int
                         else "setting must be finite"
                     )
-                min_allowed = 0 if key_low == "cooldown_minutes" else 1
+                min_allowed = 0 if key_low in ("cooldown_minutes", "escalation_step_ratio") else 1
                 if v < min_allowed:
                     raise ValueError(f"setting must be >= {min_allowed}")
                 (ac if where == "ac" else cfg)[key_low] = v
@@ -106,7 +107,7 @@ def load_config(path: str) -> dict:
         "watch", "sources", "discover_new_coins", "max_monitored",
         "max_new_coins", "new_coins_scan_seconds", "price_scan_seconds",
     }
-    required_alert = {"default", "dynamic", "cooldown_minutes", "lookback_hours"}
+    required_alert = {"default", "dynamic", "cooldown_minutes", "escalation_step_ratio", "lookback_hours"}
     missing = sorted(required_top - cfg.keys()) + sorted(required_alert - ac.keys())
     if missing:
         raise ValueError("Missing mandatory alert settings: " + ", ".join(missing))

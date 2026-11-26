@@ -1948,6 +1948,7 @@ def test_alerts_config__pair_rejects_extra_slashes_and_load_config_rejects_iter7
         "default = 4 / 8\n"
         "new_coin = 12 / 25\n"
         "cooldown_minutes = 30\n"
+        "escalation_step_ratio = 0.35\n"
         "lookback_hours = 24\n"
         "max_monitored = 3.5\n"
         "max_new_coins = 5\n"

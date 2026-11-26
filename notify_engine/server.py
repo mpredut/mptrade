@@ -379,7 +379,9 @@ class NotificationServer:
                         atype = obj_attr(first, "alert_type", "alert")
                         pchg = safe_float(obj_attr(first, "percent_change", 0.0), 0.0)
                         dir_str = "\u25b2" if atype == "up" else "\u25bc"
-                        title = f"{sym} {dir_str} {pchg:+.2f}%"
+                        esc_tier = safe_int(obj_attr(first, "escalation_tier", 1), default=1)
+                        esc_suffix = f" [ESC #{esc_tier}]" if esc_tier > 1 else ""
+                        title = f"{sym} {dir_str} {pchg:+.2f}%{esc_suffix}"
                 elif is_new_coin:
                     title = AlertNotifier._format_new_coins_batch_title(alerts)
                 else:

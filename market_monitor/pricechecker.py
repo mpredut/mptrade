@@ -21,6 +21,7 @@ from botcore import (
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
+    safe_pos_int,
     sleep_monitoring_interval,
     start_monitoring_daemon_thread,
     stop_monitoring_thread,
@@ -48,15 +49,16 @@ _CANONICAL_CMC_SLUG = {
 # Threshold configuration (can be adjusted at any time)
 PRICE_ALERT_CONFIG = {
     "default": {
-        "up_percent": 4.1,    # Trigger an alert when the price rises by 5% from the 24h low
+        "up_percent": 4.1,    # Trigger an alert when the price rises by 4.1% from the 24h low
         "down_percent": 7.5,  # Trigger an alert when the price drops by 7.5% from the 24h high
     },
     "dynamic": {
         "up_percent": 12.0,    # Stricter threshold for dynamically added coins
         "down_percent": 25.0,  # Stricter threshold for dynamically added coins
     },
-    "lookback_hours": 24,    # Analysis interval (24 hours)
-    "cooldown_minutes": 30,  # Do not send the same alert more often than every 15 minutes
+    "lookback_hours": 24,       # Analysis interval (24 hours)
+    "cooldown_minutes": 30,     # Notification rate-limit (verification always runs every scan)
+    "escalation_step_ratio": 0.35,  # Re-notify during cooldown when move worsens by threshold * ratio
 }
 
 
@@ -64,7 +66,8 @@ class PriceAlert:
 
     def __init__(self, symbol: str, alert_type: str, current_price: float,
                  reference_price: float, percent_change: float, threshold: float,
-                 url: Optional[str] = None, reference_time: Optional[str] = None):
+                 url: Optional[str] = None, reference_time: Optional[str] = None,
+                 escalation_tier: int = 1, previous_percent_change: Optional[float] = None):
         self.symbol = "N/A" if isinstance(symbol, bool) or symbol is None else (str(symbol).strip() or "N/A")
         raw_atype = "down" if isinstance(alert_type, bool) or alert_type is None else (str(alert_type).strip().lower() or "down")
         self.alert_type = "up" if raw_atype in ("up", "rise", "\u25b2") else ("down" if raw_atype in ("down", "drop", "\u25bc") else raw_atype)
@@ -75,6 +78,8 @@ class PriceAlert:
         self.timestamp = time.time()
         self.url = "" if isinstance(url, bool) or url is None else str(url)
         self.reference_time = None if isinstance(reference_time, bool) else reference_time
+        self.escalation_tier = safe_pos_int(escalation_tier, default=1)
+        self.previous_percent_change = safe_float(previous_percent_change, default=None)
 
     def __str__(self) -> str:
         direction = "\U0001f680 RISE" if self.alert_type == "up" else "\U0001f4c9 DROP"
@@ -88,8 +93,16 @@ class PriceAlert:
                 except (OSError, OverflowError, ValueError):
                     pass
         url_line = f"\U0001f517 CoinMarketCap: {self.url}\n" if self.url else ""
+        esc_suffix = ""
+        if self.escalation_tier > 1:
+            prev_part = (
+                f", prev {self.previous_percent_change:+.2f}%"
+                if self.previous_percent_change is not None
+                else ""
+            )
+            esc_suffix = f" [ESCALATION #{self.escalation_tier}{prev_part}]"
         return (
-            f"\n{emoji} {direction} {emoji}\n"
+            f"\n{emoji} {direction}{esc_suffix} {emoji}\n"
             f"\U0001f4ca Coin: {self.symbol}\n"
             f"\U0001f4b0 Current price: ${self.current_price:.4f}\n"
             f"\U0001f4c8 Reference: ${self.reference_price:.4f} ({'24h low' if self.alert_type == 'up' else '24h high'}, at {reference_time})\n"
@@ -111,6 +124,8 @@ class PriceAlert:
             "reference_price": self.reference_price,
             "percent_change": self.percent_change,
             "threshold": self.threshold,
+            "escalation_tier": self.escalation_tier,
+            "previous_percent_change": self.previous_percent_change,
             "timestamp": self.timestamp,
             "timestamp_readable": ts_readable,
             "reference_time": self.reference_time,
@@ -151,24 +166,77 @@ class PriceChecker:
             else None
         )
 
-        # Prevent spam: remember the last alert per symbol and alert type
+        # Notification gate state (strictly for outgoing notifications, never blocks verification).
+        # _last_alert_time keeps float timestamps keyed by "<SYMBOL>_<dir>" for backwards compatibility.
         self._last_alert_time = defaultdict(float)
-        if self.state_file and os.path.exists(self.state_file):
-            try:
-                raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
-                if isinstance(raw, dict):
-                    now = time.time()
-                    for k, v in raw.items():
-                        if isinstance(k, str) and k.strip():
-                            ts = safe_nonneg_float(v, default=None)
-                            if ts is not None and 0.0 < ts <= now + 60.0:
-                                self._last_alert_time[k.strip()] = min(ts, now)
-            except Exception:
-                pass
+        self._last_alert_magnitude: Dict[str, float] = {}
+        self._last_alert_tier: Dict[str, int] = {}
+        self._last_logged_snapshot: Dict[str, tuple] = {}
+        self._load_notification_state()
 
         # Thread for continuous analysis
         self._thread = None
         self._running = False
+
+    @staticmethod
+    def _alert_key(symbol: str, alert_type: str) -> str:
+        return f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
+
+    def _load_notification_state(self) -> None:
+        if not self.state_file or not os.path.exists(self.state_file):
+            return
+        try:
+            raw = load_json_state(self.state_file, default_factory=dict, fail_closed=False, label="PriceChecker cooldowns")
+            if not isinstance(raw, dict):
+                return
+            now = time.time()
+            for k, v in raw.items():
+                if not isinstance(k, str) or not k.strip():
+                    continue
+                key = k.strip()
+                if isinstance(v, dict):
+                    ts = safe_nonneg_float(v.get("ts"), default=None)
+                    if ts is not None and 0.0 < ts <= now + 60.0:
+                        self._last_alert_time[key] = min(ts, now)
+                        mag = safe_pos_float(v.get("last_pct"), default=None)
+                        if mag is not None:
+                            self._last_alert_magnitude[key] = mag
+                        self._last_alert_tier[key] = safe_pos_int(v.get("tier"), default=1)
+                else:
+                    ts = safe_nonneg_float(v, default=None)
+                    if ts is not None and 0.0 < ts <= now + 60.0:
+                        self._last_alert_time[key] = min(ts, now)
+                        self._last_alert_tier[key] = 1
+        except Exception:
+            pass
+
+    def _save_notification_state(self) -> None:
+        if not self.state_file:
+            return
+        payload = {}
+        for key, raw_ts in self._last_alert_time.items():
+            ts = safe_pos_float(raw_ts, default=None)
+            if ts is None:
+                continue
+            entry: Dict[str, object] = {
+                "ts": ts,
+                "tier": safe_pos_int(self._last_alert_tier.get(key), default=1),
+            }
+            mag = safe_pos_float(self._last_alert_magnitude.get(key), default=None)
+            if mag is not None:
+                entry["last_pct"] = round(mag, 4)
+            payload[key] = entry
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
+            save_json_state(self.state_file, payload, indent=2)
+        except Exception:
+            pass
+
+    def _effective_sample_interval_sec(self) -> float:
+        cache_sync = safe_pos_float(getattr(self.cachePriceAll, "sync_interval_sec", None), default=None)
+        cfg_scan = safe_pos_float(self.config.get("price_scan_seconds") if isinstance(self.config, dict) else None, default=None)
+        candidates = [v for v in (cache_sync, cfg_scan) if v is not None]
+        return max(1.0, min(candidates)) if candidates else 60.0
 
     def _get_price_history_last_hours(self, symbol: str, hours: float):
         """Return compact validated (timestamp_ms, price, readable_time) tuples."""
@@ -176,8 +244,8 @@ class PriceChecker:
         if hours_f is None:
             return []
         eff_hours = min(hours_f, 24.0 * 365.0)
-        mins = eff_hours * 60.0
-        history_limit = max(1000, min(100_000, math.ceil(mins) + 2))
+        sample_sec = self._effective_sample_interval_sec()
+        history_limit = max(1000, min(100_000, math.ceil((eff_hours * 3600.0) / sample_sec) + 120))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
         cutoff_time = (time.time() - eff_hours * 3600) * 1000
 
@@ -252,20 +320,93 @@ class PriceChecker:
             "newest_time": self._readable_time(newest_entry),
         }
 
-    def _should_send_alert(self, symbol: str, alert_type: str) -> bool:
-        """Check whether we can send a new alert (spam prevention)."""
-        key = f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"
-        now = time.time()
+    def _evaluate_notification_gate(
+        self,
+        symbol: str,
+        alert_type: str,
+        *,
+        percent_change: Optional[float] = None,
+        threshold: Optional[float] = None,
+        now: Optional[float] = None,
+    ) -> tuple[bool, str, int, Optional[float], Optional[float]]:
+        """Hybrid notification gate: enforce cooldown_minutes, with worsening escalation bypass.
+
+        Returns ``(allowed, reason, tier, prev_signed_pct, next_escalation_signed_pct)``.
+        Strictly gates outgoing notifications; threshold verification always runs freely.
+        """
+        atype = str(alert_type or "").strip().lower()
+        key = self._alert_key(symbol, atype)
+        now_ts = time.time() if now is None else safe_float(now, default=time.time())
         lf = safe_nonneg_float(self._last_alert_time.get(key, 0.0), default=None)
-        if lf is not None and lf <= now:
+        if lf is not None and lf <= now_ts:
             last_time = lf
         else:
             last_time = 0.0
             self._last_alert_time[key] = 0.0
+            self._last_alert_magnitude.pop(key, None)
+            self._last_alert_tier.pop(key, None)
+
         cd_min = safe_nonneg_float(self.config.get("cooldown_minutes", 30), default=30.0)
         cooldown_seconds = cd_min * 60.0
+        if last_time <= 0.0 or (now_ts - last_time) >= cooldown_seconds:
+            return True, "initial", 1, None, None
 
-        return (now - last_time) >= cooldown_seconds
+        ratio = safe_nonneg_float(
+            self.config.get("escalation_step_ratio", PRICE_ALERT_CONFIG["escalation_step_ratio"]),
+            default=0.0,
+        )
+        pct_f = safe_float(percent_change, default=None)
+        mag = abs(pct_f) if pct_f is not None else None
+        thr = safe_pos_float(threshold, default=None)
+        cur_tier = safe_pos_int(self._last_alert_tier.get(key), default=1)
+        last_mag = safe_pos_float(self._last_alert_magnitude.get(key), default=None)
+        baseline_mag = last_mag if last_mag is not None else thr
+        sign = -1.0 if atype == "down" else 1.0
+        prev_signed = (sign * baseline_mag) if baseline_mag is not None else None
+        next_target_mag = (
+            (baseline_mag + (thr * ratio))
+            if (ratio > 0.0 and thr is not None and baseline_mag is not None)
+            else None
+        )
+        next_signed = (sign * next_target_mag) if next_target_mag is not None else None
+
+        if mag is not None and next_target_mag is not None and mag >= next_target_mag - 1e-9:
+            return True, "escalation", cur_tier + 1, prev_signed, next_signed
+        return False, "cooldown", cur_tier, prev_signed, next_signed
+
+    def _should_send_alert(
+        self,
+        symbol: str,
+        alert_type: str,
+        *,
+        percent_change: Optional[float] = None,
+        threshold: Optional[float] = None,
+    ) -> bool:
+        """Check whether an outgoing notification is allowed under the hybrid cooldown policy."""
+        allowed, _, _, _, _ = self._evaluate_notification_gate(
+            symbol,
+            alert_type,
+            percent_change=percent_change,
+            threshold=threshold,
+        )
+        return allowed
+
+    def _record_notification_sent(
+        self,
+        symbol: str,
+        alert_type: str,
+        percent_change: float,
+        tier: int,
+        *,
+        now: Optional[float] = None,
+    ) -> None:
+        key = self._alert_key(symbol, alert_type)
+        now_ts = time.time() if now is None else safe_float(now, default=time.time())
+        self._last_alert_time[key] = now_ts
+        pct_f = safe_float(percent_change, default=None)
+        if pct_f is not None:
+            self._last_alert_magnitude[key] = abs(pct_f)
+        self._last_alert_tier[key] = safe_pos_int(tier, default=1)
 
     def _is_dynamic_symbol(self, symbol: str) -> bool:
         symbol_added_time = getattr(self.cachePriceAll, "symbol_added_time", {})
@@ -290,14 +431,11 @@ class PriceChecker:
             "down_percent": safe_pos_float(raw.get("down_percent"), default=def_down),
         }
 
-    def check_symbol(self, symbol: str) -> List[PriceAlert]:
-        """Check a symbol and return a list of alerts (0, 1, or 2)."""
-        alerts = []
+    def evaluate_symbol(self, symbol: str) -> tuple[Dict, List[Dict]]:
+        """Pure threshold verification for ``symbol`` (independent of notification cooldown)."""
         stats = self._calculate_24h_stats(symbol)
-
         if not _parse_bool_flag(stats.get("has_data"), False):
-            print(f"[Checker][{symbol}] {stats.get('error', 'Unknown error')}")
-            return alerts
+            return stats, []
 
         current_price = stats["current_price"]
         up_percent = stats["up_from_min"]
@@ -305,44 +443,108 @@ class PriceChecker:
         thresholds = self._get_thresholds_for_symbol(symbol)
         up_threshold = thresholds["up_percent"]
         down_threshold = thresholds["down_percent"]
+        stats["up_threshold"] = up_threshold
+        stats["down_threshold"] = down_threshold
+
         rth_closed_eq = (
             is_rth_gate_enabled(getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open)
             and is_rth_equity_symbol(symbol, getattr(self.cachePriceAll, "price_factory", None))
             and not is_us_rth_open()
         )
-
-        # Check for price increase (upper threshold)
+        breaches: List[Dict] = []
         if not rth_closed_eq and up_percent >= up_threshold:
-            self._maybe_append_price_alert(
-                alerts,
-                symbol,
-                "up",
-                current_price,
-                stats["min_price"],
-                stats.get("min_price_timestamp_readable"),
-                up_percent,
-                up_threshold,
+            breaches.append(
+                {
+                    "alert_type": "up",
+                    "current_price": current_price,
+                    "reference_price": stats["min_price"],
+                    "reference_time": stats.get("min_price_timestamp_readable"),
+                    "percent_change": up_percent,
+                    "threshold": up_threshold,
+                }
             )
-
-        # Check for price decrease (lower threshold)
         if not rth_closed_eq and down_percent <= -down_threshold:
-            self._maybe_append_price_alert(
+            breaches.append(
+                {
+                    "alert_type": "down",
+                    "current_price": current_price,
+                    "reference_price": stats["max_price"],
+                    "reference_time": stats.get("max_price_timestamp_readable"),
+                    "percent_change": down_percent,
+                    "threshold": down_threshold,
+                }
+            )
+        return stats, breaches
+
+    def _resolve_cmc_url(self, symbol: str) -> str:
+        try:
+            cmc_url = f"https://coinmarketcap.com/search/?q={quote(symbol)}"
+            base = get_base_symbol(symbol) or symbol
+            canonical = _CANONICAL_CMC_SLUG.get((base or "").upper())
+            if canonical:
+                return f"https://coinmarketcap.com/currencies/{canonical}/"
+            for candidate in (symbol, base):
+                if not candidate:
+                    continue
+                for platform in getattr(getattr(self.cachePriceAll, "price_factory", None), "_platforms", []):
+                    if getattr(platform, "platform_name", "") != "CoinMarketCap":
+                        continue
+                    listings = getattr(platform, "_all_listings", {})
+                    metadata = casefold_get(listings, candidate) if isinstance(listings, dict) else None
+                    if metadata and metadata.get("slug"):
+                        return f"https://coinmarketcap.com/currencies/{metadata['slug']}/"
+            return cmc_url
+        except Exception:
+            return f"https://coinmarketcap.com/search/?q={quote(symbol)}"
+
+    def check_symbol(self, symbol: str) -> List[PriceAlert]:
+        """Verify ``symbol`` thresholds and emit only notifications permitted by the hybrid gate."""
+        alerts: List[PriceAlert] = []
+        stats, breaches = self.evaluate_symbol(symbol)
+
+        if not _parse_bool_flag(stats.get("has_data"), False):
+            print(f"[Checker][{symbol}] {stats.get('error', 'Unknown error')}")
+            return alerts
+
+        suppressed_notes: List[str] = []
+        state_dirty = False
+        for breach in breaches:
+            if self._maybe_append_price_alert(
                 alerts,
                 symbol,
-                "down",
-                current_price,
-                stats["max_price"],
-                stats.get("max_price_timestamp_readable"),
-                down_percent,
-                down_threshold,
-            )
+                breach["alert_type"],
+                breach["current_price"],
+                breach["reference_price"],
+                breach.get("reference_time"),
+                breach["percent_change"],
+                breach["threshold"],
+                suppressed_notes=suppressed_notes,
+            ):
+                state_dirty = True
 
-        print(
-            f"[Checker][{symbol}] Price: ${current_price:.4f} | "
-            f"\u2191 {up_percent:+.2f}% (threshold +{up_threshold}%) | "
-            f"\u2193 {down_percent:+.2f}% (threshold -{down_threshold}%) | "
-            f"Min: ${stats['min_price']:.4f} | Max: ${stats['max_price']:.4f}"
+        if state_dirty:
+            self._save_notification_state()
+
+        current_price = stats["current_price"]
+        up_percent = stats["up_from_min"]
+        down_percent = stats["down_from_max"]
+        up_threshold = stats["up_threshold"]
+        down_threshold = stats["down_threshold"]
+        snap_sig = (
+            round(current_price, 8),
+            round(stats["min_price"], 8),
+            round(stats["max_price"], 8),
+            tuple(suppressed_notes),
         )
+        if alerts or self._last_logged_snapshot.get(symbol) != snap_sig:
+            self._last_logged_snapshot[symbol] = snap_sig
+            note_suffix = f" | {'; '.join(suppressed_notes)}" if suppressed_notes else ""
+            print(
+                f"[Checker][{symbol}] Price: ${current_price:.4f} | "
+                f"\u2191 {up_percent:+.2f}% (threshold +{up_threshold}%) | "
+                f"\u2193 {down_percent:+.2f}% (threshold -{down_threshold}%) | "
+                f"Min: ${stats['min_price']:.4f} | Max: ${stats['max_price']:.4f}{note_suffix}"
+            )
 
         return alerts
 
@@ -356,51 +558,37 @@ class PriceChecker:
         reference_time: object,
         percent_change: float,
         threshold: float,
-    ) -> None:
-        if self._should_send_alert(symbol, alert_type):
-            try:
-                cmc_url = f"https://coinmarketcap.com/search/?q={quote(symbol)}"
-                base = get_base_symbol(symbol) or symbol
-                canonical = _CANONICAL_CMC_SLUG.get((base or "").upper())
-                if canonical:
-                    cmc_url = f"https://coinmarketcap.com/currencies/{canonical}/"
-                else:
-                    for candidate in (symbol, base):
-                        if not candidate:
-                            continue
-                        found_slug = False
-                        for platform in getattr(getattr(self.cachePriceAll, "price_factory", None), "_platforms", []):
-                            if getattr(platform, "platform_name", "") != "CoinMarketCap":
-                                continue
-                            listings = getattr(platform, "_all_listings", {})
-                            metadata = casefold_get(listings, candidate) if isinstance(listings, dict) else None
-                            if metadata and metadata.get("slug"):
-                                cmc_url = f"https://coinmarketcap.com/currencies/{metadata['slug']}/"
-                                found_slug = True
-                                break
-                        if found_slug:
-                            break
-            except Exception:
-                cmc_url = f"https://coinmarketcap.com/search/?q={quote(symbol)}"
-            alerts.append(
-                PriceAlert(
-                    symbol=symbol,
-                    alert_type=alert_type,
-                    current_price=current_price,
-                    reference_price=reference_price,
-                    reference_time=reference_time,
-                    percent_change=percent_change,
-                    threshold=threshold,
-                    url=cmc_url,
-                )
+        *,
+        suppressed_notes: Optional[List[str]] = None,
+    ) -> bool:
+        allowed, reason, tier, prev_signed, next_signed = self._evaluate_notification_gate(
+            symbol,
+            alert_type,
+            percent_change=percent_change,
+            threshold=threshold,
+        )
+        if not allowed:
+            if suppressed_notes is not None:
+                esc_hint = f", next esc {next_signed:+.2f}%" if next_signed is not None else ""
+                suppressed_notes.append(f"{alert_type.upper()} breach muted ({reason}{esc_hint})")
+            return False
+
+        alerts.append(
+            PriceAlert(
+                symbol=symbol,
+                alert_type=alert_type,
+                current_price=current_price,
+                reference_price=reference_price,
+                reference_time=reference_time,
+                percent_change=percent_change,
+                threshold=threshold,
+                url=self._resolve_cmc_url(symbol),
+                escalation_tier=tier,
+                previous_percent_change=prev_signed,
             )
-            self._last_alert_time[f"{str(symbol or '').strip().upper()}_{str(alert_type or '').strip().lower()}"] = time.time()
-            if self.state_file:
-                try:
-                    os.makedirs(os.path.dirname(os.path.abspath(self.state_file)), exist_ok=True)
-                    save_json_state(self.state_file, dict(self._last_alert_time), indent=2)
-                except Exception:
-                    pass
+        )
+        self._record_notification_sent(symbol, alert_type, percent_change, tier)
+        return True
 
     def check_all_symbols(self) -> List[PriceAlert]:
         """Check all symbols in the watchlist."""
