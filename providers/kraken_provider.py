@@ -1283,7 +1283,8 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         krk_sym = ensure_quote_suffix(base_u, "USD") if base_u else str(symbol or "").strip().upper()
         return series_to_historical_points(self.ohlc_series(krk_sym, 60))
 
-    def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
+    def ohlc_series(self, symbol: str, interval_min: int, *, min_bars: Optional[int] = None) -> ClosedPriceSeries:
+        _ = min_bars
         interval_i = require_pos_ohlc_interval(symbol, interval_min)
         try:
             client = self._client()

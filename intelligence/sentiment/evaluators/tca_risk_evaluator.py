@@ -40,7 +40,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     pct_delta,
     prune_closed_equity_stale_metrics,
 )
-from instrument_registry import casefold_get, resolve_symbol_identity
+from instrument_registry import canonical_display_symbol, casefold_get, resolve_symbol_identity
 from providers.base import MarketDataProvider
 from providers.quantity import venue_fee_cap_quantity
 from providers.venue_metadata import ProviderVenueMetadataMixin
@@ -278,12 +278,13 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
         for o in open_orders:
             if not isinstance(o, dict):
                 continue
-            sym = str(o.get("symbol") or o.get("pair") or o.get("ticker") or "").strip().upper()
+            raw_sym = str(o.get("symbol") or o.get("pair") or o.get("ticker") or "").strip()
+            v_norm = normalize_venue_name(o.get("venue"))
+            sym = canonical_display_symbol(raw_sym, venue=v_norm) or raw_sym.upper()
             side = normalize_side(o.get("side")) or str(o.get("side") or "").strip().upper()
             lim_px = first_pos_float(o.get("price"), o.get("px"), o.get("limit_price"), o.get("limit"))
             if not sym or lim_px is None or lim_px <= 0.0:
                 continue
-            v_norm = normalize_venue_name(o.get("venue"))
             is_eq_o = is_equity_venue_or_suffix(sym, v_norm)
             scoped_sym = ensure_equity_suffix(sym, is_equity=is_eq_o)
 
@@ -390,7 +391,7 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 if isinstance(m_entry, dict)
                 else 0
             )
-            explicit_tick = safe_pos_float(o.get("tick_size"), default=None) or tick_by_vs.get((v_norm, sym))
+            explicit_tick = safe_pos_float(o.get("tick_size"), default=None) or tick_by_vs.get((v_norm, sym.upper()))
             dec = (
                 _obs_px_dec(explicit_tick)
                 if explicit_tick is not None

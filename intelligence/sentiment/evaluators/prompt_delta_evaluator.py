@@ -23,6 +23,7 @@ from botcore import (
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
+    safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
@@ -217,7 +218,7 @@ def _resolve_block_age_sec(
     now_ts: float,
 ) -> Optional[float]:
     """Return upstream source age in seconds for a delta-managed block when deterministically known."""
-    if (d_age := safe_pos_float(domain_ages.get(domain_key), default=None)) is not None:
+    if (d_age := safe_nonneg_float(domain_ages.get(domain_key), default=None)) is not None:
         return d_age
     raw_ts = payload.get("ts") if payload.get("ts") is not None else payload.get("timestamp")
     ts_s = normalize_epoch_sec(raw_ts, default=0.0, allow_iso=True) or 0.0

@@ -1292,9 +1292,10 @@ class VenueTrailingMapsCollector(PortfolioCacheCollectorBase):
                 continue
             default_quote = venue_default_quote(trail_venue)
             for k_asset, k_st in raw_trail.items():
-                if not (k_up := str(k_asset).strip().upper()):
+                if not (k_raw := str(k_asset).strip()):
                     continue
-                k_key = k_up if (not default_quote or split_symbol_assets(k_up) is not None) else f"{k_up}{default_quote}"
+                k_quoted = ensure_quote_suffix(k_raw, default_quote) if default_quote else k_raw
+                k_key = canonical_display_symbol(k_quoted, venue=trail_venue) or k_quoted.upper()
                 norm_st = k_st if isinstance(k_st, dict) and k_st.get("peak") is not None else ({"peak": k_pk} if (k_pk := safe_pos_float(k_st, default=0.0) or 0.0) > 0 else None)
                 if norm_st is not None:
                     trailing_map.setdefault(k_key, norm_st)

@@ -248,6 +248,55 @@ class TestHyperliquidTrailing(TrailingTestBase):
             self.assertEqual(res.outcome, "active")
             self.assertAlmostEqual(prov_bull.orders[0]["qty"], 5.0)
 
+    def test_total_qty_fetches_balances_once_without_tick_cache(self):
+        prov = FakeHLProvider(price=50.0, total=20.0, held=5.0)
+        ts = self._adapter(prov, enabled=True)
+        self.assertIsNone(ts._tick_balances)
+        self.assertAlmostEqual(ts.total_qty("HYPE"), 20.0)
+        self.assertEqual(prov.balance_calls, 1)
+
+    def test_auto_rebuy_forwards_min_bars_to_hyperliquid_and_binance_ohlc_series(self):
+        from providers.binance_provider import BinanceProvider
+        from providers.hyperliquid_provider import HyperliquidProvider
+
+        hl_ts_mod.REBUY_MODE_BY_ASSET["HYPE"] = "auto"
+        hl_lookbacks: list[int] = []
+        now_ms = 1_795_750_000_000
+
+        class _StubHLClient:
+            def candles(self, coin: str, iv: str, lookback_h: int):
+                hl_lookbacks.append(int(lookback_h))
+                n_bars = max(1, int(lookback_h) // 24)
+                return [
+                    {"t": now_ms - (n_bars - i) * 86_400_000, "T": now_ms - (n_bars - i - 1) * 86_400_000 - 1,
+                     "o": "40", "h": "41", "l": "39", "c": "40", "v": "100"}
+                    for i in range(n_bars)
+                ]
+
+        hl_prov = HyperliquidProvider(token="HYPE")
+        hl_prov._require_hl_client_and_pair = lambda _op: (_StubHLClient(), "@107", "0xabc")
+        hl_prov.get_current_price = lambda _sym: 55.0
+        ts = self._adapter(hl_prov, enabled=True, rebuy_trend_days=100)
+        self.assertTrue(ts.rebuy_enabled_for("HYPE"))
+        self.assertEqual(hl_lookbacks, [102 * 24])
+
+        bn_limits: list[int] = []
+
+        class _StubBinanceClient:
+            def get_klines(self, *, symbol: str, interval: str, limit: int):
+                bn_limits.append(int(limit))
+                return [
+                    [now_ms - (limit - i) * 86_400_000, "40", "41", "39", "40", "100",
+                     now_ms - (limit - i - 1) * 86_400_000 - 1]
+                    for i in range(limit)
+                ]
+
+        bn_prov = BinanceProvider()
+        with patch("providers.binance_provider._get_bapi", return_value=SimpleNamespace(client=_StubBinanceClient())):
+            bn_series = bn_prov.ohlc_series("BTCUSDC", 1440, min_bars=100)
+        self.assertEqual(bn_limits, [102])
+        self.assertGreaterEqual(len(bn_series.closes), 100)
+
 
 def test_dynamic_trailing_venue_derivation_across_intents_telemetry_and_ownership(tmp_path: Path):
     """active_intents, VenueTrailingMapsCollector, and ownership_inventory derive trailing venues dynamically."""
@@ -302,13 +351,20 @@ def test_dynamic_trailing_venue_derivation_across_intents_telemetry_and_ownershi
     assert "bybit_trailing" in by_owner
     assert by_owner["bybit_trailing"]["venue"] == "bybit"
 
-    # 2. VenueTrailingMapsCollector dynamically discovers Hyperliquid & Bybit without hardcoded venue maps
+    # 2. VenueTrailingMapsCollector dynamically discovers Hyperliquid, Kraken mixed-case xStocks, & Bybit
+    (bots_dir / "trailing_state_kraken.json").write_text(
+        json.dumps({"SPCXx": {"peak": 16.5}}),
+        encoding="utf-8",
+    )
     t_map, by_venue = VenueTrailingMapsCollector(start_sync=False).collect(
         str(cdb_dir), workspace_dir=str(tmp_path)
     )
     assert "hyperliquid" in by_venue
     assert by_venue["hyperliquid"]["HYPEUSDC"]["peak"] == pytest.approx(52.0)
     assert t_map["HYPEUSDC"]["peak"] == pytest.approx(52.0)
+    assert "SPCXxUSD" in by_venue["kraken"]
+    assert "SPCXXUSD" not in by_venue["kraken"]
+    assert by_venue["kraken"]["SPCXxUSD"]["peak"] == pytest.approx(16.5)
     assert "bybit" in by_venue
     assert by_venue["bybit"]["SOL"]["peak"] == pytest.approx(180.0)
 

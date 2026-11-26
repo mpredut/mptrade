@@ -977,5 +977,52 @@ def test_post_compaction_cold_resume_reports_thread_compacted_and_hour_elapsed_h
     assert "| Iter #11 (+2.5d vs prev)" in p_day
 
 
+def test_zero_source_age_and_mixed_case_xstock_tca_preservation() -> None:
+    """Zero domain source_age suppresses stale fallback src_age, and TCA preserves mixed-case xStock identity."""
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    s0 = _make_rich_sensors(t0)
+    s0.source_ages_sec["fear_greed"] = 0.0
+    s0.fear_greed["ts"] = t0 - 3600.0
+    p0 = evaluate_prompt_delta_plan(s0, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="cid-z0")
+    s1 = _make_rich_sensors(t0 + 180.0, anchor_ts=t0)
+    s1.source_ages_sec["fear_greed"] = 0.0
+    s1.fear_greed["ts"] = t0 - 3600.0
+    p1 = evaluate_prompt_delta_plan(
+        s1, asset_scope="crypto", now_ts=t0 + 180.0, is_warm_resume=True, prev_state=p0.next_state, conversation_id="cid-z0"
+    )
+    fg_tok = next(tok for tok in p1.omitted_summary_tokens if tok.startswith("Fear&Greed("))
+    assert "[src_age=" not in fg_tok
+
+    seen_syms: list[str] = []
+    orig_resolver = __import__(
+        "intelligence.sentiment.evaluators.tca_risk_evaluator", fromlist=["resolve_asset_session_policy"]
+    ).resolve_asset_session_policy
+
+    def _spy_resolver(sym: str):
+        seen_syms.append(sym)
+        return orig_resolver(sym)
+
+    orders = [{"venue": "kraken", "symbol": "TSLAxUSD", "side": "SELL", "price": 100.5}]
+    prices = {"TSLAxUSD": {"price": 100.0, "vol_1h_pct": 1.0}}
+    micro = {
+        "TSLAxUSD": {
+            "best_bid": 99.95,
+            "best_ask": 100.05,
+            "ask_wall_px": 100.4,
+            "ask_wall_usd": 20_000.0,
+            "ask_depth_usd": 50_000.0,
+            "_ob_ts": t0,
+        }
+    }
+    tradable_positions = [{"venue": "kraken", "symbol": "TSLAxUSD", "tick_size": 0.05}]
+    with patch("intelligence.sentiment.evaluators.tca_risk_evaluator.resolve_asset_session_policy", side_effect=_spy_resolver):
+        enrich_open_limit_orders_tca(orders, prices, micro, now_ts=t0, tradable_positions=tradable_positions)
+    assert seen_syms == ["TSLAxUSD"]
+    assert orders[0]["recommended_front_run_px"] == pytest.approx(100.35)
+
+
+
 
 

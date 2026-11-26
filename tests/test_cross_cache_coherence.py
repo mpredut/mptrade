@@ -1464,4 +1464,25 @@ def test_kraken_multi_symbol_ws_fill_preserves_invalidation_and_cli_cross_cache_
     assert rc_ok == 0
 
 
+def test_touch_venue_ws_fetchtimes_does_not_resurrect_nonpositive_fetchtime():
+    """Zero or null fetchtime entries must be reported in missing_out and never stamped fresh by WS heartbeats."""
+    t0_ms = 1_795_750_000_000
+    cache_obj = {
+        "items": {"HYPEUSDC": [], "SOLUSDC": []},
+        "fetchtime": {"HYPEUSDC": 0, "SOLUSDC": t0_ms - 5_000},
+    }
+    missing: list[str] = []
+    touched = cacheaccount.CacheTradeManager.touch_venue_ws_fetchtimes_in_dict(
+        cache_obj,
+        t0_ms,
+        symbols=("HYPEUSDC", "SOLUSDC"),
+        create_missing=False,
+        missing_out=missing,
+    )
+    assert touched is True
+    assert missing == ["HYPEUSDC"]
+    assert cache_obj["fetchtime"]["HYPEUSDC"] == 0
+    assert cache_obj["fetchtime"]["SOLUSDC"] == t0_ms
+
+
 

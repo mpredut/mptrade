@@ -454,10 +454,20 @@ class AuditedStrategyExecutor:
             return safe_nonneg_float(fn(symbol), default=0.0) or 0.0
         return MarketDataProvider.min_order_qty(self, symbol)
 
-    def ohlc_series(self, symbol: str, interval_min: int):
+    def ohlc_series(self, symbol: str, interval_min: int, *, min_bars: Optional[int] = None):
         """Preserve optional candle timestamps without expanding the protocol."""
         reader = getattr(self._executor, "ohlc_series", None)
         if callable(reader):
+            if min_bars is not None:
+                try:
+                    params = inspect.signature(reader).parameters
+                    accepts_min_bars = "min_bars" in params or any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_min_bars = False
+                if accepts_min_bars:
+                    return reader(symbol, interval_min, min_bars=min_bars)
             return reader(symbol, interval_min)
         interval_i = require_pos_ohlc_interval(symbol, interval_min)
         return ClosedPriceSeries(

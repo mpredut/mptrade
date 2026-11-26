@@ -1282,7 +1282,7 @@ class CacheTradeManager(CacheAccountManagerBase):
             )
         touch_syms = [
             s_sym for s_sym in cand_syms
-            if s_sym in ft and s_sym in items and ft.get(s_sym) != resolved_ms
+            if s_sym in items and safe_pos_float(ft.get(s_sym), default=None) is not None and ft.get(s_sym) != resolved_ms
         ]
         for s_sym in touch_syms:
             ft[s_sym] = resolved_ms

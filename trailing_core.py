@@ -1329,7 +1329,7 @@ class StrategyExecutorTrailingAdapter(TrailingAdapterBase):
             if cached and cached[1] == day:
                 sma = cached[0]
             else:
-                series = self._executor_for(pair).ohlc_series(pair, 1440)
+                series = self._executor_for(pair).ohlc_series(pair, 1440, min_bars=days)
                 raw_closes = getattr(series, "closes", None) if series is not None else None
                 closes = [
                     c_val
@@ -1404,8 +1404,6 @@ class StrategyExecutorTrailingAdapter(TrailingAdapterBase):
         return pair_val[0] if pair_val is not None else 0.0
 
     def total_qty(self, asset: str) -> float | None:
-        if self._tick_balances is None and self._fetch_balances_snapshot() is None:
-            return None
         pair_val = self._lookup_balance_pair(asset)
         if pair_val is None or pair_val[1] is None:
             return None

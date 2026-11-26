@@ -21,6 +21,7 @@ from botcore import (
     resolve_patched_attr,
     safe_nonneg_float,
     safe_pos_float,
+    safe_pos_int,
     _parse_bool_flag,
 )
 from cachepaths import (
@@ -720,12 +721,14 @@ class BinanceProvider(MarketDataProvider):
             self.fetch_ohlc_candles(symbol, interval=interval, lookback_days=days, drop_incomplete=False)
         )
 
-    def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
+    def ohlc_series(self, symbol: str, interval_min: int, *, min_bars: Optional[int] = None) -> ClosedPriceSeries:
         interval_i = require_pos_ohlc_interval(symbol, interval_min)
         iv = candle_interval(interval_i)
         # Cover a full 24h+ window for 5m/15m queries so 24h Volume Profile and 24h price-delta
         # stitching do not truncate at 22.33h (90 x 15m).
-        kline_limit = max(91, min(300, (1500 // interval_i) + 2)) if interval_i in (5, 15) else 91
+        min_bars_i = safe_pos_int(min_bars, default=None)
+        base_limit = max(91, min(1000, min_bars_i + 2)) if min_bars_i is not None else 91
+        kline_limit = max(base_limit, min(300, (1500 // interval_i) + 2)) if interval_i in (5, 15) else base_limit
         try:
             klines = _get_bapi().client.get_klines(symbol=symbol, interval=iv, limit=kline_limit)
         except Exception as exc:

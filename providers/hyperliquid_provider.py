@@ -1019,11 +1019,13 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         flow = cls.extract_spot_flow_15m_usd(raw_data, since_ts=since_ts)
         return flow[0] if flow is not None else None
 
-    def ohlc_series(self, symbol: str, interval_min: int) -> ClosedPriceSeries:
+    def ohlc_series(self, symbol: str, interval_min: int, *, min_bars: Optional[int] = None) -> ClosedPriceSeries:
         self.validate_symbol(symbol)
         interval = require_pos_ohlc_interval(symbol, interval_min)
         client, pair, _ = self._require_hl_client_and_pair(f"ohlc_series({symbol})")
-        lookback_h = max(25, (90 * interval) // 60) if interval in (5, 15) else max(1, (90 * interval) // 60)
+        min_bars_i = safe_pos_int(min_bars, default=None)
+        req_bars = max(90, min_bars_i + 2) if min_bars_i is not None else 90
+        lookback_h = max(25, (req_bars * interval) // 60) if interval in (5, 15) else max(1, (req_bars * interval) // 60)
         try:
             raw_candles = client.candles(pair, candle_interval(interval), lookback_h)
             return ClosedPriceSeries.from_raw_candles(
