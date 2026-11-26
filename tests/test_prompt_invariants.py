@@ -3029,6 +3029,40 @@ def test_cycle22_pre_submit_rejection_fix_and_wave5_invariants() -> None:
     }.issubset(bad_subjs)
 
 
+def test_cycle23_vs_btc_7d_after_block_tape_now_and_lh_return_bounds() -> None:
+    """Validate vs_btc(7d=...) when 7d appears after vs_btc(...), tape_15m now vs Price parity, and Long_Horizon >-100% returns."""
+    clean_c23 = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 2. MACRO, REGIME & CROSS-MARKET:\n"
+        "  * Multi-Month & Annual Structure:\n"
+        "    | Symbol | YTD | 30d | 90d | 52w Range (Pos52w) | 3y Range (Pos) | vs MA50 | vs MA200 | Swings (3y, YY-MM:px) |\n"
+        "    |---|---|---|---|---|---|---|---|---|\n"
+        "    | TAOUSDC | -15.4% | -27.6% | -21.7% | [$142.80..$377.60] (18.1%) | [$139.10..$999.90] (5.4%) | -20.6% | -21.1% | 24-12:402.0->25-04:167.6->now:185.2 |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * BTCUSDC: Price=$60,000.00\n"
+        "    - Trend: 15m=+0.10% 1h=+0.20% 6h=+1.00% 24h=+1.00% | 7d=-2.00%\n"
+        "  * TAOUSDC: Price=$185.20\n"
+        "    - Trend: 15m=+0.30% 1h=+0.40% 6h=+3.00% 24h=+1.50% | "
+        "tape_15m=[-15m:184.65, -1m:185.20, now:185.20] 15m_range=[184.65, 185.25] pos_15m=91.7% | "
+        "vs_btc(15m=+0.20%, 1h=+0.20%, 6h=+2.00%, 24h=+0.50%, 7d=-1.50%) | 7d=-3.50%\n"
+    )
+    assert audit_rendered_prompt_text(clean_c23) == []
+
+    bad_c23 = (
+        clean_c23
+        .replace("7d=-1.50%)", "7d=+4.00%)")
+        .replace("now:185.20] 15m_range=[184.65, 185.25]", "now:180.00] 15m_range=[179.50, 185.25]")
+        .replace("| -27.6% |", "| -105.0% |")
+    )
+    bad_subjs = {v.subject for v in audit_rendered_prompt_text(bad_c23)}
+    assert {
+        "TAOUSDC:7d",
+        "TAOUSDC:tape_now_vs_price",
+        "TAOUSDC:lh_impossible_return",
+    }.issubset(bad_subjs)
+
+
+
 
 
 

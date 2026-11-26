@@ -359,6 +359,7 @@ _NET_BUY_EDGE_BEST_RE = re.compile(
     r"\bnet_buy_edge=([+-]?[0-9.]+)bps\[maker\]\(best_buy=[a-z0-9_]+:([A-Za-z0-9_]+)\)"
 )
 _LH_SWING_PX_RE = re.compile(r"\b\d\d-\d\d:([0-9.]+[KMBkmb]?)")
+_LH_RET_CELL_RE = re.compile(r"\|\s*([+-]?[0-9.]+)%\s*(?=\|)")
 _GEO_RISK_SCORE_RE = re.compile(r"\brisk_score=([+-]?[0-9.]+)\b")
 _ADV_CONF_RE = re.compile(r"Macro Sentiment Advisor[^\n]*\bconf=([+-]?[0-9.]+)\b")
 _OO_FILL1H_CELL_RE = re.compile(r"\|\s*[+-]?[0-9.]+%\s*\|\s*([+-]?[0-9.]+)%\s*\|")
@@ -2452,7 +2453,7 @@ def _audit_prompt_cross_section_math(
         sym_u = sym.upper()
         sec3_px_by_sym[sym_u] = px
         h_map: dict[str, float] = {}
-        for m_hc in _HORIZON_CHG_RE.finditer(rest.split("vs_btc(", 1)[0]):
+        for m_hc in _HORIZON_CHG_RE.finditer(_VS_BTC_BLOCK_RE.sub("", rest)):
             if (hv := safe_float(m_hc.group(2), default=None)) is not None:
                 h_map.setdefault(m_hc.group(1), hv)
         hor_chg_by_sym[sym_u] = h_map
@@ -2588,6 +2589,14 @@ def _audit_prompt_cross_section_math(
                                 f"tape_15m {tk}={tv:g} outside 15m_range=[{lo15_t:g}, {hi15_t:g}]",
                             )
                         )
+            if (t_now := t_pts.get("now")) is not None and px > 0.0 and abs(t_now - px) / px > 0.005:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_TAPE_SWING_AND_FLOW_BOUNDS",
+                        f"{sym}:tape_now_vs_price",
+                        f"tape_15m now={t_now:g} diverges >0.5% from card Price={px:g}",
+                    )
+                )
             short_h_map: dict[str, float] = {}
             for m_sh in _SHORT_H_RE.finditer(rest.split("vs_btc(", 1)[0]):
                 if (sv := safe_float(m_sh.group(2), default=None)) is not None:
@@ -3113,6 +3122,16 @@ def _audit_prompt_cross_section_math(
                     )
                 )
         sw_yms = _LH_SWING_YM_RE.findall(swings_pre)
+        for ret_s in _LH_RET_CELL_RE.findall(m_lh.group(0)):
+            if (ret_v := safe_float(ret_s, default=None)) is not None and ret_v <= -100.0:
+                violations.append(
+                    InvariantViolation(
+                        "PROMPT_LONG_HORIZON_MATH",
+                        f"{lh_sym}:lh_impossible_return",
+                        f"Long_Horizon return cell {ret_v:.2f}% <= -100%",
+                    )
+                )
+                break
         if sw_yms != sorted(sw_yms):
             violations.append(
                 InvariantViolation(
