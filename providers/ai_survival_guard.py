@@ -699,11 +699,12 @@ def evaluate_ai_target_ev_guard(
     min_target_rr: float = DEFAULT_MIN_TARGET_RR,
     round_trip_fee_bps: Optional[float] = None,
 ) -> tuple[bool, str, dict[str, Any]]:
-    """Pure 4B-1 guard blocking ``urgency='NORMAL'`` intents whose explicit ``target_px`` has negative net EV or poor R:R.
+    """Pure 4B-1 guard blocking BUY entries and ``urgency='NORMAL'`` SELL intents whose explicit ``target_px`` has negative net EV or poor R:R.
 
     Returns ``(allowed, reason, metrics)``.
     - Never blocks intents without an explicit ``target_px`` (e.g. defensive exits or open-ended holds).
-    - Never blocks ``urgency == 'HIGH'`` intents.
+    - Bypasses only defensive ``SELL`` exits with ``urgency == 'HIGH'``; all ``BUY`` entries
+      (including momentum/breakout entries) must satisfy both positive-EV and ``min_target_rr`` floors.
     - Blocks when gross distance from entry ``price`` to ``target_px`` is strictly below
       ``max(0.10%, target_ev_fee_mult * venue_round_trip_fee_pct)``, OR when both ``target_px``
       and ``invalidation_px`` are set and gross ``reward / risk < min_target_rr`` (e.g. after chasing a REPLACE).
@@ -716,7 +717,7 @@ def evaluate_ai_target_ev_guard(
     if side not in ("BUY", "SELL"):
         return True, "", {}
     urgency = clean_upper_scalar(intent.get("urgency")) or "NORMAL"
-    if urgency == "HIGH":
+    if side == "SELL" and urgency == "HIGH":
         return True, "", {"bypassed_urgency": "HIGH"}
     eff_px = safe_pos_float(price, default=0.0) or 0.0
     if eff_px <= 0.0:

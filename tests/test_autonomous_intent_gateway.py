@@ -4264,15 +4264,23 @@ def test_fee_aware_ping_pong_and_4b1_negative_ev_target_guard(tmp_path):
     )
     assert ok_ev_good is True
 
-    # Urgency=HIGH bypasses 4B-1, and defensive SELL without target_px always passes
-    ok_ev_high, _, _ = evaluate_ai_target_ev_guard(
+    # Urgency=HIGH still enforces 4B-1 on BUY entries (no breakout bypass), while defensive SELL exits pass
+    ok_ev_high_buy, rsn_ev_high_buy, _ = evaluate_ai_target_ev_guard(
         {"decision": "BUY", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 200.4},
         decision="BUY",
         symbol="TAOUSD",
         venue="kraken",
         price=200.0,
     )
-    assert ok_ev_high is True
+    assert ok_ev_high_buy is False and "ai_negative_ev_target" in rsn_ev_high_buy
+    ok_ev_high_sell, _, _ = evaluate_ai_target_ev_guard(
+        {"decision": "SELL", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 199.6},
+        decision="SELL",
+        symbol="TAOUSD",
+        venue="kraken",
+        price=200.0,
+    )
+    assert ok_ev_high_sell is True
     ok_ev_notgt, _, _ = evaluate_ai_target_ev_guard(
         {"decision": "SELL", "order_type": "LIMIT", "urgency": "NORMAL"},
         decision="SELL",
@@ -5140,7 +5148,21 @@ def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(
     assert "ai_poor_rr_plan" in rsn_chased
     assert m_chased["reward_risk_ratio"] < 0.25
 
-    # urgency=HIGH bypasses R:R floor for defensive exits
+    # BUY with urgency=HIGH still enforces EV and R:R floors (momentum/breakout entries cannot bypass risk checks)
+    ok_high_buy_rr, rsn_high_buy_rr, m_high_buy_rr = evaluate_ai_target_ev_guard(
+        {"decision": "BUY", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 60850.0, "invalidation_px": 58700.0},
+        decision="BUY",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60577.10,
+        target_ev_fee_mult=2.0,
+        min_target_rr=0.50,
+    )
+    assert ok_high_buy_rr is False
+    assert "ai_poor_rr_plan" in rsn_high_buy_rr
+    assert m_high_buy_rr["reward_risk_ratio"] < 0.20
+
+    # urgency=HIGH bypasses R:R floor strictly for defensive SELL exits
     ok_high, _, _ = evaluate_ai_target_ev_guard(
         {"decision": "SELL", "order_type": "LIMIT", "urgency": "HIGH", "target_px": 60000.0, "invalidation_px": 62000.0},
         decision="SELL",
@@ -5348,6 +5370,11 @@ def test_min_target_rr_guard_explicit_cancel_decision_horizon_and_prompt_parity(
     assert "RR>=0.5x" in comp_p
     assert "re-evaluate R:R from new `limit_price` on replace" in comp_p
     assert "zero deterministic guards," not in comp_p
+    assert "only on poor R:R" not in full_p and "only on poor R:R" not in comp_p
+    assert "instead of chasing into poor R:R" in full_p and "instead of chasing into poor R:R" in comp_p
+    assert 'near-BBO maker `LIMIT` (`urgency:"HIGH"' not in full_p
+    assert 'near-BBO maker `LIMIT` (`urgency:"HIGH"' not in comp_p
+    assert '`urgency:"NORMAL"`' in full_p and '`urgency:"NORMAL"`' in comp_p
 
 
 

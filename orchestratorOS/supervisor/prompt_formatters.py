@@ -369,22 +369,22 @@ def build_supervisor_prompt(
                 "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance` `[0..1, 0.5=neutral]`), `rvol`, `taker_ratio`, L2 walls. "
                 f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when free cash is ample (avoid timid $500 tickets). "
                 "2) Confirmed breakouts (`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
-                "enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if capped by an ask wall or decelerating/distributing. "
+                "enter near-BBO maker `LIMIT` (explicit `limit_price` near `best_bid`/spot, `urgency:\"NORMAL\"`, positive-EV `target_px`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if capped by an ask wall or decelerating/distributing. "
                 "3) De-risk on negative velocity + unabsorbed selling.\n"
             )
         )
         limit_exec_rule = (
             "   - SPOT 'LIMIT' EXECUTION (PASSIVE OR NEAR-SPOT): All AI orders submit as `\"order_type\": \"LIMIT\"` (never taker MARKET) to control fill price and capture bid-ask spread "
-            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at live spot or `limit_price: null` with `urgency: \"HIGH\"` for urgent entries/reversals). "
+            "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; explicit near-spot `limit_price` with `urgency: \"NORMAL\"` for momentum entries; `limit_price: null` with `urgency: \"HIGH\"` only for urgent defensive exits/reversals). "
             "Audit `open_limit_orders` (`dist_from_spot_pct` & heuristic `fill_prob_1h_pct` anchored to live spot), "
             "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
             "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
             else (
                 "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: All AI orders submit as post-only `\"order_type\": \"LIMIT\"` (never taker MARKET; gateway re-checks live price and auto-steps 1 tick onto maker book) to capture spread and cut fees (check maker vs taker bps; "
-                "passive `limit_price` at bid/ask walls for swings; live spot/BBO or `limit_price: null` with `urgency: \"HIGH\"` for breakouts/reversals). "
+                "passive `limit_price` at bid/ask walls for swings; explicit live spot/BBO `limit_price` with `urgency: \"NORMAL\"` for breakouts; `limit_price: null` with `urgency: \"HIGH\"` only for urgent defensive exits/reversals). "
                 "Audit `open_limit_orders` (`dist_from_spot_pct`, `fill_prob_1h_pct`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr`/`slip`/`unf_off`/`lim_off` bps: "
-                "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) or wall-trapped (`recommended_front_run_px`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"` + `cancel_order_ids` or `HOLD` only on poor R:R); `'HOLD'` leaves resting orders untouched.\n"
+                "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) or wall-trapped (`recommended_front_run_px`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (use `\"CANCEL\"` + `cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` leaves resting orders untouched.\n"
             )
         )
         structure_macro_rule = (
@@ -408,12 +408,12 @@ def build_supervisor_prompt(
             "Only AI-specific survival circuit breakers "
             "(anti-ping-pong flip cooldown unless `invalidation_px`/`target_px` or net edge triggers, 6h whipsaw cap, "
             + (
-                f"positive-EV `target_px` >= max(0.10%, {ev_fee_mult:g}x venue RT fee) on `urgency=NORMAL`, "
+                f"positive-EV `target_px` >= max(0.10%, {ev_fee_mult:g}x venue RT fee) on all `BUY` & `urgency=NORMAL` `SELL`, "
                 if ev_fee_mult > 0
                 else ""
             )
             + (
-                f"min R:R >= {min_tgt_rr:g}x when both `target_px` & `invalidation_px` are set on `urgency=NORMAL`, "
+                f"min R:R >= {min_tgt_rr:g}x when both `target_px` & `invalidation_px` are set on all `BUY` & `urgency=NORMAL` `SELL`, "
                 if min_tgt_rr > 0
                 else ""
             )
@@ -501,14 +501,14 @@ def build_supervisor_prompt(
             else (
                 f"- Entry playbook: (1) Deep dips (deceleration+absorption): size decisively at ${compact_half_usd:g}\u2013${compact_full_usd:g} when cash is ample; "
                 "(2) Confirmed breakouts (`vel_90s/5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
-                "enter near-BBO maker `LIMIT` (`urgency:\"HIGH\"`, tight `invalidation_px`) even at high `pos_15m`.\n"
+                "enter near-BBO maker `LIMIT` (explicit near-BBO `limit_price`, `urgency:\"NORMAL\"`, tight `invalidation_px`) even at high `pos_15m`.\n"
             )
         )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"
             f"- Apply thread rules ({compact_exec_desc}, `by=BOT` vs `by=AI` supervision, `cachedb/` & `statedb/` read access; "
             f"zero deterministic order_guard gates; AI survival breakers active: {compact_surv}; `conf>={min_conf:g}`, notional {min_usd:g}-{max_usd:g} USD{compact_xs_sfx}). "
-            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (`CANCEL`+`cancel_order_ids` or `HOLD` only on poor R:R).\n"
+            "All AI orders submit as `LIMIT`; re-evaluate R:R from new `limit_price` on replace (use `CANCEL`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R).\n"
             + compact_entry_bullet
             + "- Honor user chat instructions/overrides strictly for their stated instrument, action, and timeframe.\n"
             "- Format your response in TWO parts:\n"
