@@ -67,7 +67,6 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     format_atr_parts,
     format_equity_quote_meta_suffix,
     format_kinematic_parts,
-    format_multi_window_slopes_core,
     format_session_extremes_parts,
     format_session_vwap_summary,
     format_slope_val as _fmt_slope_val,
@@ -1121,25 +1120,6 @@ def _format_market_prices_section(
                 f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
                 f"rally_low={fmt_signed(sw_ral)}%, pullback_high={fmt_signed(sw_pb)}%{maj_sfx}){hist_sfx}"
             )
-        if any(k in pinfo for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h")):
-            gr_v = safe_float(pinfo.get("gradient_recent"), None)
-            grad_rec_sfx = f", grad_rec={_fmt_slope_val(gr_v, 4)}" if gr_v is not None and abs(gr_v) > 1e-9 else ""
-            gf_v = safe_float(pinfo.get("gradient_recent_fast"), None)
-            eps_v = safe_float(pinfo.get("epsilon"), None)
-            fast_sfx = (
-                f", grad_fast={_fmt_slope_val(gf_v, 4)}/eps={_fmt_slope_val(eps_v, 4, signed=False)}"
-                if gf_v is not None and eps_v is not None
-                else ""
-            )
-            g_parts = [
-                f"{g_lbl}={_fmt_slope_val(gv, 5)}"
-                for g_lbl, g_k in (("90s", "growth_90s"), ("3.7m", "growth_3_7m"), ("15m", "growth_15m"), ("2.5h", "growth_2_5h"))
-                if (gv := safe_float(pinfo.get(g_k), None)) is not None
-            ]
-            if s_core := format_multi_window_slopes_core(pinfo, fallback_full=False):
-                extras.append(f"slopes({s_core}{grad_rec_sfx}{fast_sfx})")
-            elif g_parts:
-                extras.append(f"g_coeff({', '.join(g_parts)})")
         if pinfo.get("vol_1h_pct") is not None and safe_pos_float(pinfo.get("atr_1h_pct"), default=None) is None:
             extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
         if atr_parts := format_atr_parts(pinfo):

@@ -108,7 +108,7 @@ def inspect_crypto_prompt(workspace_dir: str = ".") -> Dict[str, Any]:
         "vs_btc": "vs_btc(" in prompt,
         "kinematics": "kinematics(" in prompt,
         "kalman_vel": "kalman_vel=" in prompt,
-        "slopes": "slopes(" in prompt,
+        "no_raw_slopes": "slopes(" not in prompt and "g_coeff(" not in prompt,
         "orderbook_walls": "bid_wall=" in prompt and "ask_wall=" in prompt,
         "orderbook_depth_1pct": "depth_1pct=" in prompt,
         "cvd_15m": "cvd_15m=" in prompt,

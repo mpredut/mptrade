@@ -101,6 +101,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_cross_btc_metrics,
     compute_swing_wave_metrics,
     compute_volume_profile_metrics,
+    format_multi_window_slopes_core,
 )
 from intelligence.sentiment.evaluators.tca_risk_evaluator import (
     build_cross_market_context,
@@ -2636,7 +2637,7 @@ def test_swing_wave_metrics_fast_trends_execution_audit_and_unbiased_autonomy(tm
     prompt_out = captured[0]
     assert "swing_wave(low=0.1636, high=0.1778, rally_low=+8.68%, pullback_high=+0.00%)" in prompt_out
     assert "swings_7d=[-6.5%, +8.7%], avg_amp=7.59%" in prompt_out
-    assert "slopes(90s=+0.00092, 3.7m=+0.00064, 15m=+0.00045, 2.5h=+0.00021, grad_rec=+0.0012, grad_fast=+0.0018/eps=0.0004)" in prompt_out
+    assert "slopes(" not in prompt_out
     assert "g_coeff(" not in prompt_out
     assert "vol_1h=0.85%" in prompt_out
     assert "FULL READ ACCESS TO `cachedb/` & `statedb/`" in prompt_out
@@ -6082,28 +6083,28 @@ def test_six_prompt_telemetry_and_news_lexicon_refinements(tmp_path):
     6. News severity keyword filter strips generic stopwords, publisher names, and substring stem false positives.
     """
 
-    # 1. Sub-$1 coin slopes & g_coeff scientific formatting (< 1e-4)
-    lines_3a = _format_market_prices_section(
-        {
-            "ARBUSDC": {
-                "price": 0.163,
-                "trend": 0,
-                "slope_90s": -8.04e-6,
-                "slope_3_7m": 1.12e-5,
-                "slope_15m": -1.50e-6,
-                "slope_2_5h": 1.74e-7,
-                "gradient_recent_fast": 4.20e-6,
-                "epsilon": 3.50e-5,
-                "growth_90s": -8.04e-6,
-                "growth_3_7m": 1.12e-5,
-                "growth_15m": -1.50e-6,
-                "growth_2_5h": 1.74e-7,
-                "kalman_velocity": 0.14083,
-            }
-        }
+    # 1. Sub-$1 coin slopes scientific formatting (< 1e-4) stays in pretrade helper, omitted from Section 3 prompt
+    arb_slope_entry = {
+        "price": 0.163,
+        "trend": 0,
+        "slope_90s": -8.04e-6,
+        "slope_3_7m": 1.12e-5,
+        "slope_15m": -1.50e-6,
+        "slope_2_5h": 1.74e-7,
+        "gradient_recent_fast": 4.20e-6,
+        "epsilon": 3.50e-5,
+        "growth_90s": -8.04e-6,
+        "growth_3_7m": 1.12e-5,
+        "growth_15m": -1.50e-6,
+        "growth_2_5h": 1.74e-7,
+        "kalman_velocity": 0.14083,
+    }
+    assert format_multi_window_slopes_core(arb_slope_entry, fallback_full=False) == (
+        "90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07"
     )
+    lines_3a = _format_market_prices_section({"ARBUSDC": arb_slope_entry})
     joined_3a = "\n".join(lines_3a)
-    assert "slopes(90s=-8.04e-06, 3.7m=+1.12e-05, 15m=-1.50e-06, 2.5h=+1.74e-07, grad_fast=+4.20e-06/eps=3.50e-05)" in joined_3a
+    assert "slopes(" not in joined_3a
     assert "g_coeff(" not in joined_3a
 
     # 2. cvd_15m regime correlation with chg_15m_pct and CVD sign
@@ -8972,7 +8973,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
     assert "CANCELED_OR_EXPIRED" not in s3c
     assert "ARBUSDC" in s3c
 
-    # 5. Section 3A omits duplicate g_coeff when identical to slopes
+    # 5. Section 3A omits raw $/s slopes and g_coeff in favor of scale-invariant kinematics
     s3a = "\n".join(
         _format_market_prices_section(
             {
@@ -8990,7 +8991,7 @@ def test_prompt_deanchoring_and_cognitive_noise_optimizations(tmp_path):
             }
         )
     )
-    assert "slopes(90s=+0.00308, 3.7m=+0.00120, 15m=+0.00070, 2.5h=-0.00050)" in s3a
+    assert "slopes(" not in s3a
     assert "g_coeff(" not in s3a
 
     # 6. live_btc_flow_delta strips '-old ACCUMULATE' -> '-old summary' and appends CB_Prem,

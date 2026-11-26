@@ -601,6 +601,19 @@ def test_wave1_tables_units_and_venue_specs_g2_elision() -> None:
     """Verify Wave 1 tables (Venue Specs G2, Open Orders, Equities), minutes>=120s, compact 3B USD, and true whale_long_pct."""
     t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
     sensors = _make_rich_sensors(t0)
+    sensors.prices_and_trends["BTCUSDC"].update(
+        {
+            "slope_90s": 0.00454,
+            "slope_3_7m": -0.05656,
+            "slope_15m": -0.016,
+            "slope_2_5h": -0.04089,
+            "growth_90s": 0.00454,
+            "vel_90s_pct_min": -0.0378,
+            "accel_90s_pct_min2": -0.0516,
+            "kalman_vel": -0.00094,
+            "kalman_vel_std": 0.031,
+        }
+    )
     sensors.source_ages_sec["sentiment_advisor"] = 540.0
     sensors.source_ages_sec["geopolitical_threat"] = 4200.0
     sensors.microstructure["BTCUSDC"]["whale_long_pct"] = 0.655
@@ -639,6 +652,11 @@ def test_wave1_tables_units_and_venue_specs_g2_elision() -> None:
     assert "| Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Note |" in full_txt
     assert "| binance | BTCUSDC | BUY | 59680.0 | 0.015 | 0 | 990011 | AI | 2.5h | -1.35% | 25% | front_run=60200.0 |" in full_txt
     assert "| Symbol | Px | 24h | 7d | Pos24h | ExtVsRTH | Close | Source (Age) |" in full_txt
+    assert "slopes(" not in full_txt
+    assert "g_coeff(" not in full_txt
+    assert "`slopes`" not in full_txt
+    assert "kinematics(vel_90s=-0.0378%/m, acc_90s=-0.0516%/m^2, kalman_z=-0.03)" in full_txt
+    assert "kalman_vel=-0.00094" in full_txt
     assert audit_rendered_prompt_text(full_txt) == []
 
     # Warm Turn 2: Venue_Specs omitted (1/5), while open_limit_orders table (G0) stays visible

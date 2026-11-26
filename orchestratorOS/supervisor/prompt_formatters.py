@@ -359,13 +359,13 @@ def build_supervisor_prompt(
         half_max_usd = round(max_usd * 0.5)
         full_max_usd = round(max_usd)
         dip_flow_rule = (
-            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, `slopes`, "
+            "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN) & KINEMATICS: Weigh `kinematics(vel_90s, acc_90s, vel_5m, acc_5m, kalman_z)`, `kalman_vel`, "
             "`bottom_6h`, RTH CLV bar flow (`cvd_5m`/`cvd_15m`, `taker_ratio`), `spot_vol_15m`/`spot_vol_1h` & `rvol_15m`/`rvol_1h` (volume expansion vs noise), "
             "and `ob_proxy[yahoo_5m_vol_profile]` (`est_bid_zone`/`est_ask_zone` are synthetic 5m OHLCV volume-profile proxies, NOT real L2 resting walls). "
             "Scale in on confirmed downside deceleration + absorption; de-risk when negative velocity/acceleration aligns with unabsorbed selling.\n"
             if is_equities
             else (
-                "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, `slopes`, "
+                "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, "
                 "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance` `[0..1, 0.5=neutral]`), `rvol`, `taker_ratio`, L2 walls. "
                 f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when free cash is ample (avoid timid $500 tickets). "
                 "2) Confirmed breakouts (`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
