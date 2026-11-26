@@ -31,15 +31,14 @@ from providers.kraken_provider import KrakenProvider
 from providers.market_api import MarketApi
 from tests.conftest import DummySpotExecutionProvider, SingleProviderApi, TempDirTestCase
 from types import SimpleNamespace
-from verify_tools.ownership_inventory import _python_symbols
+from verify_tools.ownership_inventory import _fleet_role_instruments
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 NUMERIC_MT_KEYS = [
-    "gain", "lost", "maxage_days", "hardtp", "hardtp_fraction",
-    "hardtp_cooldown_h", "buy_budget", "max_budget",
+    "gain", "lost", "maxage_days", "buy_budget", "max_budget",
 ]
 
 
@@ -200,10 +199,24 @@ class TestInstrumentsSingleSource(unittest.TestCase):
         with self.assertRaises(AttributeError):
             getattr(registry, "nonexistentsymbol")
 
-    def test_ownership_inventory_symbols_fallback(self):
-        syms, tao = _python_symbols(ROOT)
-        self.assertEqual(syms, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC"])
-        self.assertEqual(tao, "TAOUSDC")
+    def test_ownership_inventory_fleet_role_instruments(self):
+        role_map = _fleet_role_instruments(ROOT)
+        self.assertEqual(
+            [sym for _v, sym, _b, _q in role_map["tradeall"]],
+            ["BTCUSDC", "TAOUSDC", "HYPEUSDC", "ARBUSDC"],
+        )
+        self.assertEqual(
+            [sym for _v, sym, _b, _q in role_map["rtrade"]],
+            ["TAOUSDC"],
+        )
+        self.assertEqual(
+            [sym for _v, sym, _b, _q in role_map["assetguardian"]],
+            ["BTCUSDC", "TAOUSDC", "HYPEUSDC", "ARBUSDC"],
+        )
+        self.assertEqual(
+            [sym for _v, sym, _b, _q in role_map["binance-trailing"]],
+            ["BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC"],
+        )
 
 
 def test_current_execution_policy_is_preserved(tmp_path):
@@ -897,6 +910,7 @@ def test_strict_template_validator_catches_missing_reordered_unknown_and_unalign
             "ai.tradable": "yes",
             "tradeall.kalman_mode": "strict",
             "trend.step_wols_power": "2.0",
+            "trend.fast_window_sec": "222.0",
             "trailing.pct": "25.0",
             "trailing.rebuy": "auto",
             "mt.gain": "8.0",
@@ -959,4 +973,24 @@ def test_strict_template_validator_catches_missing_reordered_unknown_and_unalign
         encoding="utf-8",
     )
     assert any("BACKTEST" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 8. Orphan trailing.* forbidden when role.trailing=no
+    p = tmp_path / "orphan_trailing.conf"
+    p.write_text(_canonical_section(**{"role.trailing": "no"}), encoding="utf-8")
+    assert any("forbidden when role.trailing=no" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 9. Orphan mt.* forbidden when role.mt=no
+    p = tmp_path / "orphan_mt.conf"
+    p.write_text(_canonical_section(**{"role.mt": "no"}), encoding="utf-8")
+    assert any("forbidden when role.mt=no" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 10. Missing trend.fast_window_sec rejected (no hidden default)
+    p = tmp_path / "no_fast_window.conf"
+    p.write_text(_canonical_section(**{"trend.fast_window_sec": None}), encoding="utf-8")
+    assert any("trend.fast_window_sec" in msg for msg in registry.validate_instruments_conf_strict(p))
+
+    # 11. Obsolete mt.hardtp rejected fail-closed
+    p = tmp_path / "obsolete_hardtp.conf"
+    p.write_text(_canonical_section() + "mt.hardtp             = 17\n", encoding="utf-8")
+    assert any("mt.hardtp" in msg for msg in registry.validate_instruments_conf_strict(p))
 

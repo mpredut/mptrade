@@ -342,7 +342,6 @@ def preserve_replay_backtest_caches():
     """Save and restore module-level replay backtest caches across a sweep."""
     saved_tape_cache = dict(rrb._TREND_TAPE_CACHE)
     saved_diag = dict(rrb._LAST_RUN_DIAGNOSTICS)
-    saved_htp = dict(rrb._LAST_HARD_TP_TOUCHED)
     try:
         yield
     finally:
@@ -350,8 +349,6 @@ def preserve_replay_backtest_caches():
         rrb._TREND_TAPE_CACHE.update(saved_tape_cache)
         rrb._LAST_RUN_DIAGNOSTICS.clear()
         rrb._LAST_RUN_DIAGNOSTICS.update(saved_diag)
-        rrb._LAST_HARD_TP_TOUCHED.clear()
-        rrb._LAST_HARD_TP_TOUCHED.update(saved_htp)
 
 
 def print_mt_sweep_row(name: str, cells: list[str], total_net: float, *, col_width: int = 34) -> None:

@@ -887,23 +887,21 @@ def test_hybrid_reentry_equities_base_config_and_backtest_invariants(tmp_path):
 
     # 4. scheduled_pilot._RUN_ONE_DIAG_CACHE isolates diagnostics per (symbol, params, series)
     series = [(1_700_000_000.0 + i * 60.0, 100.0 + i * 0.1) for i in range(105)]
-    p_a = {"mt.hardtp": "3.0"}
-    p_b = {"mt.hardtp": "20.0"}
+    p_a = {"trailing.pct": "15.0"}
+    p_b = {"trailing.pct": "30.0"}
     ck_a = sp._run_one_cache_key("BTCUSDC", p_a, series)
     ck_b = sp._run_one_cache_key("BTCUSDC", p_b, series)
     tk = rb._series_cache_key("BTCUSDC", series, rb.DEFAULT_WINDOW_SECONDS)
     sp._RUN_ONE_CACHE[ck_a] = {"net": 15.0, "buy_hold": 5.0}
-    sp._RUN_ONE_DIAG_CACHE[ck_a] = {"hard_tp_touched": True, "min_hard_tp_gain_ratio": 0.035}
+    sp._RUN_ONE_DIAG_CACHE[ck_a] = {"min_trail_trigger_ratio": 0.16, "max_untriggered_trail_ratio": 0.08}
     sp._RUN_ONE_CACHE[ck_b] = {"net": 10.0, "buy_hold": 5.0}
-    sp._RUN_ONE_DIAG_CACHE[ck_b] = {"hard_tp_touched": False, "min_hard_tp_gain_ratio": 0.0}
+    sp._RUN_ONE_DIAG_CACHE[ck_b] = {"min_trail_trigger_ratio": 0.31, "max_untriggered_trail_ratio": 0.20}
     # Simulate worker B finishing last and overwriting params-agnostic rb._LAST_RUN_DIAGNOSTICS[tk]
     rb._LAST_RUN_DIAGNOSTICS[tk] = dict(sp._RUN_ONE_DIAG_CACHE[ck_b])
-    rb._LAST_HARD_TP_TOUCHED[tk] = False
     # Calling _run_one for p_a must restore p_a's own diagnostics
     res_a = sp._run_one("BTCUSDC", "BTC", p_a, series)
     assert res_a == {"net": 15.0, "buy_hold": 5.0}
-    assert rb._LAST_HARD_TP_TOUCHED[tk] is True
-    assert rb._LAST_RUN_DIAGNOSTICS[tk]["min_hard_tp_gain_ratio"] == 0.035
+    assert rb._LAST_RUN_DIAGNOSTICS[tk]["min_trail_trigger_ratio"] == 0.16
 
     # 5. migrate_price_cache outputs cache_sparse_price_<SYM>.jsonl
     legacy_json = tmp_path / "cache_price_TESTUSDC.json"
@@ -1667,7 +1665,7 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     assert rsnap.is_valid_price is True
     assert math.isclose(rsnap.sale_drop_ratio, 0.05)
 
-    pem = PositionExitManager(config=PositionExitConfig(hard_tp_enabled=True, hard_tp_pct=0.05, hard_tp_frac=0.5))
+    pem = PositionExitManager(config=PositionExitConfig(gain_threshold=0.05))
     corrupted_store = {
         "sl_bounce_state": None,
         "sl_episode_state": "invalid",
@@ -1677,8 +1675,6 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     pem.bind_state(corrupted_store)
     assert isinstance(pem.sl_bounce_state, dict)
     assert "BTCUSDC" not in pem.tp_ride_state
-    pem.record_hard_tp("BTCUSDC", timestamp="invalid")
-    pem.hard_tp_last["BTCUSDC"] = "not_a_float"
     dec = pem.evaluate_take_profit(snap)
     assert dec.should_exit is True
 
@@ -4635,8 +4631,8 @@ def test_batch37_order_retry_guard_assetguardian_rtrade_mt_tradeall_hardening(tm
         provider_label="binance",
     )
     cfg = mt._resolve_mt_inst_cfg(fake_inst)
-    assert cfg[6] == "average"
-    assert cfg[10] == 0.0
+    assert cfg[3] == "average"
+    assert cfg[7] == 0.0
 
     # 6. tradeall.TrendState.is_trend_a_minim_validated returns False when trend has not started
     ts = ta.TrendState(50, 50)
@@ -5219,9 +5215,9 @@ def test_batch44_strategies_lock_and_audit_hardening(tmp_path):
     rs = pem.ReentrySnapshot(symbol="BTCUSDC", current_price=100.0, last_exit_kind=True)  # type: ignore[arg-type]
     assert rs.last_exit_kind is None
     mgr = pem.PositionExitManager()
-    mgr.record_hard_tp("", 1000.0)
-    mgr.record_hard_tp(True, 1000.0)  # type: ignore[arg-type]
-    assert mgr.hard_tp_last == {}
+    mgr.reset_sl_episode("")
+    mgr.reset_sl_episode(True)  # type: ignore[arg-type]
+    assert mgr.sl_episode_state == {}
 
     # 4. rtrade_pair.clean_order_id
     for bad in (frozenset({"x"}), -5, -5.0, 12.5, "-5", "-abc", "+0.0", "-0.0"):

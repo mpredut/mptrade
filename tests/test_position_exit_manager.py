@@ -447,25 +447,6 @@ class TestPositionExitManager(unittest.TestCase):
     # -------------------------------------------------------------------------
     # 3. Take-Profit (MDHTP) Mirror Symmetry
     # -------------------------------------------------------------------------
-    def test_tp_p0_hard_tp_spike_executes_partial_sell(self):
-        """Priority 0: Massive spike (gain >= 20%) triggers partial Hard TP regardless of trend."""
-        self.mgr.config.hard_tp_enabled = True
-        self.mgr.config.hard_tp_pct = 0.20
-        self.mgr.config.hard_tp_frac = 0.50
-
-        snap = PositionSnapshot(
-            symbol="BTCUSDT",
-            current_price=122.0,
-            avg_buy_price=100.0,  # +22.0% gain
-            current_time_s=self.now,
-            trend_up=True,
-        )
-        dec = self.mgr.evaluate_take_profit(snap)
-        self.assertEqual(dec.action, ExitAction.PARTIAL_SELL)
-        self.assertTrue(dec.should_exit)
-        self.assertEqual(dec.sell_fraction, 0.50)
-        self.assertIn("hard_tp_spike", dec.reason)
-
     def test_tp_p1_trend_ride_initiated_on_trend_up(self):
         """Priority 1: Gain reaches threshold (7%) with trend_up=True initiates trend ride."""
         snap = PositionSnapshot(
@@ -910,30 +891,6 @@ class TestPositionReentryManager(unittest.TestCase):
         self.assertTrue(dec4.should_enter)
         self.assertIn("post_stop_bounce_confirmed", dec4.reason)
 
-    def test_hard_tp_triggers_on_first_hit_when_now_below_cooldown_and_within_fuzzy_tolerance(self):
-        self.mgr.config.hard_tp_enabled = True
-        self.mgr.config.hard_tp_pct = 0.20
-        self.mgr.config.hard_tp_frac = 0.50
-        self.mgr.config.hard_tp_cooldown_sec = 21600.0  # 6 hours
-        self.mgr.config.are_close_tolerance_pct = 0.10  # 0.10% fuzzy boundary
-        self.mgr.hard_tp_last.clear()
-
-        # Price is 119.99 vs 100.0 (+19.99% gain, within 0.10% tolerance of 20.0% hard_tp_pct),
-        # and current_time_s=100.0 (< 21600.0s cooldown) with no prior Hard-TP (last_hard == 0.0).
-        snap = PositionSnapshot(
-            symbol="BTCUSDT",
-            current_price=119.99,
-            avg_buy_price=100.0,
-            sellable_qty=2.0,
-            current_time_s=100.0,
-            trend_up=True,
-        )
-        dec = self.mgr.evaluate(snap)
-        self.assertTrue(dec.should_exit)
-        self.assertEqual(dec.action, ExitAction.PARTIAL_SELL)
-        self.assertEqual(dec.sell_fraction, 0.50)
-        self.assertIn("hard_tp_spike", dec.reason)
-
     def test_tp_anomaly_pullback_ratchet_tightens_on_out_of_pattern_spike_without_selling_on_climb(self):
         # Normal TP threshold is 7% (0.07), vol_1h is 2% (0.02).
         # Anomaly threshold = max(0.07 * 1.5 = 10.5%, 0.07 + 0.02 * 2.5 = 12.0%) = 12.0%.
@@ -1338,10 +1295,6 @@ def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter2
             sl_trend_defer_max_sec=200.0,
             gain_threshold=0.05,
             tp_stagnation_max_sec=100.0,
-            hard_tp_enabled=True,
-            hard_tp_pct=0.10,
-            hard_tp_frac=0.5,
-            hard_tp_cooldown_sec=300.0,
             reentry_sl_bounce_pct=0.02,
             reentry_post_stop_cooldown_sec=60.0,
         )
@@ -1370,14 +1323,6 @@ def test_positionexitmanager_is_valid_price_rejects_inf_nan_and_re_anchors_iter2
     assert d_sl2.should_exit is True
     assert d_sl2.action == ExitAction.SELL
     assert d_sl2.metadata.get("sl_timer_expired") is True
-
-    # Future hard_tp_last is cleared on clock step-back so Hard-TP spike is not blocked for hours
-    mgr.hard_tp_last["BTCUSDC"] = 9000.0
-    d_tp_hard = mgr.evaluate_take_profit(
-        PositionSnapshot(symbol="BTCUSDC", current_price=112.0, avg_buy_price=100.0, current_time_s=1000.0, trend_up=True)
-    )
-    assert d_tp_hard.should_exit is True
-    assert d_tp_hard.action == ExitAction.PARTIAL_SELL
 
     # Future last_sell_time_s on STOP re-entry does not permanently lock post_stop_stabilization_cooldown
     d_re = mgr.evaluate_reentry(
@@ -1677,14 +1622,11 @@ def test_positionexitconfig_preserves_default_true_on_empty_string_and_iter173_s
     assert rs.symbol == ""
     assert isinstance(rs.last_sell_price, float) and rs.last_sell_price == pytest.approx(100.0)
 
-def test_positionexitmanager_symbol_whitespace_normalization_in_restore_reentry_state_record_hard_tp_iter173_s3():
-    """[ITER173 #3] PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp."""
-    # 3. PositionExitManager symbol whitespace normalization in restore_reentry_state & record_hard_tp
+def test_positionexitmanager_symbol_whitespace_normalization_in_restore_reentry_state_iter173_s3():
+    """[ITER173 #3] PositionExitManager symbol whitespace normalization in restore_reentry_state."""
     mgr = PositionExitManager()
     mgr.reentry_state["BTCUSDC"] = {"trough": 90.0}
     mgr._pop_reentry_state(" BTCUSDC ")
     assert "BTCUSDC" not in mgr.reentry_state
     mgr.restore_reentry_state(" BTCUSDC ")
     assert mgr.reentry_state.get("BTCUSDC") == {"trough": 90.0}
-    mgr.record_hard_tp(" BTCUSDC ", 1234.0)
-    assert mgr.hard_tp_last.get("BTCUSDC") == pytest.approx(1234.0)

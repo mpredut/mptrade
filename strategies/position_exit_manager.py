@@ -358,12 +358,6 @@ class PositionExitConfig:
     tp_ratchet_min_trail: float = 0.0025
     tp_ratchet_k: float = 0.10
 
-    # --- Hard TP (Spike Exit) ---
-    hard_tp_enabled: bool = False
-    hard_tp_pct: float = 0.20
-    hard_tp_frac: float = 0.50
-    hard_tp_cooldown_sec: float = 3600.0
-
     # --- Tolerance & Fuzzy Matching ---
     are_close_tolerance_pct: float = 1.0
 
@@ -469,7 +463,6 @@ class PositionExitManager:
         self.tp_ride_state: Dict[str, Dict[str, Any]] = {}
         self.reentry_state: Dict[str, Dict[str, Any]] = {}
         self._last_popped_reentry_state: Dict[str, Dict[str, Any]] = {}
-        self.hard_tp_last: Dict[str, float] = {}
 
     def _pop_reentry_state(self, symbol: str) -> None:
         sym_clean = _clean_symbol_str(symbol)
@@ -499,28 +492,12 @@ class PositionExitManager:
                 for sym_k in [k for k, v in sub.items() if not isinstance(v, dict)]:
                     sub.pop(sym_k, None)
             setattr(self, key, sub)
-        if "hard_tp_last" in store or self.config.hard_tp_enabled:
-            raw_hard = store.get("hard_tp_last")
-            if not isinstance(raw_hard, dict):
-                clean_hard: Dict[str, float] = {}
-                store["hard_tp_last"] = clean_hard
-            else:
-                cleaned_items = {
-                    hk_clean: hv_clean
-                    for hk, hv in raw_hard.items()
-                    if (hk_clean := _clean_symbol_str(hk))
-                    and (hv_clean := normalize_epoch_sec(hv, default=None, allow_zero=True)) is not None
-                }
-                raw_hard.clear()
-                raw_hard.update(cleaned_items)
-                clean_hard = raw_hard
-            self.hard_tp_last = clean_hard
 
     def clear_state(self, symbol: Optional[str] = None) -> None:
         """Clear tracking state for a single symbol or all symbols."""
         sym_clean = _clean_symbol_str(symbol)
         all_dicts = [getattr(self, k) for k in PERSISTED_EXIT_STATE_KEYS] + [
-            self._last_popped_reentry_state, self.hard_tp_last
+            self._last_popped_reentry_state
         ]
         for d in all_dicts:
             if sym_clean:
@@ -539,12 +516,6 @@ class PositionExitManager:
         if sym_clean:
             self.sl_bounce_state.pop(sym_clean, None)
             self.sl_episode_state.pop(sym_clean, None)
-
-    def record_hard_tp(self, symbol: str, timestamp: Optional[float] = None) -> None:
-        """Record successful execution of a Hard-TP order to arm cooldown."""
-        sym_clean = _clean_symbol_str(symbol)
-        if sym_clean:
-            self.hard_tp_last[sym_clean] = resolve_now_ts(timestamp, allow_zero=True)
 
     def _resolve_effective_vol_1h(
         self, symbol: str, vol_1h: Optional[float] = None, vol_source: str = "default",
@@ -808,30 +779,6 @@ class PositionExitManager:
             metadata={"priority": 3, "loss": price_decrease, "sl_timer_expired": sl_episode_expired},
         )
 
-    def _check_hard_tp_spike(self, snapshot: PositionSnapshot, now: float) -> Optional[ExitDecision]:
-        if not (
-            self.config.hard_tp_enabled
-            and 0 < self.config.hard_tp_frac <= 1.0
-            and self.config.hard_tp_pct > 0
-            and snapshot.in_tp_territory(self.config.hard_tp_pct, self.config.are_close_tolerance_pct)
-        ):
-            return None
-        symbol = _clean_symbol_str(snapshot.symbol)
-        last_hard = safe_nonneg_float(self.hard_tp_last.get(symbol), default=None)
-        if last_hard is not None and last_hard > now:
-            last_hard = None
-            self.hard_tp_last.pop(symbol, None)
-        if last_hard is None or (now - last_hard) >= self.config.hard_tp_cooldown_sec:
-            reason = (
-                f"hard_tp_spike (+{snapshot.gain_pct:.1f}% >= {self.config.hard_tp_pct*100:.0f}%, "
-                f"selling {self.config.hard_tp_frac*100:.0f}%)"
-            )
-            return ExitDecision(
-                ExitAction.PARTIAL_SELL, True, reason, forced=True,
-                sell_fraction=self.config.hard_tp_frac, metadata={"priority": 0, "gain": snapshot.gain_ratio},
-            )
-        return None
-
     def evaluate_take_profit(
         self, snapshot: PositionSnapshot, custom_threshold: Optional[float] = None,
     ) -> ExitDecision:
@@ -872,11 +819,6 @@ class PositionExitManager:
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
         symbol, now, gain_threshold, current_price, buy_price = core_in
         price_increase = snapshot.gain_ratio
-
-        # PRIORITY 0: Hard TP Spike Exit
-        tp_spike = self._check_hard_tp_spike(snapshot, now)
-        if tp_spike is not None:
-            return tp_spike
 
         profit_floor = max(gain_threshold * self.config.tp_profit_floor_ratio, self.config.tp_profit_floor_min_pct)
         _sanitize_position_state(self.tp_ride_state, symbol, buy_price)
@@ -1169,11 +1111,6 @@ class PositionExitManager:
         if snapshot is None or not getattr(snapshot, "is_valid_price", False):
             return ExitDecision(ExitAction.HOLD, False, "invalid_prices")
         symbol = _clean_symbol_str(snapshot.symbol)
-
-        tp_spike = self._check_hard_tp_spike(snapshot, resolve_now_ts(snapshot.current_time_s, allow_zero=True))
-        if tp_spike is not None:
-            _clear_smart_sl(symbol, snapshot.provider)
-            return tp_spike
 
         eff_sl = _resolve_positive_threshold(sl_threshold, self.config.lost_threshold)
         in_sl = (symbol not in self.tp_ride_state) and (

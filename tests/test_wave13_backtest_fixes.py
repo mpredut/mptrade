@@ -230,8 +230,8 @@ def test_scheduled_pilot_and_apply_proposals_hardening(
     assert sp._valid_pilot_grid_value("mt.gain", "5.0") == pytest.approx(5.0)
     assert sp._valid_pilot_grid_value("mt.gain", "0") is None
     assert sp._valid_pilot_grid_value("mt.gain", "-2.0") is None
-    assert sp._valid_pilot_grid_value("mt.hardtp_fraction", "0.8") == pytest.approx(0.8)
-    assert sp._valid_pilot_grid_value("mt.hardtp_fraction", "1.5") is None
+    assert sp._valid_pilot_grid_value("mt.lost", "5.0") == pytest.approx(5.0)
+    assert sp._valid_pilot_grid_value("mt.lost", "100.0") is None
 
     propose_out = tmp_path / "proposals.json"
     atomic_write_json(str(propose_out), [{"full_key": "keep"}])

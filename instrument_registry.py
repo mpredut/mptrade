@@ -86,16 +86,13 @@ CANONICAL_KEY_ORDER: tuple[str, ...] = (
     "mt.gain",
     "mt.lost",
     "mt.maxage_days",
-    "mt.hardtp",
-    "mt.hardtp_fraction",
-    "mt.hardtp_cooldown_h",
     "mt.price_reference",
     "mt.buy_budget",
     "mt.max_budget",
 )
 CANONICAL_KEY_WIDTH: int = max(len(k) for k in CANONICAL_KEY_ORDER)
 REQUIRED_BASE_KEYS: frozenset[str] = frozenset(
-    CORE | {f"role.{role}" for role in ROLES} | {"ai.tradable", "trend.step_wols_power"}
+    CORE | {f"role.{role}" for role in ROLES} | {"ai.tradable", "trend.step_wols_power", "trend.fast_window_sec"}
 )
 MT_REQUIRED_KEYS: frozenset[str] = frozenset(
     {"mt.gain", "mt.lost", "mt.maxage_days", "mt.price_reference", "mt.buy_budget", "mt.max_budget"}
@@ -104,7 +101,15 @@ KNOWN_PARAM_KEYS: frozenset[str] = frozenset(
     (set(CANONICAL_KEY_ORDER) - CORE) | {"mt.buy_qty", "mt.buy_price_offset"}
 )
 LEGACY_OBSOLETE_KEYS: frozenset[str] = frozenset(
-    {"trail.enabled", "trail.pct", "tradeall.trade", "mt.ref"}
+    {
+        "trail.enabled",
+        "trail.pct",
+        "tradeall.trade",
+        "mt.ref",
+        "mt.hardtp",
+        "mt.hardtp_fraction",
+        "mt.hardtp_cooldown_h",
+    }
 )
 _NUMERIC_STRICT_KEYS: frozenset[str] = frozenset(
     {
@@ -114,9 +119,6 @@ _NUMERIC_STRICT_KEYS: frozenset[str] = frozenset(
         "mt.gain",
         "mt.lost",
         "mt.maxage_days",
-        "mt.hardtp",
-        "mt.hardtp_fraction",
-        "mt.hardtp_cooldown_h",
         "mt.buy_budget",
         "mt.max_budget",
         "mt.buy_qty",
@@ -324,9 +326,6 @@ def _load_registry_cached(path=None) -> tuple[tuple[str, int, int], dict]:
             "mt.gain",
             "mt.lost",
             "mt.maxage_days",
-            "mt.hardtp",
-            "mt.hardtp_fraction",
-            "mt.hardtp_cooldown_h",
             "mt.buy_budget",
             "mt.max_budget",
             "mt.buy_qty",
@@ -335,8 +334,6 @@ def _load_registry_cached(path=None) -> tuple[tuple[str, int, int], dict]:
                 val_num = spec.number(pos_key)
                 if val_num <= 0:
                     raise ValueError(f"instruments.conf [{name}]: {pos_key} must be > 0")
-                if pos_key == "mt.hardtp_fraction" and val_num > 1.0:
-                    raise ValueError(f"instruments.conf [{name}]: mt.hardtp_fraction must be in (0, 1]")
                 if pos_key == "mt.lost" and val_num >= 100.0:
                     raise ValueError(f"instruments.conf [{name}]: mt.lost must be in (0, 100)")
         if "mt.buy_price_offset" in params:
@@ -1390,10 +1387,18 @@ def validate_instruments_conf_strict(path=None) -> list[str]:
             for req_tr in ("trailing.pct", "trailing.rebuy"):
                 if req_tr not in key_set:
                     issues.append(f"[{name}]: role.trailing=yes requires {req_tr}")
+        else:
+            orphan_tr = sorted(k for k in key_set if k.startswith("trailing."))
+            if orphan_tr:
+                issues.append(f"[{name}]: {orphan_tr} forbidden when role.trailing=no")
         if spec.has_role("mt"):
             missing_mt = sorted(MT_REQUIRED_KEYS - key_set)
             if missing_mt:
                 issues.append(f"[{name}]: role.mt=yes missing mandatory keys {missing_mt}")
+        else:
+            orphan_mt = sorted(k for k in key_set if k.startswith("mt."))
+            if orphan_mt:
+                issues.append(f"[{name}]: {orphan_mt} forbidden when role.mt=no")
 
     return issues
 

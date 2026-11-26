@@ -385,7 +385,7 @@ def _ensure_symbol_trend_caches() -> tuple[dict[str, float], dict[str, float]]:
         if pval is not None:
             _register_symbol_param(mapping, sym, base, c_base, pval)
         fw_val = safe_pos_float(spec.params.get("trend.fast_window_sec"), default=None)
-        if fw_val is not None:
+        if fw_val is not None and abs(fw_val - WINDOW_SECONDS_SMALL) > 1e-6:
             _register_symbol_param(fast_win_map, sym, base, c_base, fw_val)
     _SYMBOL_POWER_CACHE["mtime_ns"] = mtime_ns
     _SYMBOL_POWER_CACHE["map"] = mapping
@@ -416,10 +416,11 @@ def _lookup_symbol_param(symbol: str | None, param_map: dict[str, float]) -> flo
 
 
 def fast_trend_window_for_symbol(symbol: str | None = None) -> float | None:
-    """Resolve optional per-symbol fast short-trend window (in seconds) from ``instruments.conf``.
+    """Resolve per-symbol non-primary fast short-trend window (in seconds) from ``instruments.conf``.
 
-    Returns ``None`` when the symbol uses the default 222s primary window, or a positive
-    float (e.g. ``90.0`` for ``TAOUSDC``) when ``trend.fast_window_sec`` is configured.
+    Returns ``None`` when the symbol uses the primary 222s window (explicitly ``222.0`` in
+    ``instruments.conf``), or a positive float (e.g. ``90.0`` for ``TAOUSDC``) when a custom
+    ``trend.fast_window_sec`` override is configured.
     """
     if is_env_defined("MPTRADE_FAST_TREND_WINDOW_SEC"):
         return safe_pos_float(float_env("MPTRADE_FAST_TREND_WINDOW_SEC"), default=None)

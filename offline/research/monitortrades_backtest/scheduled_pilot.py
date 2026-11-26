@@ -99,19 +99,15 @@ MIN_EDGE_MARGIN_USD = float_env("PILOT_MIN_EDGE_MARGIN_USD", default=1.0)
 # instruments.conf are NOT touched without explicitly extending this list (a user
 # decision: the pilot is limited to monitortrades, not all modules). They all live as
 # mt.* in instruments.conf, so run_replay_backtest already fires them through params
-# (verified: is_trend_up neutralised, maxage->since_s, hardtp->inst.param).
+# (verified: is_trend_up neutralised, maxage->since_s).
 #   #4-5  gain/lost   (DONE 23 Jul: TAO mt.lost 4.9->5.25 applied)
 #   #16   maxage_days (28 Jul)
-#   #15   hardtp / hardtp_fraction (28 Jul; per-instrument, monitortrades.py:447)
 PILOT_KEYS = {}
 for _spec in select_instruments(role="mt", path=INSTRUMENTS_CONF).values():
     for _p in (
         "mt.gain",
         "mt.lost",
         "mt.maxage_days",
-        "mt.hardtp",
-        "mt.hardtp_fraction",
-        "mt.hardtp_cooldown_h",
     ):
         if _p in _spec.params:
             PILOT_KEYS[f"{_spec.name}.{_p}"] = (_spec.symbol, _spec.base, _p)
@@ -251,17 +247,13 @@ def _run_one(symbol, base, params, series):
         if ck in _RUN_ONE_DIAG_CACHE:
             cached_diag = dict(_RUN_ONE_DIAG_CACHE[ck])
             rb._LAST_RUN_DIAGNOSTICS[tk] = cached_diag
-            rb._LAST_HARD_TP_TOUCHED[tk] = cached_diag.get("hard_tp_touched", True)
         return dict(cached) if cached is not None else None
     res = rb.run_symbol(symbol, params, base, quiet=True, series=series)
     net_v = safe_float(res.get("net"), default=None) if isinstance(res, dict) else None
     bh_v = safe_float(res.get("buy_hold"), default=None) if isinstance(res, dict) else None
     out = {"net": net_v, "buy_hold": bh_v} if (net_v is not None and bh_v is not None) else None
     _RUN_ONE_CACHE[ck] = out
-    diag = dict(
-        rb._LAST_RUN_DIAGNOSTICS.get(tk)
-        or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(tk, True)}
-    )
+    diag = dict(rb._LAST_RUN_DIAGNOSTICS.get(tk) or {})
     _RUN_ONE_DIAG_CACHE[ck] = diag
     return dict(out) if out is not None else None
 
@@ -277,11 +269,7 @@ def _eval_one_half(task: tuple[str, str, dict, int]):
         _run_one_cache_key(symbol, params, series),
         rb._series_cache_key(symbol, series, rb.DEFAULT_WINDOW_SECONDS),
     )
-    diag = dict(
-        _RUN_ONE_DIAG_CACHE.get(ck)
-        or rb._LAST_RUN_DIAGNOSTICS.get(tk)
-        or {"hard_tp_touched": rb._LAST_HARD_TP_TOUCHED.get(tk, True)}
-    )
+    diag = dict(_RUN_ONE_DIAG_CACHE.get(ck) or rb._LAST_RUN_DIAGNOSTICS.get(tk) or {})
     return symbol, params, half_idx, res, diag
 
 
@@ -293,7 +281,7 @@ def _seed_cached_half(symbol: str, params: dict, series: list, res: dict | None,
 
 def _valid_pilot_grid_value(param_name: str, raw_val: object) -> float | None:
     vf = safe_pos_float(raw_val, default=None)
-    if vf is None or (param_name == "mt.hardtp_fraction" and vf > 1.0):
+    if vf is None:
         return None
     if param_name in ("mt.lost", "trailing.pct") and vf >= 100.0:
         return None
@@ -317,34 +305,12 @@ def evaluate_key(full_key, symbol, base, key, dry_run=True, propose=False):
     if not test_values:
         return {"full_key": full_key, "action": "skipped", "reason": "no_grid_annotation"}
 
-    eval_order = sorted(test_values, key=lambda x: safe_float(x, 0.0)) if key == "mt.hardtp" else test_values
-    inv_state = [[None, -1.0], [None, -1.0]]
-
-    def _run_half_with_htp_invariance(half_idx: int, half_series: list, params: dict, v_ratio: float):
-        inv_res, inv_max = inv_state[half_idx]
-        if key == "mt.hardtp" and inv_res is not None and v_ratio <= inv_max:
-            res = dict(inv_res)
-            _RUN_ONE_CACHE[_run_one_cache_key(symbol, params, half_series)] = res
-            return res
-        res = _run_one(symbol, base, params, half_series)
-        if key == "mt.hardtp" and res is not None:
-            ck = _run_one_cache_key(symbol, params, half_series)
-            tk = rb._series_cache_key(symbol, half_series, rb.DEFAULT_WINDOW_SECONDS)
-            d = _RUN_ONE_DIAG_CACHE.get(ck) or rb._LAST_RUN_DIAGNOSTICS.get(tk) or {}
-            htp_touched = d.get("hard_tp_touched", rb._LAST_HARD_TP_TOUCHED.get(tk, True))
-            if not htp_touched:
-                inv_state[half_idx] = [res, math.inf]
-            elif safe_float(d.get("min_hard_tp_gain_ratio"), 0.0) >= v_ratio:
-                inv_state[half_idx] = [res, safe_float(d.get("min_hard_tp_gain_ratio"), 0.0)]
-        return res
-
     raw_results = {}
-    for v in eval_order:
+    for v in test_values:
         t0 = time.time()
         params = dict(base_params, **{key: v})
-        v_ratio = safe_float(v, 0.0) / 100.0 if key == "mt.hardtp" else 0.0
-        r1 = _run_half_with_htp_invariance(0, half1, params, v_ratio)
-        r2 = _run_half_with_htp_invariance(1, half2, params, v_ratio)
+        r1 = _run_one(symbol, base, params, half1)
+        r2 = _run_one(symbol, base, params, half2)
         sys.stderr.write(f"  [{full_key}] {key}={v}: half1={r1} half2={r2} ({time.time()-t0:.1f}s)\n")
         if r1 is None or r2 is None:
             continue
@@ -492,7 +458,7 @@ def main():
                      help="evaluate and report, but do NOT change the config or restart the bot")
     ap.add_argument("--only", default="",
                      help="run ONLY the keys containing one of these substrings "
-                          "separated by commas (e.g. 'maxage,hardtp' or 'BINANCE_TAO'); empty = all")
+                          "separated by commas (e.g. 'maxage,gain' or 'BINANCE_TAO'); empty = all")
     ap.add_argument("--propose", action="store_true",
                      help="DEV mode: do NOT apply or restart; write confirmed proposals "
                           "to --propose-out for git dev->prod pipeline")
@@ -521,11 +487,7 @@ def main():
             print(f"[scheduled_pilot] no key contains '{args.only}' -- leaving")
             return
 
-        hard_tp_globally_enabled = bool(getattr(rb.mt, "HARD_TP_ENABLED", False))
-        active_keys = {
-            fk: v for fk, v in keys.items()
-            if hard_tp_globally_enabled or not v[2].startswith("mt.hardtp")
-        }
+        active_keys = dict(keys)
 
         # Preload price series and trend tapes once in parent process so forked workers share them via COW.
         unique_sym_base = sorted({(sym, base) for sym, base, _key in active_keys.values()})
@@ -565,10 +527,6 @@ def main():
                 half1, half2 = _split_series(sym)
                 _seed_cached_half(sym, base_params, half1, r1, diag1)
                 _seed_cached_half(sym, base_params, half2, r2, diag2)
-                htp1 = diag1.get("hard_tp_touched", True)
-                htp2 = diag2.get("hard_tp_touched", True)
-                base_htp = safe_float(base_params.get("mt.hardtp"), 0.0)
-                base_cd_s = safe_float(base_params.get("mt.hardtp_cooldown_h"), 6.0) * 3600.0
                 base_tr = safe_float(base_params.get("trailing.pct"), 0.0)
                 base_tr_r = base_tr / 100.0
                 for fk, (k_sym, _k_base, k_name) in active_keys.items():
@@ -579,24 +537,7 @@ def main():
                         if gv_f is None:
                             continue
                         p = dict(base_params, **{k_name: gv})
-                        if k_name == "mt.hardtp_fraction":
-                            if not htp1:
-                                _seed_cached_half(sym, p, half1, r1, diag1)
-                            if not htp2:
-                                _seed_cached_half(sym, p, half2, r2, diag2)
-                        elif k_name == "mt.hardtp_cooldown_h":
-                            cand_cd_s = gv_f * 3600.0
-                            if not htp1 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag1.get("hard_tp_cooldown_dts", ())):
-                                _seed_cached_half(sym, p, half1, r1, diag1)
-                            if not htp2 or all((dt < cand_cd_s) == (dt < base_cd_s) for dt in diag2.get("hard_tp_cooldown_dts", ())):
-                                _seed_cached_half(sym, p, half2, r2, diag2)
-                        elif k_name == "mt.hardtp" and base_htp > 0 and gv_f >= base_htp:
-                            gv_r = gv_f / 100.0
-                            if not htp1 or diag1.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
-                                _seed_cached_half(sym, p, half1, r1, diag1)
-                            if not htp2 or diag2.get("min_hard_tp_gain_ratio", 0.0) >= gv_r:
-                                _seed_cached_half(sym, p, half2, r2, diag2)
-                        elif k_name == "trailing.pct" and base_tr > 0:
+                        if k_name == "trailing.pct" and base_tr > 0:
                             gv_r = gv_f / 100.0
                             if (gv_r >= base_tr_r and gv_r <= diag1.get("min_trail_trigger_ratio", 0.0)) or (
                                 gv_r <= base_tr_r and gv_r > diag1.get("max_untriggered_trail_ratio", 1.0)
@@ -652,18 +593,9 @@ def main():
                     _seed_cached_half(sym, p, h_series, res, diag)
                     tk = rb._series_cache_key(sym, h_series, rb.DEFAULT_WINDOW_SECONDS)
                     rb._LAST_RUN_DIAGNOSTICS[tk] = diag
-                    rb._LAST_HARD_TP_TOUCHED[tk] = diag.get("hard_tp_touched", True)
 
         entries = {}
         for fk, (sym, base, key) in keys.items():
-            if fk not in active_keys:
-                entries[fk] = {
-                    "full_key": fk,
-                    "symbol": sym,
-                    "action": "skipped",
-                    "reason": "hard_tp_disabled_globally",
-                }
-                continue
             try:
                 entries[fk] = evaluate_key(fk, sym, base, key, args.dry_run, args.propose)
             except Exception as exc:  # noqa: BLE001

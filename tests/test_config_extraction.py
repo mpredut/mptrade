@@ -63,9 +63,6 @@ DEFAULTS = [
     (mt, "MT_SELL_SAFEBACK_HOURS", 2),
     (mt, "MT_BUY_SAFEBACK_HOURS", 48),
     (mt, "MT_NOTIFY_ONLY", True),
-    (mt, "HARD_TP_PCT", 0.17),
-    (mt, "HARD_TP_FRACTION", 0.5),
-    (mt, "HARD_TP_COOLDOWN_S", 6 * 3600),
     (mt, "TP_REFERENCE", "last"),
     (rt, "WAIT_FOR_ORDER", 32),
     (rt, "MIN_adjustment_percent", 0.01),
@@ -266,8 +263,10 @@ class TestModuleSpecifics(unittest.TestCase):
         # never read -- the real source is instruments.conf. Removed.
         self.assertFalse(hasattr(mt, "SYMBOL_PARAMS"))
 
-    def test_monitortrades_global_hardtp_fallbacks_loaded(self):
-        self.assertFalse(mt.HARD_TP_ENABLED)
+    def test_monitortrades_global_config_loaded_and_hardtp_removed(self):
+        self.assertFalse(hasattr(mt, "HARD_TP_ENABLED"))
+        self.assertFalse(hasattr(mt, "HARD_TP_PCT"))
+        self.assertFalse(hasattr(mt, "_evaluate_hard_take_profit"))
         self.assertEqual(mt.MT_REENTRY_POST_STOP_COOLDOWN_SEC, 0.0)
         self.assertEqual(mt.MT_REENTRY_TOLERANCE_PCT, 0.05)
         self.assertEqual(mt.get_exit_manager().config.reentry_tolerance_pct, 0.05)

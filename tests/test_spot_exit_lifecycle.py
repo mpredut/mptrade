@@ -1508,7 +1508,6 @@ def test_base_spot_mixin_external_reload_rebinds_exit_manager(tmp_path):
                 "sl_episode_state": {},
                 "tp_ride_state": {},
                 "reentry_state": {},
-                "hard_tp_last": {},
             }
             self.exit_manager = PositionExitManager(PositionExitConfig())
             self.exit_manager.bind_state(self.s)
@@ -1523,7 +1522,6 @@ def test_base_spot_mixin_external_reload_rebinds_exit_manager(tmp_path):
                 "sl_episode_state": {},
                 "tp_ride_state": {"SYM": {"peak_price": 123.0}},
                 "reentry_state": {},
-                "hard_tp_last": {},
             }
 
         def _save(self):

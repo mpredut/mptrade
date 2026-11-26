@@ -279,7 +279,7 @@ def clear_position_stats_cache():
     for d in (
         _position_stats_cache, _REENTRY_STATE, _LAST_EXIT_KIND, _REENTRY_DONE_SELL_TIME,
         _SL_BOUNCE_STATE, _SL_EPISODE_STATE, _TP_RIDE_STATE, _PENDING_STOP_EXIT,
-        _hard_tp_last, _notified_trade_ids,
+        _notified_trade_ids,
     ):
         d.clear()
     _LAST_SAVED_MT_STATE_KEY = None
@@ -332,12 +332,7 @@ def get_position_stats(symbol, maxage_trade_s, api=None, buy_orders=None, sell_o
     return dict(res)
 
 
-HARD_TP_ENABLED: bool = False
-HARD_TP_PCT: float = 0.0
-HARD_TP_FRACTION: float = 0.0
-HARD_TP_COOLDOWN_S: float = 0.0
 TP_REFERENCE: str = ""
-_hard_tp_last = {}
 
 MT_SL_TREND_DEFER_MAX_SEC: float = 0.0
 MT_SL_BOUNCE_MIN_RECOVERY_PCT: float = 0.0
@@ -397,7 +392,6 @@ def _save_mt_state(ts: float | None = None):
             "last_exit_kind": _LAST_EXIT_KIND,
             "reentry_done_sell_time": _REENTRY_DONE_SELL_TIME,
             "pending_stop_exit": _PENDING_STOP_EXIT,
-            "hard_tp_last": _hard_tp_last,
         }
         serialized = canonical_json_key(payload)
         cache_key = (st_file, serialized)
@@ -468,7 +462,6 @@ def _load_mt_state(now_curr: float | None = None):
                     _LAST_EXIT_KIND[norm_s] = kind
         for key, target, max_age in (
             ("reentry_done_sell_time", _REENTRY_DONE_SELL_TIME, 7 * 86400),
-            ("hard_tp_last", _hard_tp_last, 86400),
         ):
             raw_ts_map = data.get(key)
             if isinstance(raw_ts_map, dict):
@@ -538,7 +531,6 @@ def _record_pending_exit(
     symbol: str, inst: Any, kind: str, current_time_s: float, sellable_qty: float, current_price: float,
     outcome_ctx: dict, default_intent_id: Optional[str] = None, client_order_id: Optional[str] = None,
     prev_tp_state: Optional[dict] = None, prev_sl_state: Optional[dict] = None,
-    prev_hard_tp_last: Optional[float] = None, restore_hard_tp_last: bool = False,
 ):
     """Record an in-flight exit whose outcome is unknown/in-flight and update state."""
     pending_rec = {
@@ -552,8 +544,6 @@ def _record_pending_exit(
         pending_rec["prev_tp_state"] = dict(prev_tp_state)
     if prev_sl_state:
         pending_rec["prev_sl_state"] = dict(prev_sl_state)
-    if restore_hard_tp_last:
-        pending_rec["prev_hard_tp_last"] = prev_hard_tp_last
     _PENDING_STOP_EXIT[symbol] = pending_rec
     _resolve_exit(symbol, inst, kind=kind, clear_pending=False)
 
@@ -562,7 +552,7 @@ _load_mt_state()
 
 
 _REQUIRED_MT_CONF_KEYS = frozenset({
-    "hard_tp_enabled", "hard_tp_pct", "hard_tp_fraction", "hard_tp_cooldown_h", "tp_reference",
+    "tp_reference",
     "sl_trend_defer_max_s", "sl_bounce_min_recovery_pct", "sl_bounce_pullback_pct",
     "sl_bounce_ratchet_enabled", "sl_bounce_ratchet_k", "sl_bounce_min_pullback_pct",
     "sl_structural_break_enabled", "sl_disaster_buffer_ratio", "sl_disaster_vol_multiplier",
@@ -582,7 +572,7 @@ def _parse_mt_bool(key: str, val: str) -> bool:
 
 def _load_mt_conf(path=None):
     """Strictly load mandatory global settings from monitortrades.conf at module init."""
-    global HARD_TP_ENABLED, HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE
+    global TP_REFERENCE
     global MT_SL_TREND_DEFER_MAX_SEC, MT_SL_BOUNCE_MIN_RECOVERY_PCT, MT_SL_BOUNCE_PULLBACK_PCT
     global MT_SL_BOUNCE_RATCHET_ENABLED, MT_SL_BOUNCE_RATCHET_K, MT_SL_BOUNCE_MIN_PULLBACK_PCT, MT_SL_STRUCTURAL_BREAK_ENABLED
     global MT_SL_DISASTER_BUFFER_RATIO, MT_SL_DISASTER_VOL_MULTIPLIER, MT_SL_DISASTER_BUFFER_MIN_PCT
@@ -596,10 +586,6 @@ def _load_mt_conf(path=None):
     if missing:
         raise KeyError(f"Missing required keys in {path}: {', '.join(missing)}")
 
-    HARD_TP_ENABLED = _parse_mt_bool("hard_tp_enabled", parsed["hard_tp_enabled"])
-    HARD_TP_PCT = require_pos_float(parsed["hard_tp_pct"], name="hard_tp_pct") / 100.0
-    HARD_TP_FRACTION = require_pos_float(parsed["hard_tp_fraction"], name="hard_tp_fraction")
-    HARD_TP_COOLDOWN_S = require_nonneg_float(parsed["hard_tp_cooldown_h"], name="hard_tp_cooldown_h") * 3600.0
     TP_REFERENCE = parsed["tp_reference"].strip().lower()
     if TP_REFERENCE not in ("last", "average"):
         raise ValueError(f"monitortrades.conf: invalid tp_reference={parsed['tp_reference']!r}")
@@ -627,8 +613,6 @@ def _load_mt_conf(path=None):
     MT_REENTRY_TOLERANCE_PCT = require_nonneg_float(parsed["reentry_tolerance_pct"], name="reentry_tolerance_pct")
     MT_REENTRY_POST_STOP_COOLDOWN_SEC = require_nonneg_float(parsed["reentry_post_stop_cooldown_s"], name="reentry_post_stop_cooldown_s")
 
-    if not (0.0 < HARD_TP_FRACTION <= 1.0) or HARD_TP_PCT <= 0.0:
-        raise ValueError(f"monitortrades.conf: invalid hard_tp bounds (pct={HARD_TP_PCT}, fraction={HARD_TP_FRACTION})")
     if not (0.0 < MT_SL_BOUNCE_MIN_PULLBACK_PCT <= MT_SL_BOUNCE_PULLBACK_PCT <= MT_SL_BOUNCE_MIN_RECOVERY_PCT):
         raise ValueError(
             "monitortrades.conf: require 0 < sl_bounce_min_pullback_pct <= sl_bounce_pullback_pct <= sl_bounce_min_recovery_pct"
@@ -682,7 +666,6 @@ def get_exit_manager() -> PositionExitManager:
             tp_ratchet_min_trail=MT_TP_RATCHET_MIN_PULLBACK_PCT,
             tp_ratchet_k=MT_TP_RATCHET_K,
             tp_stagnation_max_sec=MT_TP_STAGNATION_MAX_SEC,
-            hard_tp_enabled=False,
             are_close_tolerance_pct=MT_ARE_CLOSE_TOLERANCE_PCT,
             reentry_enabled=True,
             reentry_hybrid_enabled=MT_REENTRY_HYBRID_ENABLED,
@@ -699,7 +682,6 @@ def get_exit_manager() -> PositionExitManager:
     mgr.sl_episode_state = _SL_EPISODE_STATE
     mgr.tp_ride_state = _TP_RIDE_STATE
     mgr.reentry_state = _REENTRY_STATE
-    mgr.hard_tp_last = _hard_tp_last
     return mgr
 
 
@@ -733,19 +715,13 @@ def _place_guarded(inst, side, price, qty, min_qty, **kwargs):
 
 
 def _restore_pending_exit_state(symbol: str, pending_stop: dict, *, clear_pending: bool = False):
-    """Restore TP trend-ride, SL bounce, or Hard-TP cooldown state saved before an ambiguous exit submission."""
+    """Restore TP trend-ride or SL bounce state saved before an ambiguous exit submission."""
     prev_tp = pending_stop.get("prev_tp_state")
     if prev_tp and symbol not in _TP_RIDE_STATE:
         _TP_RIDE_STATE[symbol] = dict(prev_tp)
     prev_sl = pending_stop.get("prev_sl_state")
     if prev_sl and symbol not in _SL_BOUNCE_STATE:
         _SL_BOUNCE_STATE[symbol] = dict(prev_sl)
-    if "prev_hard_tp_last" in pending_stop:
-        prev_htp = safe_pos_float(pending_stop.get("prev_hard_tp_last"), default=None)
-        if prev_htp is not None:
-            _hard_tp_last[symbol] = prev_htp
-        else:
-            _hard_tp_last.pop(symbol, None)
     if clear_pending:
         _PENDING_STOP_EXIT.pop(symbol, None)
         _save_mt_state()
@@ -823,51 +799,6 @@ def _is_trend_gate_deferred(symbol: str, inst: Any = None, side: str = "SELL") -
         )
     except Exception:
         return False
-
-
-def _evaluate_hard_take_profit(
-    inst, snapshot: PositionSnapshot, hard_tp_pct: float, hard_tp_frac: float,
-    hard_tp_cd: float, min_qty: float, sbs: float,
-) -> bool:
-    """Evaluate and execute Hard Take-Profit if eligible, returning True if sold."""
-    symbol = snapshot.symbol
-    sellable_qty = snapshot.sellable_qty
-    if not (sellable_qty > 0 and 0 < hard_tp_frac <= 1 and hard_tp_pct > 0 and hard_tp_cd >= 0):
-        return False
-    current_time_s = snapshot.current_time_s
-    last_hard_f = safe_pos_float(_hard_tp_last.get(symbol), default=0.0) or 0.0
-    if last_hard_f > current_time_s:
-        last_hard_f = 0.0
-    if last_hard_f > 0 and current_time_s - last_hard_f < hard_tp_cd:
-        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% but in cooldown (the last one {secondsToHours(current_time_s - last_hard_f):.1f}h)")
-        return False
-    if _is_trend_gate_deferred(symbol, inst):
-        print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% deferred by trend gate (trend up)")
-        return False
-    hard_qty = round(sellable_qty * hard_tp_frac, 8)
-    print(f"[HARD-TP] {symbol} +{snapshot.gain_pct:.1f}% >= {hard_tp_pct*100:.0f}% -> selling {hard_tp_frac*100:.0f}% ({hard_qty})")
-    hard_tp_outcome_ctx = {}
-    placed = _place_guarded(
-        inst, "SELL", snapshot.current_price, hard_qty, min_qty,
-        safeback_seconds=sbs, force=True, cancelorders=True,
-        hours=MT_SELL_SAFEBACK_HOURS, kind="TP",
-        _outcome_context=hard_tp_outcome_ctx,
-    )
-    if placed:
-        _hard_tp_last[symbol] = current_time_s
-        return _resolve_exit(symbol, inst, kind="TP")
-    if hard_tp_outcome_ctx.get("state") == "unknown":
-        prev_hard_tp = safe_pos_float(_hard_tp_last.get(symbol), default=None)
-        _hard_tp_last[symbol] = current_time_s
-        _record_pending_exit(
-            symbol, inst, "TP", current_time_s, hard_qty, snapshot.current_price,
-            hard_tp_outcome_ctx, default_intent_id=f"mt_htp_{symbol}_{math.trunc(current_time_s)}",
-            prev_tp_state=_TP_RIDE_STATE.pop(symbol, None),
-            prev_hard_tp_last=prev_hard_tp,
-            restore_hard_tp_last=True,
-        )
-        return True
-    return False
 
 
 def _log_tp_hold_state(symbol: str, snapshot: PositionSnapshot, decision: ExitDecision, gain_threshold: float):
@@ -1296,7 +1227,7 @@ def _resolve_mt_inst_cfg(inst):
     """Resolve and cache parsed ``mt.*`` instrument parameters against current module defaults."""
     is_real_inst = type(inst) is Instrument
     if is_real_inst:
-        key = (HARD_TP_PCT, HARD_TP_FRACTION, HARD_TP_COOLDOWN_S, TP_REFERENCE)
+        key = (TP_REFERENCE,)
         cached = getattr(inst, "_mt_cfg_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -1307,9 +1238,6 @@ def _resolve_mt_inst_cfg(inst):
         _g / 100.0 if _g is not None else 0.07,
         _l / 100.0 if _l is not None else 0.033,
         math.trunc(_md * 24 * 3600) if _md is not None else 4 * 24 * 3600,
-        inst.param("mt", "hardtp", HARD_TP_PCT * 100, float) / 100.0,
-        inst.param("mt", "hardtp_fraction", HARD_TP_FRACTION, float),
-        inst.param("mt", "hardtp_cooldown_h", HARD_TP_COOLDOWN_S / 3600.0, float) * 3600,
         str(inst.param("mt", "price_reference", TP_REFERENCE) or TP_REFERENCE).strip().lower(),
         inst.param("mt", "buy_budget", None, float),
         inst.param("mt", "buy_qty", None, float),
@@ -1335,7 +1263,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     _verbose = builtins.print.__name__ != "_dummy_print"
     (
         _def_gain, _def_lost, _def_maxage_s,
-        hard_tp_pct, hard_tp_frac, hard_tp_cd,
         tp_ref, buy_budget, buy_qty_cfg, max_budget,
         min_qty, _prov_label,
     ) = _resolve_mt_inst_cfg(inst)
@@ -1436,9 +1363,6 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
             symbol, inst, sellable_qty, min_qty, current_time_s, current_price=current_price
         ):
             return
-        if HARD_TP_ENABLED and snapshot.in_tp_territory(hard_tp_pct, MT_ARE_CLOSE_TOLERANCE_PCT):
-            if _evaluate_hard_take_profit(inst, snapshot, hard_tp_pct, hard_tp_frac, hard_tp_cd, min_qty, sbs):
-                return
 
         state_dirty = False
         for st_map in (_TP_RIDE_STATE, _SL_BOUNCE_STATE, _SL_EPISODE_STATE):

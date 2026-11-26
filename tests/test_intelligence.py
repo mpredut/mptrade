@@ -1094,30 +1094,6 @@ def test_survival_metrics_returns_gaussian_horizon_days_and_respects_allow_netwo
         mock_est.assert_not_called()
 
 
-def test_position_exit_manager_evaluate_hard_tp_cooldown_does_not_double_initiate_ride():
-
-    cfg = PositionExitConfig(
-        hard_tp_enabled=True,
-        hard_tp_pct=0.20,
-        hard_tp_frac=0.50,
-        hard_tp_cooldown_sec=3600.0,
-        gain_threshold=0.07,
-        tp_trend_ride_enabled=True,
-    )
-    mgr = PositionExitManager(config=cfg)
-    mgr.record_hard_tp("TAOUSDC", timestamp=1000.0)
-    snap = PositionSnapshot(
-        symbol="TAOUSDC",
-        current_price=125.0,
-        avg_buy_price=100.0,
-        current_time_s=1100.0,
-        trend_up=True,
-    )
-    dec = mgr.evaluate(snap)
-    assert dec.action == ExitAction.HOLD
-    assert dec.metadata.get("state") == "initiated"
-
-
 def test_external_collectors_and_ssot_prompt_modularization():
 
     for cls in (
@@ -4228,26 +4204,6 @@ def test_iter77_trailing_flat_skip_worker_ts_and_monitortrades_pending_exit(tmp_
     monitororder.reset_monitororder_state_for_test()
     assert len(monitororder.initial_buy_prices) == 0
     assert len(monitororder.initial_sell_prices) == 0
-
-    # 5. monitortrades._restore_pending_exit_state restores _hard_tp_last when a pending Hard-TP order is canceled
-    monitortrades._hard_tp_last["BTCUSDC"] = 1000.0
-    monitortrades._record_pending_exit(
-        "BTCUSDC",
-        None,
-        "TP",
-        2000.0,
-        0.5,
-        110.0,
-        {"reason": "timeout"},
-        default_intent_id="mt_htp_BTCUSDC_2000",
-        prev_hard_tp_last=1000.0,
-        restore_hard_tp_last=True,
-    )
-    monitortrades._hard_tp_last["BTCUSDC"] = 2000.0
-    monitortrades._restore_pending_exit_state("BTCUSDC", monitortrades._PENDING_STOP_EXIT["BTCUSDC"])
-    assert monitortrades._hard_tp_last["BTCUSDC"] == 1000.0
-    monitortrades._PENDING_STOP_EXIT.pop("BTCUSDC", None)
-    monitortrades._hard_tp_last.pop("BTCUSDC", None)
 
 
 def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_scale(monkeypatch):

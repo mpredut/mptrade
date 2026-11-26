@@ -1303,7 +1303,7 @@ class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
         self.assertIsNotNone(self.strat.s.get("sl_pending_exit"))
         self.assertFalse(self.strat.s.get("sl_alerted"))
 
-        # 3. MDHTP unknown submit must retain tp_pending_exit and not record hard_tp
+        # 3. MDHTP unknown submit must retain tp_pending_exit
         self.strat.s["pending_submit"] = None
         self.strat.s["sl_pending"] = False
         self.strat.p.tp_mdhtp_enabled = True
@@ -1315,7 +1315,6 @@ class TestTrailingStopAndSellableQty(_T212StateFileTestBase):
         self.strat.s["tp_pending_exit"] = {"reason": "test_tp", "action": "PARTIAL_SELL", "sell_fraction": 0.5}
         self.assertTrue(self.strat._evaluate_mdhtp_tp(180.0, 146.0, 2.92))
         self.assertIsNotNone(self.strat.s.get("tp_pending_exit"))
-        self.assertNotIn(self.strat.ticker, self.strat.exit_manager.hard_tp_last)
 
         # 4. sl_rebuy unknown submit must retain sl_rebuy
         self.strat.s["pending_submit"] = None

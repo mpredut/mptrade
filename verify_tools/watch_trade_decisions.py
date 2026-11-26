@@ -6,7 +6,7 @@ Reads UN-buffered signals (the source of truth, not the buffered log):
   - short trend from the cache manager (gradient_recent, in sync with cache_short_trend.json)
   - the real free balance (api.get_account_assets_balances)
   - avg buy + net position from the Binance trades
-It also shows the thresholds: HARD-TP (+18%) and the normal sell (gain>9.2% AND trend DOWN).
+It also shows the thresholds: MDHTP trend-riding and the normal sell (gain>mt.gain% AND trend DOWN).
 
   ../myenv/bin/python trade_watch.py
 """
@@ -73,10 +73,6 @@ def main():
             gain_pct = safe_pos_float(spec.number("mt.gain") if spec else None, default=9.2)
         except Exception:
             gain_pct = 9.2
-        try:
-            hard_tp_pct = safe_pos_float(spec.number("mt.hardtp") if spec else None, default=17.0)
-        except Exception:
-            hard_tp_pct = 17.0
 
         snap = mgr.get_snapshot(s) or {}
         if not isinstance(snap, dict):
@@ -88,7 +84,7 @@ def main():
         ref = last_buy or avg   # The bot uses the LAST buy as its reference (TP_REFERENCE="last").
         gain = (px - ref) / ref * 100 if ref else 0.0
         trend = "UP  " if gr > 0 else ("DOWN" if gr < 0 else "flat")
-        hard_px = ref * (1 + hard_tp_pct / 100) if ref else 0.0
+        tp_px = ref * (1 + gain_pct / 100) if ref else 0.0
         venue_lbl = venue_for_symbol(s, default="binance")
         prec = 4 if (0.0 < px < 10.0 or 0.0 < ref < 10.0) else 2
         print(
@@ -97,14 +93,12 @@ def main():
         )
         print(f"      trend_instant={trend} ({gr:+.4f})  |  free={free:.4f}  net={net:.4f}  sells={n_sells}")
         flags = []
-        if gain >= hard_tp_pct:
-            flags.append(f"HARD-TP ARMED (it sells 50%={free*0.5:.3f})")
-        elif gain >= gain_pct and gr < 0:
+        if gain >= gain_pct and gr < 0:
             flags.append(f"A NORMAL SALE IS ARMED (gain>{gain_pct:.1f}% plus a DOWN trend -> it sells EVERYTHING)")
         elif gain >= gain_pct and gr >= 0:
-            flags.append(f"in profit but the trend is UP -> holding (HARD-TP at px {hard_px:.{prec}f})")
+            flags.append(f"in profit and trend is UP -> MDHTP trend-riding (base TP px {tp_px:.{prec}f})")
         else:
-            flags.append(f"below the thresholds (HARD-TP at px {hard_px:.{prec}f})")
+            flags.append(f"below TP threshold (TP at px {tp_px:.{prec}f})")
         print(f"      => {'; '.join(flags)}")
     print("=" * 50)
 

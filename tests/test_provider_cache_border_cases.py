@@ -1595,9 +1595,6 @@ def test_mt_conf_fail_fast_ohlc_and_cycle_history_border_cases(
     repo_conf_text = Path(mt.__file__).with_name("monitortrades.conf").read_text(encoding="utf-8")
     try:
         for bad_override in (
-            "hard_tp_pct = inf",
-            "hard_tp_pct = nan",
-            "hard_tp_cooldown_h = -1",
             "sl_trend_defer_max_s = nan",
             "sl_bounce_ratchet_k = -0.1",
             "sl_disaster_vol_multiplier = inf",

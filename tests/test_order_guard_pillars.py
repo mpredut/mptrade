@@ -1676,17 +1676,17 @@ def test_batch54_apply_proposals_and_scheduled_pilot_hardening(monkeypatch):
     monkeypatch.setattr(
         sp_mod,
         "scan_backtest_ranges",
-        lambda _path: {"BINANCE_OK.mt.hardtp": ["bad_token", "nan", "8.0"]},
+        lambda _path: {"BINANCE_OK.mt.gain": ["bad_token", "nan", "8.0"]},
     )
     monkeypatch.setattr(sp_mod, "_current_value", lambda s, k: 6.0)
-    monkeypatch.setattr(sp_mod.rb, "SYMBOLS", {"OKUSDC": {"params": {"mt.hardtp": "bad"}}})
+    monkeypatch.setattr(sp_mod.rb, "SYMBOLS", {"OKUSDC": {"params": {"mt.gain": "bad"}}})
     monkeypatch.setattr(sp_mod, "_split_series", lambda sym: ([1] * 120, [1] * 120))
     monkeypatch.setattr(
         sp_mod,
         "_run_one",
-        lambda sym, base, params, series: {"net": 100.0 if params.get("mt.hardtp") == "8.0" else 50.0, "buy_hold": 0.0},
+        lambda sym, base, params, series: {"net": 100.0 if params.get("mt.gain") == "8.0" else 50.0, "buy_hold": 0.0},
     )
-    res_eval = sp_mod.evaluate_key("BINANCE_OK.mt.hardtp", "OKUSDC", "OK", "mt.hardtp", dry_run=True, propose=True)
+    res_eval = sp_mod.evaluate_key("BINANCE_OK.mt.gain", "OKUSDC", "OK", "mt.gain", dry_run=True, propose=True)
     assert res_eval["action"] == "proposed"
     assert res_eval["winner_value"] == 8.0
 

@@ -348,27 +348,6 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
             mock_resolve.assert_called_once_with("BTCUSDC", "10574289378")
             self.assertEqual(order_ids, [10574512957])
 
-    def test_monitortrades_hard_tp_preserves_8_decimals_and_passes_tp_kind(self):
-        snapshot = MagicMock()
-        snapshot.symbol = "BTCUSDC"
-        snapshot.sellable_qty = 0.00066
-        snapshot.current_time_s = 2000.0
-        snapshot.gain_pct = 18.5
-        snapshot.current_price = 95000.0
-        inst = MagicMock()
-
-        with patch.dict(mt._hard_tp_last, {}, clear=True), \
-             patch.object(mt, "_place_guarded", return_value=True) as mock_place, \
-             patch.object(mt, "_resolve_exit") as mock_resolve:
-            sold = mt._evaluate_hard_take_profit(
-                inst, snapshot, hard_tp_pct=0.17, hard_tp_frac=0.5,
-                hard_tp_cd=3600.0, min_qty=0.00001, sbs=3600.0,
-            )
-            self.assertTrue(sold)
-            self.assertEqual(mock_place.call_args[0][3], 0.00033)
-            self.assertEqual(mock_place.call_args[1].get("kind"), "TP")
-            mock_resolve.assert_called_once_with("BTCUSDC", inst, kind="TP")
-
     def test_cancel_open_recent_and_opposite_orders_resolve_accepted_retry_tracker(self):
         now_s = int(time.time())
         open_map = {"9001": {"price": 80000.0, "timestamp": now_s - 5}}

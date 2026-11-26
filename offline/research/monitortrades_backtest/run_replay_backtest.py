@@ -144,7 +144,6 @@ def _series_cache_key(symbol: str, series: list, trend_window_seconds: float | N
     )
 
 
-_LAST_HARD_TP_TOUCHED: dict[tuple, bool] = {}
 _LAST_RUN_DIAGNOSTICS: dict[tuple, dict] = {}
 
 
@@ -276,7 +275,6 @@ def run_symbol(
 
     (
         _cfg_gain, _cfg_lost, _cfg_maxage_s,
-        _cfg_hard_tp_pct, _cfg_hard_tp_frac, _cfg_hard_tp_cd,
         _cfg_tp_ref, _cfg_buy_budget, _cfg_buy_qty, _cfg_max_budget,
         _cfg_min_qty, _cfg_prov_label,
     ) = mt._resolve_mt_inst_cfg(inst)
@@ -320,10 +318,6 @@ def run_symbol(
     orig_post_stop_ai = mt._apply_post_stop_ai_guard
     orig_get_relevant_trade = mt.get_relevant_trade
     orig_summarize_orders = mt._summarize_orders
-    orig_eval_hard_tp = mt._evaluate_hard_take_profit
-    hard_tp_touched = False
-    min_hard_tp_gain_ratio = math.inf
-    hard_tp_cooldown_dts: set[float] = set()
 
     def _fast_get_relevant_trade(trade_orders, trade_type, symbol=None):
         if not trade_orders:
@@ -351,21 +345,6 @@ def run_symbol(
             orders._summary = res
         return res
 
-    def _tracked_eval_hard_tp(*a, **kw):
-        nonlocal hard_tp_touched, min_hard_tp_gain_ratio
-        hard_tp_touched = True
-        if len(a) >= 2:
-            snap = a[1]
-            last_h = mt._hard_tp_last.get(getattr(snap, "symbol", symbol), 0)
-            if last_h > 0:
-                hard_tp_cooldown_dts.add(round(safe_float(snap.current_time_s - last_h, 0.0), 1))
-        res = orig_eval_hard_tp(*a, **kw)
-        if res and len(a) >= 2:
-            g_ratio = safe_float(getattr(a[1], "gain_ratio", None), default=None)
-            if g_ratio is not None and g_ratio < min_hard_tp_gain_ratio:
-                min_hard_tp_gain_ratio = g_ratio
-        return res
-
     def _clear_symbol_mt_state(sym: str) -> None:
         mt.clear_position_stats_cache()
         clear_smart_stop_loss(sym, provider="replay")
@@ -377,7 +356,6 @@ def run_symbol(
             mt._LAST_EXIT_KIND,
             mt._REENTRY_DONE_SELL_TIME,
             mt._PENDING_STOP_EXIT,
-            mt._hard_tp_last,
         ):
             st_dict.pop(sym, None)
 
@@ -411,11 +389,9 @@ def run_symbol(
             )
             mt.get_relevant_trade = _fast_get_relevant_trade
             mt._summarize_orders = _fast_summarize_orders
-            mt._evaluate_hard_take_profit = _tracked_eval_hard_tp
             _clear_symbol_mt_state(symbol)
             first_price = provider.advance(symbol)
             if first_price is None:
-                _LAST_HARD_TP_TOUCHED.pop(tape_key, None)
                 _LAST_RUN_DIAGNOSTICS.pop(tape_key, None)
                 return None
             last_price = first_price
@@ -434,11 +410,7 @@ def run_symbol(
             max_untriggered_trail_ratio = 0.0
 
             _now_fn = lambda: now_s
-            _eff_up_thresh = (
-                min(_cfg_gain, _cfg_hard_tp_pct)
-                if (mt.HARD_TP_ENABLED and _cfg_hard_tp_pct > 0.0 and _cfg_hard_tp_frac > 0.0)
-                else _cfg_gain
-            )
+            _eff_up_thresh = _cfg_gain
             _fast_ver = -1
             _fast_min_ts_ms = -1.0
             _fast_low_buy_px = -1.0
@@ -592,14 +564,10 @@ def run_symbol(
                 _maybe_log_progress()
             if cached_tape is None and len(recorded_tape) == len(series):
                 lru_dict_put(_TREND_TAPE_CACHE, tape_key, tuple(recorded_tape), max_entries=16)
-            lru_dict_put(_LAST_HARD_TP_TOUCHED, tape_key, hard_tp_touched, max_entries=64)
             lru_dict_put(
                 _LAST_RUN_DIAGNOSTICS,
                 tape_key,
                 {
-                    "hard_tp_touched": hard_tp_touched,
-                    "min_hard_tp_gain_ratio": min_hard_tp_gain_ratio,
-                    "hard_tp_cooldown_dts": tuple(sorted(hard_tp_cooldown_dts)),
                     "min_trail_trigger_ratio": min_trail_trigger_ratio,
                     "max_untriggered_trail_ratio": max_untriggered_trail_ratio,
                 },
@@ -613,7 +581,6 @@ def run_symbol(
             mt._apply_post_stop_ai_guard = orig_post_stop_ai
             mt.get_relevant_trade = orig_get_relevant_trade
             mt._summarize_orders = orig_summarize_orders
-            mt._evaluate_hard_take_profit = orig_eval_hard_tp
 
     all_buys = provider.get_orders(symbol, "BUY", since_s=1e12)
     all_sells = provider.get_orders(symbol, "SELL", since_s=1e12)

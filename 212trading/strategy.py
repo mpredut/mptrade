@@ -652,7 +652,6 @@ class Strategy(T212BrokerLifecycleMixin):
             in_tp_zone = (
                 not self.replay_mode
                 or self.ticker in self.exit_manager.tp_ride_state
-                or self.exit_manager.config.hard_tp_enabled
                 or (price > avg and (price - avg) / avg >= tp_thresh * 0.98)
             )
             if not in_tp_zone and price > 0 and avg > 0:
@@ -723,8 +722,6 @@ class Strategy(T212BrokerLifecycleMixin):
                         "\u2014 awaiting pending_submit reconciliation (intent retained)"
                     )
                     return True
-                if pending_exit.get("action") == ExitAction.PARTIAL_SELL.value and self.exit_manager is not None:
-                    self.exit_manager.record_hard_tp(self.ticker, tick_time)
                 return _clear_exit_intent(
                     f"  [STRAT] MDHTP EXIT ({pending_exit.get('reason')}) -> reference {exit_px} ({sell_qty} shares)"
                 )

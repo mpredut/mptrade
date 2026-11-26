@@ -197,16 +197,11 @@ class PipelineApi:
 class MonitorTradesFinancialCharacterization(TempDirTestCase):
     def setUp(self):
         super().setUp()
-        mt._hard_tp_last.clear()
         mt._SL_BOUNCE_STATE.clear()
         mt._TP_RIDE_STATE.clear()
         mt.clear_position_stats_cache()
-        self._hard_tp_enabled = mt.HARD_TP_ENABLED
-        mt.HARD_TP_ENABLED = True
 
     def tearDown(self):
-        mt.HARD_TP_ENABLED = self._hard_tp_enabled
-        mt._hard_tp_last.clear()
         mt._SL_BOUNCE_STATE.clear()
         mt._TP_RIDE_STATE.clear()
         mt.clear_position_stats_cache()
@@ -252,79 +247,8 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertEqual(got_aged["sell_qty"], 5.5)
             self.assertAlmostEqual(got_aged["net_qty"], 2.5)
 
-    def test_hard_take_profit_behaviors(self):
-        mt._hard_tp_last.clear()
-        with self.subTest(msg="sells_configured_fraction_and_stops_the_tick"):
-            inst = FakeInstrument(
-                price=118,
-                free=10,
-                fills=[_fill("BUY", 100, 10)],
-                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-            )
-            self.run_tick(inst, trend_up=True)  # hard TP is independent of uptrend
-            self.assertEqual(len(inst.placed), 1)
-            order = inst.placed[0]
-            self.assertEqual(order["side"], "SELL")
-            self.assertEqual(order["qty"], 5.0)
-            self.assertTrue(order["kwargs"]["force"])
-            self.assertNotIn("caller_owns_retry", order["kwargs"])
-
-        mt._hard_tp_last.clear()
-        with self.subTest(msg="fractional_hard_tp_below_minimum_falls_through_to_full_normal_sell"):
-            inst = FakeInstrument(
-                price=118,
-                free=1,
-                fills=[_fill("BUY", 100, 1)],
-                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-                min_qty=0.6,
-            )
-            self.run_tick(inst, trend_up=False)
-            self.assertEqual(len(inst.placed), 1)
-            self.assertEqual((inst.placed[0]["side"], inst.placed[0]["qty"]),
-                             ("SELL", 1.0))
-            self.assertFalse(inst.placed[0]["kwargs"]["force"])
-
-        mt._hard_tp_last.clear()
-        with self.subTest(msg="hard_tp_cooldown_prevents_a_second_attempt_in_same_window"):
-            inst = FakeInstrument(
-                price=118,
-                free=10,
-                fills=[_fill("BUY", 100, 10)],
-                params={
-                    "mt.hardtp": 17,
-                    "mt.hardtp_fraction": 0.5,
-                    "mt.hardtp_cooldown_h": 6,
-                },
-            )
-            self.run_tick(inst, trend_up=True)
-            self.run_tick(inst, trend_up=True)
-            self.assertEqual(len(inst.placed), 1)
-
-        mt._hard_tp_last.clear()
-        with self.subTest(msg="regression_refused_hard_tp_must_not_start_cooldown"):
-            inst = RefusingInstrument(
-                price=118,
-                free=10,
-                fills=[_fill("BUY", 100, 10)],
-                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
-            )
-            self.run_tick(inst, trend_up=True)
-            self.assertNotIn(SYMBOL, mt._hard_tp_last)
-
-        mt._hard_tp_last.clear()
-        with self.subTest(msg="regression_hard_tp_fraction_must_not_exceed_free_balance"):
-            inst = FakeInstrument(
-                price=118,
-                free=10,
-                fills=[_fill("BUY", 100, 10)],
-                params={"mt.hardtp": 17, "mt.hardtp_fraction": 1.5},
-            )
-            self.run_tick(inst, trend_up=True)
-            self.assertEqual(inst.placed, [])
-
     def test_normal_take_profit_behaviors(self):
         with self.subTest(msg="normal_take_profit_sells_all_free_balance_when_trend_not_up"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
             self.run_tick(inst, trend_up=False, gain=0.10)
             self.assertEqual(len(inst.placed), 1)
@@ -335,13 +259,11 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertNotIn("caller_owns_retry", order["kwargs"])
 
         with self.subTest(msg="uptrend_blocks_normal_take_profit"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(price=112, free=7.25, fills=[_fill("BUY", 100, 8)])
             self.run_tick(inst, trend_up=True, gain=0.10)
             self.assertEqual(inst.placed, [])
 
         with self.subTest(msg="loss_exit_bypasses_profit_guard_and_uses_shared_outbox"):
-            mt.HARD_TP_ENABLED = False
             mt._TP_RIDE_STATE.clear()
             inst = FakeInstrument(price=93, free=4, fills=[_fill("BUY", 100, 4)])
             self.run_tick(inst, trend_up=False, loss=0.05)
@@ -352,7 +274,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertNotIn("caller_owns_retry", order["kwargs"])
 
         with self.subTest(msg="average_reference_can_trigger_sell_when_last_buy_does_not"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(
                 price=116,
                 free=4,
@@ -368,7 +289,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertEqual(inst.placed[0]["side"], "SELL")
 
         with self.subTest(msg="regression_own_ledger_exit_must_not_sell_unattributed_free_holdings"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(
                 price=112,
                 free=10,
@@ -378,7 +298,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertLessEqual(inst.placed[0]["qty"], 1.0)
 
         with self.subTest(msg="regression_own_ledger_stop_loss_not_blocked_by_earlier_sell_of_aged_out_buys"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(
                 price=93,
                 free=0.06625,
@@ -399,7 +318,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_buyback_behaviors(self):
         with self.subTest(msg="buyback_uses_budget_divided_by_market_price_and_adds_offset"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(
                 price=90,
                 free=2,
@@ -414,7 +332,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertEqual(order["price"], 90 + mt.MT_BUY_PRICE_OFFSET)
 
         with self.subTest(msg="buyback_is_blocked_when_existing_free_position_reaches_budget"):
-            mt.HARD_TP_ENABLED = False
             inst = FakeInstrument(
                 price=90,
                 free=10,
@@ -500,7 +417,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             self.assertNotIn("CHARUSD", mt._REENTRY_STATE)
 
     def test_tp_ride_state_preserved_when_sell_placement_fails(self):
-        mt.HARD_TP_ENABLED = False
         mt._TP_RIDE_STATE.clear()
         inst = FakeInstrument(
             price=110,
@@ -541,10 +457,9 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
                 price=118,
                 free=1,
                 fills=[_fill("BUY", 100, 1)],
-                params={"mt.hardtp": 17, "mt.hardtp_fraction": 0.5},
                 min_qty=2,
             )
-            # Both fractional hard TP and the normal full-balance sell are below min_qty.
+            # Full-balance sell is below min_qty.
             self.run_tick(inst, trend_up=False)
             self.assertEqual(inst.placed, [])
 
@@ -595,7 +510,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             quote="USD",
             api=PipelineApi(provider),
         )
-        mt.HARD_TP_ENABLED = False
         with (
             patch.object(mt, "is_trend_up", return_value=False),
             patch("order_retry.RETRY_ENABLED", False),
@@ -619,7 +533,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
         4. Active crash cascade defers if trend_up is True (bounce protection respected).
         5. Active crash cascade executes unconditionally when trend_up is False.
         """
-        mt.HARD_TP_ENABLED = False
 
         # Subtest 1: Normal dip (3% loss vs 2.5% threshold, disaster floor = 3.25%), trend_up=True -> DEFER
         with self.subTest(msg="normal_dip_deferred_when_trend_up"):
@@ -671,7 +584,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
         2. Recent trade fills do not impede stop-loss execution.
         3. If placement fails, cancelled TP order is restored.
         """
-        mt.HARD_TP_ENABLED = False
 
         # Subtest 1: Coins locked in open TP order (free=0, but open_orders has SELL) -> cancels TP, unlocks free, executes SELL
         with self.subTest(msg="cancels_open_tp_order_and_sells_unlocked_qty"):
@@ -852,7 +764,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mdhtp_trend_riding_and_peak_tracking(self):
         """Verify MDHTP arms ride state and tracks higher highs while trend_up is True."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=108.0, free=5.0, fills=[_fill("BUY", 100, 5)])
         sym = inst.symbol
 
@@ -872,7 +783,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mdhtp_micro_trailing_peak_pullback_triggers_sell(self):
         """Verify that when price pulls back >= MT_TP_PULLBACK_PCT (0.6%) from the ride peak, TP executes."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=110.0, free=5.0, fills=[_fill("BUY", 100, 5)])
         sym = inst.symbol
 
@@ -889,7 +799,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mdhtp_stagnation_timeout_triggers_sell(self):
         """Verify that when no new peak is made for >= MT_TP_STAGNATION_MAX_SEC (1080s), TP executes."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=110.0, free=5.0, fills=[_fill("BUY", 100, 5)])
         sym = inst.symbol
 
@@ -910,7 +819,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mdhtp_guaranteed_profit_floor_breached_triggers_sell(self):
         """Verify that if price slides below guaranteed profit floor, TP executes immediately to protect gains."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=108.0, free=5.0, fills=[_fill("BUY", 100, 5)])
         sym = inst.symbol
 
@@ -928,7 +836,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mdhtp_trend_reversal_triggers_sell(self):
         """Verify that when trend_up flips to False during an active ride, TP executes immediately."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=109.0, free=5.0, fills=[_fill("BUY", 100, 5)])
         sym = inst.symbol
 
@@ -944,7 +851,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mhdsl_structural_break_triggers_sell_when_enabled(self):
         """Variant PROPOSED: When an attempted bounce breaks below the established support low, exit immediately."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=94.5, free=4.0, fills=[_fill("BUY", 100, 4)])
         sym = inst.symbol
 
@@ -968,7 +874,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mhdsl_structural_break_disabled_resets_trough_variant_baseline(self):
         """Variant BASELINE: When MT_SL_STRUCTURAL_BREAK_ENABLED is False, a new low resets lowest_price and continues deferring."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=94.5, free=4.0, fills=[_fill("BUY", 100, 4)])
         sym = inst.symbol
 
@@ -991,7 +896,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
 
     def test_mhdsl_bounce_ratchet_tightens_pullback(self):
         """Verify dynamic ratchet tightens pullback threshold when bounce recovery is strong."""
-        mt.HARD_TP_ENABLED = False
         inst = FakeInstrument(price=91.5, free=4.0, fills=[_fill("BUY", 100, 4)])
         sym = inst.symbol
 
@@ -1021,7 +925,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
         mt._LAST_EXIT_KIND["BTCUSDC"] = "STOP"
         mt._SL_BOUNCE_STATE["BTCUSDC"] = {"peak_bounce_price": 95.0}
         mt._TP_RIDE_STATE["BTCUSDC"] = {"peak_price": 105.0}
-        mt._hard_tp_last["BTCUSDC"] = 12345678
         mt._notified_trade_ids.add("order_1")
 
         mt.clear_position_stats_cache()
@@ -1031,20 +934,7 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
         self.assertEqual(len(mt._LAST_EXIT_KIND), 0)
         self.assertEqual(len(mt._SL_BOUNCE_STATE), 0)
         self.assertEqual(len(mt._TP_RIDE_STATE), 0)
-        self.assertEqual(len(mt._hard_tp_last), 0)
         self.assertEqual(len(mt._notified_trade_ids), 0)
-
-    def test_hard_tp_unknown_outcome_sets_cooldown_and_returns(self):
-        """When Hard-TP submit has unknown/ambiguous outcome (timeout), cooldown is set and tick returns."""
-        inst = UnknownOutcomeInstrument(price=125.0, free=4.0, fills=[_fill("BUY", 100, 4)])
-        sym = inst.symbol
-        # Hard TP is triggered at 25% gain (>= hardtp 17%)
-        with patch.object(mt, "HARD_TP_ENABLED", True):
-            self.run_tick(inst, trend_up=True, now=NOW)
-        self.assertEqual(len(inst.placed), 1)
-        self.assertEqual(inst.placed[0]["side"], "SELL")
-        self.assertEqual(mt._hard_tp_last.get(sym), NOW)
-        self.assertEqual(mt._LAST_EXIT_KIND.get(sym), "TP")
 
     def test_reentry_unknown_outcome_clears_reentry_state(self):
         """When Reentry BUY submit has unknown/ambiguous outcome, reentry state is cleared to prevent repeated spam."""
@@ -1165,7 +1055,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
     def test_closed_position_skips_ghost_stop_loss_and_infers_stop_reentry(self):
         """After a STOP exit closes the position (sell_time > buy_time, free < min_qty), Step 3 must not
         fire ghost Stop-Loss evaluations, and Step 4 must infer STOP exit kind even if state was cleared."""
-        mt.HARD_TP_ENABLED = False
         mt._LAST_EXIT_KIND.clear()
         mt._REENTRY_STATE.clear()
         inst = FakeInstrument(
@@ -1199,7 +1088,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
            position_closed_by_sell must treat the remainder as dust and skip ghost Stop-Loss evaluations.
         3. Stale _REENTRY_STATE from an older sell_time is discarded and re-anchored to the new SELL.
         """
-        mt.HARD_TP_ENABLED = False
         mt._LAST_EXIT_KIND.clear()
         mt._REENTRY_STATE.clear()
         sym = SYMBOL
@@ -1264,7 +1152,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
         3. Step 4 does not re-buy against an older SELL after a newer BUY has already re-entered (buy_time > sell_time).
         4. Step 4 checks max_budget (including owned_qty when coins are locked in an open order) before invoking AI guard.
         """
-        mt.HARD_TP_ENABLED = False
 
         with self.subTest(msg="active_average_buy_price_excludes_closed_cycle_with_fee_dust"):
             # Cycle 1: BUY 10 @ 120 -> SELL 9.99 @ 130 (0.1% fee dust left). Cycle 2: BUY 10 @ 90.
@@ -1409,15 +1296,6 @@ class MonitorTradesFinancialCharacterization(TempDirTestCase):
             inst._price = 91.5
             self.run_tick(inst, trend_up=True, now=NOW + 20)
             self.assertEqual(inst.placed, [], "Rolled-over bounce must be blocked by ratchet")
-
-        with self.subTest(msg="hard_tp_last_persisted_across_restart"):
-            temp_state_file = os.path.join(self.tmp, "hard_tp_state.json")
-            with patch.object(mt, "_MT_STATE_FILE", temp_state_file):
-                mt._hard_tp_last["TESTSYM"] = NOW - 120
-                mt._save_mt_state(ts=NOW)
-                mt._hard_tp_last.clear()
-                mt._load_mt_state(now_curr=NOW)
-                self.assertEqual(mt._hard_tp_last.get("TESTSYM"), NOW - 120)
 
         with self.subTest(msg="tp_unknown_outcome_defers_duplicate_submission_on_next_tick"):
             mt._PENDING_STOP_EXIT.clear()
@@ -2128,10 +2006,6 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
             "pending_stop_exit": {
                 "SOLUSDC": {"time": now_s + 3000.0, "kind": "SL"},
             },
-            "hard_tp_last": {
-                "ADAUSDC": now_s + 7000.0,
-                "XRPUSDC": now_s - 100.0,
-            },
         }),
         encoding="utf-8",
     )
@@ -2140,13 +2014,10 @@ def test_monitortrades__load_mt_state_re_anchors_clock_skewed_future_timestamps_
     mt._SL_BOUNCE_STATE.clear()
     mt._TP_RIDE_STATE.clear()
     mt._PENDING_STOP_EXIT.clear()
-    mt._hard_tp_last.clear()
     mt._load_mt_state(now_curr=now_s)
     assert mt._SL_BOUNCE_STATE["BTCUSDC"]["started_at"] == pytest.approx(now_s)
     assert mt._TP_RIDE_STATE["ETHUSDC"]["last_peak_time"] == pytest.approx(now_s)
     assert mt._PENDING_STOP_EXIT["SOLUSDC"]["time"] == pytest.approx(now_s)
-    assert "ADAUSDC" not in mt._hard_tp_last
-    assert mt._hard_tp_last["XRPUSDC"] == pytest.approx(now_s - 100.0)
 
 def test_monitortrades__compute_spot_position__place_guarded_iter32_s4():
     """[ITER32 #4] monitortrades._compute_spot_position & _place_guarded."""
@@ -2255,12 +2126,10 @@ def test_monitortrades__load_mt_state_tolerates_bool_now_curr_and_non_dict_iter1
         "sl_bounce_state": "corrupt",
         "reentry_state": ["not-a-dict"],
         "last_exit_kind": {"btcusdc": "STOP"},
-        "hard_tp_last": {"btcusdc": 1000.0},
     }))
     monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
     monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
     mt._LAST_EXIT_KIND.clear()
-    mt._hard_tp_last.clear()
     mt._load_mt_state(now_curr=True)
     assert mt._LAST_EXIT_KIND.get("BTCUSDC") == "STOP"
 
