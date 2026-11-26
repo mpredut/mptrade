@@ -2077,6 +2077,93 @@ def test_crypto_prompt_pass4_arb_ob_freshness_live_fut_lead_and_essay_severity_f
     assert match_high_severity_keywords("US imposes new treasury sanctions package targeting Russian oil exports") != ()
 
 
+def test_pass5_futures_since_close_and_lexicon_noise_coherence() -> None:
+    """Verify ES=F/NQ=F surface since_close inside the Futures_Lead deadband and curly-apostrophe/mining/central noise is filtered."""
+    from types import SimpleNamespace
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        format_macro_benchmarks_summary_line,
+    )
+    from orchestratorOS.supervisor.prompt_sections import _format_macro_and_news_section
+
+    now_s = 1_795_680_000.0
+    # 1. ES=F / NQ=F surface since_cash_close_pct when SPY/QQQ are CLOSED and 24h settlement diverges (>=0.15pp)
+    mb_deadband = {
+        "ts": now_s - 60.0,
+        "coinbase_premium_bps": -2.7,
+        "items": {
+            "SPY": {"price": 716.70, "chg_24h_pct": 0.23, "market_state": "CLOSED", "bar_age_min": 418.4},
+            "QQQ": {"price": 633.93, "chg_24h_pct": -0.23, "market_state": "CLOSED", "bar_age_min": 418.3},
+            "ES=F": {"price": 7225.25, "chg_24h_pct": 0.41, "since_cash_close_pct": -0.14, "bar_age_min": 11.0},
+            "NQ=F": {"price": 26254.50, "chg_24h_pct": 0.59, "since_cash_close_pct": 0.05, "bar_age_min": 11.0},
+        },
+    }
+    mb_line = format_macro_benchmarks_summary_line(mb_deadband)
+    assert "ES=F=$7,225.25 (+0.41% 24h, -0.14% since_close, delayed=11m)" in mb_line
+    assert "NQ=F=$26,254.50 (+0.59% 24h, +0.05% since_close, delayed=11m)" in mb_line
+    assert "Futures_Lead=" not in mb_line
+
+    # Omit redundant since_close when it agrees with 24h (<0.15pp) or when cash ETF is live REGULAR RTH
+    mb_rth = {
+        "ts": now_s - 30.0,
+        "items": {
+            "SPY": {"price": 716.70, "chg_24h_pct": 0.23, "market_state": "REGULAR", "bar_age_min": 1.0},
+            "QQQ": {"price": 633.93, "chg_24h_pct": 0.50, "market_state": "CLOSED", "bar_age_min": 418.0},
+            "ES=F": {"price": 7225.25, "chg_24h_pct": 0.41, "since_cash_close_pct": -0.14, "bar_age_min": 11.0},
+            "NQ=F": {"price": 26254.50, "chg_24h_pct": 0.59, "since_cash_close_pct": 0.55, "bar_age_min": 11.0},
+        },
+    }
+    assert "since_close" not in format_macro_benchmarks_summary_line(mb_rth)
+
+    # 2. Stale Macro Sentiment Advisor summary citing 'ES/NQ +0.45%/+0.63%' gets reconciled with live Fut_Lead=+0.05%
+    sec1_deadband = "\n".join(
+        _format_macro_and_news_section(
+            SimpleNamespace(
+                sentiment_advisor={
+                    "confidence": 0.72,
+                    "ts": now_s - 1464.0,
+                    "summary": "Breadth 89.1%, ES/NQ +0.45%/+0.63%, 15m/1h tr 1.39/1.01.",
+                },
+                geopolitical_threat=None,
+                macro_benchmarks=mb_deadband,
+                microstructure={"BTCUSDC": {"taker_buy_sell_ratio": 0.60, "cvd_15m_usd": -14_190_000.0}},
+                breaking_news=[],
+            ),
+            asset_scope="crypto",
+            now_ts=now_s,
+        )
+    )
+    assert "CB_Prem=-2.7bps, Fut_Lead=+0.05% vs 24.4m-old summary" in sec1_deadband
+
+    # 3. Curly-apostrophe clickbait, local gold-mine flood, and non-financial 'central' prose are excluded;
+    #    central bank rate decisions, bullion market moves, and equity wraps remain included.
+    assert not has_financial_or_geopolitical_context(
+        "Wealthy Europeans look beyond stocks amid AI selloff. Here\u2019s where they\u2019re investing"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "What\u2019s open and closed on Thanksgiving Day 2026: banks and stock market"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "At least 13 dead in Indonesia gold mine flood as rescue efforts intensify"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "How Silicon Valley became central to Israel\u2019s war on Palestinians"
+    )
+    assert has_financial_or_geopolitical_context(
+        "South Korea\u2019s central bank hikes interest rates amid AI chip boom"
+    )
+    assert has_financial_or_geopolitical_context(
+        "Central Bank of Japan keeps policy rate unchanged"
+    )
+    assert has_financial_or_geopolitical_context(
+        "Gold surges 3% to record high as Treasury yields slide"
+    )
+    assert has_financial_or_geopolitical_context(
+        "Stocks, Nasdaq Futures Climb as AI Trade Rebounds: Markets Wrap"
+    )
+
+
+
 
 
 

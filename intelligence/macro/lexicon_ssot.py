@@ -684,6 +684,8 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "are banks open",
     "what's open and closed",
     "what is open and closed",
+    "here's where they're investing",
+    "here's where to invest",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
@@ -693,9 +695,12 @@ _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
 
 def _is_editorial_clickbait_or_advice_title(title_low: str) -> bool:
     """Return True if a lowercase headline matches first-person financial advice or stock-pick clickbait."""
+    if not title_low:
+        return False
+    norm_low = title_low.replace("\u2019", "'").replace("\u2018", "'")
     return bool(
-        title_low
-        and (any(p in title_low for p in _EDITORIAL_CLICKBAIT_SUBSTRINGS) or _EDITORIAL_CLICKBAIT_OR_ADVICE_RE.search(title_low))
+        any(p in norm_low for p in _EDITORIAL_CLICKBAIT_SUBSTRINGS)
+        or _EDITORIAL_CLICKBAIT_OR_ADVICE_RE.search(norm_low)
     )
 
 
@@ -1330,7 +1335,7 @@ _FINANCIAL_OR_GEOPOLITICAL_CONTEXT_WORDS: frozenset[str] = (
     _BROAD_MARKET_INDEX_CONTEXT_WORDS
     | _KINETIC_OR_MACRO_WAR_CONTEXT_WORDS
     | frozenset({
-        "bank", "banks", "bond", "bonds", "central", "chip", "chips", "cpi",
+        "bank", "banks", "bond", "bonds", "chip", "chips", "cpi",
         "currency", "debt", "dollar", "economy", "economic", "energy", "etf",
         "exports", "fed", "fomc", "gas", "gdp", "gold", "imports", "inflation",
         "interest", "investor", "investors", "jobs", "liquidity", "loan",
@@ -1408,6 +1413,8 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
     ):
         return False
     if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "grocery", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "xbox"}):
+        return False
+    if matched_fin and matched_fin <= {"gold"} and (words & {"mine", "mining", "miners", "flood", "landslide", "rescue", "trapped", "collapsed"}) and not (words & _BROAD_MARKET_INDEX_CONTEXT_WORDS) and not has_eq_entity:
         return False
     if (
         matched_fin

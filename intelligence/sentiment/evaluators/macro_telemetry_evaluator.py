@@ -1119,6 +1119,34 @@ def format_compact_usd(val: Any, *, signed: bool = False) -> str:
     return f"{sgn}${abs_v:.0f}"
 
 
+def resolve_futures_since_cash_close_pct(
+    items: Any,
+    sym: str,
+    *,
+    min_div_from_24h_pct: float = 0.15,
+) -> Optional[float]:
+    """Return ``since_cash_close_pct`` for active US index futures when cash is inactive and it diverges from ``chg_24h_pct``."""
+    if not isinstance(items, dict):
+        return None
+    entry = items.get(sym)
+    if not isinstance(entry, dict) or str(entry.get("market_state") or "").strip().upper() == "CLOSED":
+        return None
+    scc = safe_float(entry.get("since_cash_close_pct"), default=None)
+    if scc is None:
+        return None
+    cash_pair = items.get({"ES=F": "SPY", "NQ=F": "QQQ"}.get(sym, ""))
+    if (
+        isinstance(cash_pair, dict)
+        and str(cash_pair.get("market_state") or "").strip().upper() == "REGULAR"
+        and (safe_nonneg_float(cash_pair.get("bar_age_min"), default=0.0) or 0.0) <= 15.0
+    ):
+        return None
+    c24 = safe_float(entry.get("chg_24h_pct"), default=None)
+    if c24 is not None and abs(c24 - scc) < min_div_from_24h_pct:
+        return None
+    return round(scc, 2) + 0.0
+
+
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     if not isinstance(data, dict):
@@ -1180,6 +1208,8 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             for h_lbl, h_key in horizons
             if (val := safe_float(entry.get(h_key), default=None)) is not None
         ]
+        if (scc_v := resolve_futures_since_cash_close_pct(items, sym)) is not None:
+            d_parts.append(f"{fmt_signed(scc_v)}% since_close")
         if m_state and m_state != "REGULAR":
             d_parts.append(m_state.lower())
         if bar_age_min is not None:
@@ -1655,4 +1685,5 @@ __all__ = [
     "format_pretrade_etf_flows_line",
     "parse_farside_etf_flows_html",
     "reconcile_live_venue_equity_summary",
+    "resolve_futures_since_cash_close_pct",
 ]

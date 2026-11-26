@@ -43,6 +43,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     format_equity_macro_regime_line,
     format_etf_flows_summary_line,
     format_macro_benchmarks_summary_line,
+    resolve_futures_since_cash_close_pct,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     format_agg_spot_cvd_part,
@@ -460,12 +461,16 @@ def _format_macro_and_news_section(
     sa_summary_raw = str(sa.get("summary") or "").strip() if sa else ""
     sa_fut_lead_v: Optional[float] = None
     if isinstance(mb_bench, dict) and mb_bench:
+        sa_sum_low = sa_summary_raw.lower()
+        sa_mentions_fut = any(tok in sa_sum_low for tok in ("fut ", "futures", "es/nq", "es=f", "nq=f"))
         fl_raw = safe_float(compute_futures_premarket_lead(mb_bench).get("futures_lead_pct"), None)
-        if fl_raw is not None and (
-            abs(fl_raw) >= 0.25
-            or "fut " in sa_summary_raw.lower()
-            or "futures" in sa_summary_raw.lower()
-        ):
+        if fl_raw is None and sa_mentions_fut:
+            mb_it = mb_bench.get("items") if isinstance(mb_bench.get("items"), dict) else mb_bench
+            for _fsym in ("NQ=F", "ES=F"):
+                if (_scc := resolve_futures_since_cash_close_pct(mb_it, _fsym)) is not None:
+                    fl_raw = _scc
+                    break
+        if fl_raw is not None and (abs(fl_raw) >= 0.25 or sa_mentions_fut):
             sa_fut_lead_v = fl_raw
     if sa_flow_delta:
         sa_flow_delta = _SA_FLOW_POSTURE_RE.sub(r"\1summary", sa_flow_delta)
