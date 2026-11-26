@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/../lib/os_notify.sh"
 
 TOPIC="$(env_get NTFY_TOPIC_SERVER "$(env_get NTFY_TOPIC_DEADMAN "$(ntfy_error_topic)")")"
-ntfy_load_auth_hd
+ntfy_load_auth_hdr
 HOST="$(hostname)"
 
 DOWN_AFTER_SEC=$((35 * 60))
