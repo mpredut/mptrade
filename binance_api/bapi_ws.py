@@ -415,7 +415,9 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
                 if now < last_ping:
                     last_ping = now
                 if now - last_keepalive >= self.keepalive_sec:
-                    await ws.send(self._signed_logon_msg("keepalive"))
+                    # Query session.status rather than re-sending session.logon, which replaces
+                    # the authenticated session and triggers eventStreamTerminated on Binance WS-API v3.
+                    await ws.send(encode_json_payload({"id": "keepalive", "method": "session.status"}))
                     last_keepalive = now
                 ping_interval = max(1.0, self.loss_timeout_sec / 2.0)
                 if now - last_ping >= ping_interval:
@@ -453,6 +455,12 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
                             if event.get("id") == "keepalive":
                                 self._maybe_resync_clock_on_1021(event)
                             raise RuntimeError(f"{event.get('id')} failed: {event}")
+                    elif (
+                        event.get("id") == "keepalive"
+                        and isinstance(res := event.get("result"), dict)
+                        and (("authorizedSince" in res and not res.get("authorizedSince")) or res.get("userDataStream") is False)
+                    ):
+                        raise RuntimeError(f"keepalive session inactive: {event}")
                     else:
                         self._mark_event()
                     continue
