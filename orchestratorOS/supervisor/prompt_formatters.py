@@ -306,14 +306,14 @@ def build_supervisor_prompt(
             "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS: Prefer `\"order_type\": \"LIMIT\"` to control fill price and capture bid-ask spread "
             "(check venue fees/spread; passive `limit_price` near `vol_profile`/`session_vwap` support/resistance for swings; right at live spot for urgent entries/reversals). "
             "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot), "
-            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
+            "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
             "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) resting orders via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
             if is_equities
             else (
                 "   - DUAL EXECUTION MODE \u2014 IMMEDIATE 'MARKET' ORDERS OR PASSIVE 'LIMIT' ORDERS IN THE ORDERBOOK: Prefer `\"order_type\": \"LIMIT\"` to capture bid-ask spread and lower execution cost (check per-venue maker vs taker bps; "
                 "passive `limit_price` at bid/ask walls for swings; right at spot/BBO for urgent entries/reversals, auto-stepped 1 tick onto maker book). "
                 "Audit `open_limit_orders` (`dist_from_spot_pct` & `fill_prob_1h_pct` anchored to live spot; watch `[ob_stale]` when `ob_age > 30s`), "
-                "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement): "
+                "`last_cycle_execution_status` (emitted for recent `<=60m` fill/rejection or `<=30m` resting order), and calibration `arr`/`slip` bps (negative bps = favorable price improvement), `unf_off` bps, & `lim_off` fill-rate bands: "
                 "re-anchor stale/far (`fill_prob_1h_pct <= 5%` or `|dist| > 4%`) "
                 "or wall-trapped orders (`recommended_front_run_px`) via `replace_open_orders: true`; returning `'HOLD'` leaves resting orders untouched.\n"
             )

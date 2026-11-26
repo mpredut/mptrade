@@ -798,12 +798,20 @@ class CrossMarketContextEvaluator(TcaRiskEvaluatorBase):
                         eq_entry[k7] = pinfo[k7]
             eq_m_info = casefold_get(microstructure, eq_sym)
             if isinstance(eq_m_info, dict):
+                eq_caps = resolve_asset_session_policy(eq_sym).telemetry_capabilities
                 eq_no_oi = (safe_float(eq_m_info.get("oi_usd"), 0.0) or 0.0) <= 0.0
                 for mk_eq in _bellwether_micro_keys:
                     if eq_m_info.get(mk_eq) is None:
                         continue
                     if (
-                        (mk_eq in ("funding_rate", "perp_spot_basis_bps") or (eq_no_oi and mk_eq == "oi_1h_chg_pct"))
+                        eq_caps.has_zero_funding
+                        and mk_eq in ("funding_rate", "funding_annualized_pct", "perp_spot_basis_bps")
+                    ):
+                        continue
+                    if mk_eq == "whale_long_pct" and not eq_caps.allow_whale_long_display(eq_m_info):
+                        continue
+                    if (
+                        (mk_eq in ("funding_rate", "funding_annualized_pct", "perp_spot_basis_bps") or (eq_no_oi and mk_eq == "oi_1h_chg_pct"))
                         and abs(safe_float(eq_m_info.get(mk_eq), 0.0) or 0.0) < 1e-9
                     ):
                         continue

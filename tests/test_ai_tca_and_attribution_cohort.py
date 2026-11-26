@@ -205,3 +205,50 @@ def test_limit_passive_offset_fill_rate_tca_and_section_3c_feedback():
     assert "LIMIT Offset Fill Rate: <=40bp: 100.0% (2/2), >100bp: 0.0% (0/3)" in rendered
     assert "UnfOff" in rendered
     assert "+130.0" in rendered
+
+
+def test_equity_bellwethers_strip_synthetic_perp_funding_and_whale_placeholders():
+    """US equities in cross_market_context omit synthetic funding_annualized_pct=0.0 and whale_long_pct=0.5 without live CBOE OI."""
+    from types import SimpleNamespace
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import build_cross_market_context
+    from orchestratorOS.supervisor.prompt_formatters import build_supervisor_prompt
+
+    ctx = build_cross_market_context(
+        {
+            "NVDA_US_EQ": {"price": 151.3, "chg_24h_pct": -0.91},
+            "SPCX_US_EQ": {"price": 128.95, "chg_24h_pct": 2.15},
+        },
+        {
+            "NVDA_US_EQ": {
+                "ob_imbalance": 0.923,
+                "spread_bps": 6.67,
+                "whale_long_pct": 0.5,
+                "funding_rate": 0.0,
+                "funding_annualized_pct": 0.0,
+                "perp_spot_basis_bps": 0.0,
+            },
+            "SPCX_US_EQ": {
+                "ob_imbalance": 0.909,
+                "spread_bps": 0.78,
+                "oi_usd": 5_000_000.0,  # Live CBOE options OI -> whale_long_pct IS real and preserved
+                "whale_long_pct": 0.62,
+                "funding_annualized_pct": 0.0,
+            },
+        },
+    )
+    nvda_bw = ctx["equity_bellwethers"]["NVDA_US_EQ"]
+    assert "funding_annualized_pct" not in nvda_bw
+    assert "funding_rate" not in nvda_bw
+    assert "whale_long_pct" not in nvda_bw
+    assert nvda_bw["ob_imbalance"] == pytest.approx(0.923)
+
+    spcx_bw = ctx["equity_bellwethers"]["SPCX_US_EQ"]
+    assert "funding_annualized_pct" not in spcx_bw
+    assert spcx_bw["whale_long_pct"] == pytest.approx(0.62)
+
+    # Prompt instructions reference unf_off and lim_off objectively alongside arr/slip
+    for tk in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):
+        p_txt = build_supervisor_prompt(SimpleNamespace(), {}, topic_key=tk, max_usd=1000.0)
+        assert "`unf_off` bps, & `lim_off` fill-rate bands" in p_txt
+        assert "negative bps = favorable price improvement" in p_txt
+
