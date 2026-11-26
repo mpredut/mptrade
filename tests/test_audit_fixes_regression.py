@@ -9726,6 +9726,68 @@ def test_cycle20_prompt_audit_fixes(tmp_path):
         assert has_financial_or_geopolitical_context(title), f"Unexpectedly filtered: {title}"
 
 
+def test_live_price_geometry_updates_only_active_intraday_session_extremes():
+    """recalculate_live_price_geometry expands only currently open UTC session extremes without mutating closed sessions or siblings."""
+    from datetime import datetime, timezone
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        compute_intraday_session_extremes,
+        recalculate_live_price_geometry,
+    )
+
+    day_00_ms = datetime(2026, 11, 26, 0, 0, 0, tzinfo=timezone.utc).timestamp() * 1000.0
+    t_0722_s = datetime(2026, 11, 26, 7, 22, 0, tzinfo=timezone.utc).timestamp()
+    t_1000_s = datetime(2026, 11, 26, 10, 0, 0, tzinfo=timezone.utc).timestamp()
+    t_2200_s = datetime(2026, 11, 26, 22, 0, 0, tzinfo=timezone.utc).timestamp()
+    t_nextday_s = datetime(2026, 11, 27, 7, 22, 0, tzinfo=timezone.utc).timestamp()
+
+    # Build 1m bars through 07:21 UTC (Asia 00-08 & London 07-16 both open), matching live HYPEUSDC London breakout
+    series_0721 = []
+    for m in range(0, 7 * 60 + 22):
+        ts_m = day_00_ms + m * 60_000.0
+        px_m = 61.0 if m < 7 * 60 else 60.95
+        if m == 60:
+            px_m = 60.7985
+        elif m == 120:
+            px_m = 62.785
+        elif m == 7 * 60 + 5:
+            px_m = 60.8785
+        elif m == 7 * 60 + 20:
+            px_m = 61.0345
+        series_0721.append([ts_m, px_m])
+
+    sess_meta = compute_intraday_session_extremes(series_0721, is_equity=False)
+    assert sess_meta["session_extremes"]["asia"] == [60.7985, 62.785]
+    assert sess_meta["session_extremes"]["london"] == [60.8785, 61.0345]
+    assert sess_meta["session_extremes_ref_ms"] > 0
+
+    # 1. Live tick at 07:22 UTC (61.0575 > ldn high 61.0345) updates active London high without mutating sibling source
+    p_ref = dict(sess_meta)
+    p_sib = dict(p_ref)
+    recalculate_live_price_geometry(p_sib, 61.0575, now_ts=t_0722_s)
+    assert p_sib["session_extremes"]["london"] == [60.8785, 61.0575]
+    assert p_sib["session_extremes"]["asia"] == [60.7985, 62.785]
+    assert p_ref["session_extremes"]["london"] == [60.8785, 61.0345]  # original untouched
+
+    # 2. Live tick at 10:00 UTC breaking above Asia high (63.20) updates active London ONLY; closed Asia stays immutable
+    p_ldn_only = dict(sess_meta)
+    recalculate_live_price_geometry(p_ldn_only, 63.20, now_ts=t_1000_s)
+    assert p_ldn_only["session_extremes"]["asia"] == [60.7985, 62.785]
+    assert p_ldn_only["session_extremes"]["london"] == [60.8785, 63.2]
+
+    # 3. Post-NY (22:00 UTC) and next UTC day (2026-11-27 07:22 UTC) leave all sessions untouched
+    for ts_closed in (t_2200_s, t_nextday_s):
+        p_closed = dict(sess_meta)
+        recalculate_live_price_geometry(p_closed, 65.0, now_ts=ts_closed)
+        assert p_closed["session_extremes"]["asia"] == [60.7985, 62.785]
+        assert p_closed["session_extremes"]["london"] == [60.8785, 61.0345]
+
+    # 4. Replay without explicit now_ts deterministically falls back to session_extremes_ref_ms (07:21 UTC -> Asia+London active)
+    p_replay = dict(sess_meta)
+    recalculate_live_price_geometry(p_replay, 60.50)
+    assert p_replay["session_extremes"]["asia"] == [60.5, 62.785]
+    assert p_replay["session_extremes"]["london"] == [60.5, 61.0345]
+
+
 
 
 

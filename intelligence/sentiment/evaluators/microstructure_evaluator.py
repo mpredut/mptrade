@@ -1601,7 +1601,7 @@ def sync_sibling_symbol_telemetry(
         "swing_low_px", "swing_high_px", "major_swing_low_px",
         "rally_from_swing_low_pct", "pullback_from_swing_high_pct", "rally_from_major_low_pct",
         "poc_px", "sec_poc_px", "hvn2_px", "lvn_px", "profile_shape", "vah_px", "val_px", "poc_dist_pct", "vah_dist_pct", "val_dist_pct", "va_pos_pct", "va_regime", "va_hold_min", "vp_source",
-        "session_vwap_px", "dist_vs_session_vwap_pct", "session_vwap_sigma_pct", "session_vwap_z", "session_vwap_anchor", "session_extremes",
+        "session_vwap_px", "dist_vs_session_vwap_pct", "session_vwap_sigma_pct", "session_vwap_z", "session_vwap_anchor", "session_extremes", "session_extremes_ref_ms",
         "bottom_structure_6h", "prior_6h_low_px", "recent_1h_low_px", "higher_low_vs_prior_pct", "reclaim_above_prior_low_pct",
     }
     for sym, pinfo in list(prices_and_trends.items()):
@@ -1676,7 +1676,7 @@ def sync_sibling_symbol_telemetry(
                                 synced_any_micro = True
                     if synced_any_micro and sym_has_own_ob:
                         enrich_microstructure_cvd(microstructure[sym], pinfo)
-        recalculate_live_price_geometry(pinfo, safe_pos_float(pinfo.get("price"), default=0.0) or 0.0)
+        recalculate_live_price_geometry(pinfo, safe_pos_float(pinfo.get("price"), default=0.0) or 0.0, now_ts=now_ts)
 
     for msym, minfo in list(microstructure.items()):
         if not isinstance(minfo, dict):

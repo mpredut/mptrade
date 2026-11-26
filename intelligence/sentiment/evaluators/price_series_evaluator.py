@@ -909,6 +909,25 @@ def compute_session_vwap_metrics(
 _ORIG_COMPUTE_VWAP_METRICS = compute_session_vwap_metrics
 
 
+_INTRADAY_SESSION_WINDOWS: Tuple[Tuple[str, int, int], ...] = (
+    ("asia", 0, 32),      # 00:00 - 08:00 UTC
+    ("london", 28, 64),   # 07:00 - 16:00 UTC
+    ("ny", 54, 84),       # 13:30 - 21:00 UTC
+)
+
+
+def active_intraday_session_names(ts_ms: float) -> Tuple[str, ...]:
+    """Return UTC intraday session names currently open at ``ts_ms``."""
+    if ts_ms <= 0.0:
+        return ()
+    bucket_in_day = math.floor(ts_ms / _MS_15M) % 96
+    return tuple(
+        s_name
+        for s_name, b_start, b_end in _INTRADAY_SESSION_WINDOWS
+        if b_start <= bucket_in_day < b_end
+    )
+
+
 def compute_intraday_session_extremes(
     series_24h: list,
     *,
@@ -935,11 +954,7 @@ def compute_intraday_session_extremes(
     day_start_ms = day_start_bucket * _MS_15M
     eff_dec = _auto_px_decimals(cur_px, decimals)
     sessions: Dict[str, List[float]] = {}
-    for s_name, b_start_off, b_end_off in (
-        ("asia", 0, 32),      # 00:00 - 08:00 UTC
-        ("london", 28, 64),   # 07:00 - 16:00 UTC
-        ("ny", 54, 84),       # 13:30 - 21:00 UTC
-    ):
+    for s_name, b_start_off, b_end_off in _INTRADAY_SESSION_WINDOWS:
         sess_start_ms = day_start_ms + b_start_off * _MS_15M
         if ref_ms < sess_start_ms + _MS_15M:
             continue
@@ -952,7 +967,7 @@ def compute_intraday_session_extremes(
         hi_s = max(b[2] for b in win_bars)
         if hi_s > 0.0 and lo_s > 0.0:
             sessions[s_name] = [round(lo_s, eff_dec), round(hi_s, eff_dec)]
-    return {"session_extremes": sessions} if sessions else {}
+    return {"session_extremes": sessions, "session_extremes_ref_ms": round(ref_ms)} if sessions else {}
 
 
 def format_atr_parts(entry: Any) -> List[str]:
@@ -2134,8 +2149,8 @@ def restore_rth_metric_anchors(
         m24.pop("va_hold_min", None)
 
 
-def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None:
-    """Recalculate VP position, Session VWAP geometry, 24h/7d/15m range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
+def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float, *, now_ts: Optional[float] = None) -> None:
+    """Recalculate VP position, Session VWAP geometry, 24h/7d/15m/session range bounds, swing waves, and 6h bottom structure for live price `p_cur`."""
     if not isinstance(pinfo, dict) or p_cur <= 0.0:
         return
     recalculate_anchor_price_geometry(pinfo, p_cur)
@@ -2277,6 +2292,33 @@ def recalculate_live_price_geometry(pinfo: Dict[str, Any], p_cur: float) -> None
         if h15_new > l15_new > 0:
             pinfo["pos_15m_pct"] = range_position_pct(p_cur, l15_new, h15_new)
             pinfo["span_15m_pct"] = pct_delta(h15_new, l15_new)
+    if isinstance(sess_ex := pinfo.get("session_extremes"), dict) and sess_ex:
+        ref_ms = safe_pos_float(pinfo.get("session_extremes_ref_ms"), default=0.0) or 0.0
+        if now_ts is not None and (now_s := normalize_epoch_sec(now_ts, default=0.0) or 0.0) > 0.0:
+            now_ms = now_s * 1000.0
+            eff_ts_ms = now_ms if (ref_ms <= 0.0 or math.floor(now_ms / _MS_1D) == math.floor(ref_ms / _MS_1D)) else 0.0
+        else:
+            eff_ts_ms = ref_ms
+        if active_sess := active_intraday_session_names(eff_ts_ms):
+            updated_sess: Optional[Dict[str, Any]] = None
+            for s_name in active_sess:
+                bounds = sess_ex.get(s_name)
+                if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
+                    lo_s = safe_pos_float(bounds[0], default=None)
+                    hi_s = safe_pos_float(bounds[1], default=None)
+                    if lo_s is not None and hi_s is not None:
+                        lo_new = round(min(lo_s, p_cur), eff_dec_15m)
+                        hi_new = round(max(hi_s, p_cur), eff_dec_15m)
+                        if p_cur < lo_new:
+                            lo_new = round(p_cur, max(eff_dec_15m, 4))
+                        if p_cur > hi_new:
+                            hi_new = round(p_cur, max(eff_dec_15m, 4))
+                        if lo_new != lo_s or hi_new != hi_s:
+                            if updated_sess is None:
+                                updated_sess = {k: list(v) if isinstance(v, (list, tuple)) else v for k, v in sess_ex.items()}
+                            updated_sess[s_name] = [lo_new, hi_new]
+            if updated_sess is not None:
+                pinfo["session_extremes"] = updated_sess
 
 
 def apply_24h_series_enrichment(

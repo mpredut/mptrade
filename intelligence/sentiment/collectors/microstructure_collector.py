@@ -2898,7 +2898,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     and not _prices_diverged(adopted_ob_px, safe_float(active_7d_vals[-1], 0.0))
                 ):
                     pt_map[sym]["chg_7d_pct"] = pct_delta(adopted_ob_px, safe_float(active_7d_vals[0], 0.0))
-                recalculate_live_price_geometry(pt_map[sym], adopted_ob_px)
+                recalculate_live_price_geometry(pt_map[sym], adopted_ob_px, now_ts=eff_now)
                 if matched_series_24h and not is_eq_sym:
                     ob_ts_ms_kin = math.trunc((ob_ts_m if ob_ts_m > 0.0 else eff_now) * 1000.0)
                     last_kin_pt = parse_ts_px_row(matched_series_24h[-1])
@@ -2982,10 +2982,10 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     p_sib = dict(p_ref)
                     if ob_ref_fresh:
                         p_sib["price"] = ob_mid_sib
-                        recalculate_live_price_geometry(p_sib, ob_mid_sib)
+                        recalculate_live_price_geometry(p_sib, ob_mid_sib, now_ts=eff_now)
                     elif sib_live_px and sib_live_px > 0.0 and not _prices_diverged(sib_live_px, safe_float(p_ref.get("price"), 0.0)):
                         p_sib["price"] = sib_live_px
-                        recalculate_live_price_geometry(p_sib, sib_live_px)
+                        recalculate_live_price_geometry(p_sib, sib_live_px, now_ts=eff_now)
                     if m_info_ref.get("spread_bps") is not None:
                         p_sib["spread_bps"] = m_info_ref["spread_bps"]
                     pt_map[msym] = p_sib
