@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 from botcore import topic_spec
@@ -840,3 +840,191 @@ def test_cycle3_secondary_sibling_impulse_suppression_and_legacy_archive_bootstr
         workspace_dir=str(tmp_path),
     )
     assert cached is not None and calls["n"] == calls_before
+
+
+def test_option3_unified_multi_tf_intraday_collector_market_api_consumers_and_audit_fixes(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    """Verify Option 2 audit fixes & Option 3 unified multi-TF archive (1h/4h/1d):
+    1. Kraken tokenized xStocks pass asset_class=tokenized_asset.
+    2. Intraday collector persists 1h & 4h for crypto incrementally, and fetches 1h + resamples 4h locally for Yahoo equities.
+    3. MarketApi.fetch_historical_ohlc_points (survival) and fetch_ohlc_candles (walk-forward) serve fresh archives with 0 REST calls,
+       while falling back to REST when a crypto archive has a cadence gap.
+    4. chart_view CLI supports --tf 4h and --tf 1h directly from persisted archives, and retention pruning bounds 1h length.
+    """
+    from urllib.parse import parse_qs, urlparse
+    from intelligence.sentiment.collectors.long_horizon_collector import collect_intraday_ohlc_archives
+    from providers.market_api import api as mkt
+    from providers.ohlc_bar_archive import filter_closed_archive_bars, load_ohlc_archive_candles
+
+    cache_dir = str(tmp_path / "cachedb")
+    os.makedirs(os.path.join(cache_dir, "prices"), exist_ok=True)
+    os.makedirs(os.path.join(cache_dir, "macro"), exist_ok=True)
+
+    # Anchor now_ts right on a closed 4h boundary so closed-bar checks are deterministic
+    now_dt = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc)
+    now_ts = now_dt.timestamp()
+    now_ms = int(now_ts * 1000)
+
+    # Build contiguous 1h bars (120h = 5d) and 4h bars (60 bars = 10d) for BTCUSDC, plus 1h Yahoo bars for NVDA_US_EQ
+    start_1h_ms = now_ms - 120 * 3600 * 1000
+    bn_1h = [
+        [start_1h_ms + i * 3600 * 1000, f"{60000 + i:.2f}", f"{60200 + i:.2f}", f"{59800 + i:.2f}", f"{60100 + i:.2f}", "100.0"]
+        for i in range(121)  # includes forming bar at now_ms
+    ]
+    start_4h_ms = now_ms - 60 * 4 * 3600 * 1000
+    bn_4h = [
+        [start_4h_ms + i * 4 * 3600 * 1000, f"{59500 + i * 5:.2f}", f"{59900 + i * 5:.2f}", f"{59300 + i * 5:.2f}", f"{59700 + i * 5:.2f}", "400.0"]
+        for i in range(61)  # includes forming bar at now_ms
+    ]
+    krk_urls: List[str] = []
+    yahoo_calls: List[Tuple[str, str]] = []
+    bn_calls: List[Tuple[str, int]] = []
+
+    def _fake_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = timeout
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        if "binance.com" in url:
+            iv = qs["interval"][0]
+            lim = int(qs["limit"][0])
+            end_ms = int(qs["endTime"][0])
+            bn_calls.append((iv, lim))
+            src = bn_1h if iv == "1h" else bn_4h
+            eligible = [r for r in src if r[0] <= end_ms]
+            return eligible[-lim:]
+        if "kraken.com" in url:
+            krk_urls.append(url)
+            iv_m = int(qs["interval"][0])
+            step_s = iv_m * 60
+            return {
+                "error": [],
+                "result": {
+                    "SPCXxUSD": [
+                        [int(now_ts) - (40 - i) * step_s, "140.0", "142.0", "139.0", f"{140.5 + i * 0.1:.2f}", "140.5", "50.0", 10]
+                        for i in range(40)
+                    ],
+                    "last": int(now_ts),
+                },
+            }
+        if "finance.yahoo.com" in url:
+            rng = qs["range"][0]
+            iv = qs["interval"][0]
+            yahoo_calls.append((iv, rng))
+            ts_list = [int((start_1h_ms + i * 3600 * 1000) // 1000) for i in range(48)]
+            closes = [150.0 + i * 0.25 for i in range(48)]
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"symbol": "NVDA"},
+                        "timestamp": ts_list,
+                        "indicators": {"quote": [{"open": closes, "high": closes, "low": closes, "close": closes, "volume": [500.0] * 48}]},
+                    }]
+                }
+            }
+        return {}
+
+    # 1. Cold backfill via IntradayOhlcArchiveCollector (BTCUSDC + NVDA_US_EQ + SPCXxUSD)
+    res1 = collect_intraday_ohlc_archives(
+        cache_dir,
+        symbols=["BTCUSDC", "NVDA_US_EQ", "SPCXxUSD"],
+        now_ts=now_ts,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert res1 is not None and res1["symbol_count"] == 3
+    # Audit Fix 1: Kraken tokenized xStock includes asset_class=tokenized_asset
+    assert krk_urls and all("asset_class=tokenized_asset" in u for u in krk_urls)
+    # Yahoo equities fetched ONLY 1h once (4h derived locally with ZERO extra Yahoo calls!)
+    assert yahoo_calls == [("1h", "1y")]
+    nvda_1h = load_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", "1h")
+    nvda_4h = load_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", "4h")
+    assert nvda_1h is not None and nvda_1h["bar_count"] == 48
+    assert nvda_4h is not None and nvda_4h["bar_count"] == 12 and "resampled_1h" in nvda_4h["source"]
+    # Verify Yahoo timestamps were normalized to ms (Audit Fix 4)
+    assert nvda_1h["bars"][0][0] > 1e11
+
+    # 2. Fresh-guard skip within 1h -> 0 HTTP calls
+    bn_calls.clear()
+    yahoo_calls.clear()
+    res_skip = collect_intraday_ohlc_archives(
+        cache_dir,
+        symbols=["BTCUSDC", "NVDA_US_EQ", "SPCXxUSD"],
+        now_ts=now_ts + 600.0,
+        persist=True,
+        skip_if_fresh_sec=3600.0,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert res_skip is not None and res_skip.get("skipped_fresh") is True
+    assert bn_calls == [] and yahoo_calls == []
+
+    # 3. Incremental refresh 2h later -> only tiny tail fetched (Binance limit <= 16, Yahoo range=5d!)
+    bn_calls.clear()
+    yahoo_calls.clear()
+    t_inc = now_ts + 2 * 3600.0
+    bn_1h.append([now_ms + 3600 * 1000, "60200.0", "60400.0", "60100.0", "60300.0", "110.0"])
+    bn_1h.append([now_ms + 2 * 3600 * 1000, "60300.0", "60500.0", "60200.0", "60400.0", "120.0"])
+    res2 = collect_intraday_ohlc_archives(
+        cache_dir,
+        symbols=["BTCUSDC", "NVDA_US_EQ"],
+        now_ts=t_inc,
+        persist=True,
+        fetch_fn=_fake_fetch,
+        workspace_dir=str(tmp_path),
+    )
+    assert res2 is not None
+    assert all(lim <= 20 for _, lim in bn_calls)
+    assert yahoo_calls == [("1h", "5d")]
+
+    # 4. Closed-bar filtering drops forming bar when drop_incomplete=True
+    btc_1h_bars = load_ohlc_archive_bars(cache_dir, "BTCUSDC", "1h")
+    closed_1h = filter_closed_archive_bars(btc_1h_bars, interval_min=60, now_ms=int(t_inc * 1000))
+    assert len(closed_1h) == len(btc_1h_bars) - 1
+    candles_1h = load_ohlc_archive_candles(cache_dir, "BTCUSDC", "1h", drop_incomplete=True, now_ms=int(t_inc * 1000))
+    assert len(candles_1h) == len(closed_1h) and set(candles_1h[0].keys()) >= {"timestamp", "open", "high", "low", "close", "volume"}
+
+    # 5. Option 3 consumers: MarketApi serves archive-first with ZERO live provider calls
+    monkeypatch.setattr("providers.ohlc_bar_archive.resolve_now_ts", lambda now_ts=None: t_inc if now_ts is None else now_ts)
+    for prov in mkt._providers:
+        monkeypatch.setattr(prov, "fetch_historical_ohlc_points", lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected REST points fetch")))
+        monkeypatch.setattr(prov, "fetch_ohlc_candles", lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected REST candles fetch")))
+
+    pts_1h = mkt.fetch_historical_ohlc_points("BTCUSDC", days=3, interval="1h", cache_dir=cache_dir)
+    assert len(pts_1h) >= 70
+    ds_4h = mkt.fetch_ohlc_candles("BTCUSDC", interval=240, lookback_days=5, drop_incomplete=True, cache_dir=cache_dir)
+    assert len(ds_4h) >= 25
+    # Verify contiguity fallback: introduce a 2-hour gap -> MarketApi.fetch_ohlc_candles rejects gapped archive & hits provider
+    gapped_bars = [b for idx, b in enumerate(btc_1h_bars) if idx != len(btc_1h_bars) - 5]
+    upsert_ohlc_bar_archive(cache_dir, "ETHUSDC", gapped_bars, timeframe="1h", source="binance:ETHUSDC", requested_from_ms=start_1h_ms, now_ts=t_inc)
+    rest_fallback_hit = {"called": False}
+    for prov in mkt._providers:
+        monkeypatch.setattr(
+            prov,
+            "fetch_ohlc_candles",
+            lambda *a, **k: (rest_fallback_hit.__setitem__("called", True) or [{"timestamp": int(t_inc) - 3600, "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0}]),
+        )
+    fb_res = mkt.fetch_ohlc_candles("ETHUSDC", interval=60, lookback_days=2, drop_incomplete=True, cache_dir=cache_dir)
+    assert rest_fallback_hit["called"] is True and len(fb_res) == 1
+
+    # 6. Retention pruning bounds 1h archive cleanly
+    old_bar = [int((now_dt - timedelta(days=400)).timestamp() * 1000), 10000.0, 10100.0, 9900.0, 10050.0, 50.0]
+    pruned_doc = upsert_ohlc_bar_archive(
+        cache_dir,
+        "SOLUSDC",
+        [old_bar, *btc_1h_bars[-5:]],
+        timeframe="1h",
+        source="binance:SOLUSDC",
+        now_ts=t_inc,
+        max_retention_days=365,
+    )
+    assert pruned_doc is not None and pruned_doc["bar_count"] == 5
+
+    # 7. chart_view CLI supports --tf 4h and --tf 1h directly from persisted archives
+    assert chart_view_main(["BTCUSDC", "--tf", "4h", "--months", "1", "--cache-dir", cache_dir]) == 0
+    out_4h = capsys.readouterr().out
+    assert "=== BTCUSDC (4h," in out_4h
+    assert chart_view_main(["NVDA_US_EQ", "--tf", "1h", "--months", "1", "--cache-dir", cache_dir]) == 0
+    out_1h = capsys.readouterr().out
+    assert "=== NVDA_US_EQ (1h," in out_1h

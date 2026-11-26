@@ -11,6 +11,7 @@ pipeline before those mechanics. Concrete venue SDKs remain lazy inside their
 respective ``*_provider.py`` modules so ``cacheManager`` can import this facade
 without creating import cycles.
 """
+import math
 import time
 from collections import OrderedDict
 from typing import Any, Callable, List, Optional
@@ -36,6 +37,10 @@ from botcore import (
     safe_pos_int,
 )
 from cachepaths import (
+    ensure_equity_suffix,
+    ensure_quote_suffix,
+    get_cachedb_dir,
+    has_crypto_quote_suffix,
     has_equity_suffix,
     is_fiat_quote_pair,
     is_primary_stream_venue,
@@ -46,6 +51,7 @@ from instrument_registry import canonical_display_symbol, is_equity_symbol, reso
 import pricewindow as pw
 from . import order_id_context as rc
 from .base import MarketDataProvider
+from .ohlc_bar_archive import load_ohlc_archive_dataset, load_ohlc_archive_points
 from .order_ledger import OrderEventType, get_default_ledger_writer
 from .order_ohlc_utils import (  # noqa: F401
     filter_and_normalize_open_orders,
@@ -241,6 +247,31 @@ class MarketApi:
             symbol, provider_name, "ohlc_closes", symbol, interval_min, default=[]
         )
 
+    @staticmethod
+    def _archive_symbol_candidates(symbol: str) -> list[str]:
+        raw = str(symbol or "").strip()
+        if not raw:
+            return []
+        cands: list[str] = []
+
+        def _add(val: str) -> None:
+            v = str(val or "").strip()
+            if v and v not in cands:
+                cands.append(v)
+
+        _add(raw)
+        disp = canonical_display_symbol(raw)
+        if disp:
+            _add(disp)
+        tok_sym, is_tok = resolve_kraken_tokenized_pair(raw)
+        if is_tok and tok_sym:
+            _add(tok_sym)
+        if not is_tok and not is_equity_symbol(raw) and not has_crypto_quote_suffix(raw) and not raw.startswith("@"):
+            _add(ensure_quote_suffix(raw, "USDC"))
+            _add(ensure_quote_suffix(raw, "USD"))
+            _add(ensure_equity_suffix(raw))
+        return cands
+
     def fetch_ohlc_candles(
         self,
         symbol: str,
@@ -248,13 +279,40 @@ class MarketApi:
         *,
         drop_incomplete: bool = True,
         provider_name=None,
+        cache_dir: Optional[str] = None,
+        use_archive: bool = True,
         **kwargs: Any,
     ) -> List[dict]:
-        """Return historical OHLC bar dictionaries routed through the target venue provider."""
+        """Return historical OHLC bar dictionaries (archive-first when fresh & covered, else venue REST)."""
+        eff_drop = _parse_bool_flag(drop_incomplete, True)
+        if (
+            _parse_bool_flag(use_archive, True)
+            and (cache_dir is not None or botcore.is_shared_disk_cache_enabled())
+            and kwargs.get("end_ms") is None
+            and not kwargs.get("start_ms")
+        ):
+            eff_cache_dir = cache_dir or get_cachedb_dir()
+            lb_days = safe_pos_int(kwargs.get("lookback_days"), default=None)
+            if lb_days is None and (lb_h := safe_pos_float(kwargs.get("lookback_hours"), default=None)) is not None:
+                lb_days = max(1, math.ceil(lb_h / 24.0))
+            is_eq_any = is_equity_symbol(symbol)
+            for cand in self._archive_symbol_candidates(symbol):
+                is_eq = is_eq_any or is_equity_symbol(cand)
+                cached = load_ohlc_archive_dataset(
+                    eff_cache_dir,
+                    cand,
+                    interval,
+                    lookback_days=lb_days,
+                    drop_incomplete=eff_drop,
+                    require_contiguous=not is_eq,
+                    allow_market_closed_stale=is_eq,
+                )
+                if cached:
+                    return cached
         return self._provider_explicit_or_routed(symbol, provider_name).fetch_ohlc_candles(
             symbol,
             interval,
-            drop_incomplete=drop_incomplete,
+            drop_incomplete=eff_drop,
             **kwargs,
         )
 
@@ -283,13 +341,29 @@ class MarketApi:
         symbol: str,
         days: int,
         interval: str = "1h",
+        *,
+        cache_dir: Optional[str] = None,
+        use_archive: bool = True,
     ) -> list[tuple[float, float]]:
-        """Return historical ``(epoch_sec, close_price)`` OHLC points across configured venue providers."""
+        """Return historical ``(epoch_sec, close_price)`` OHLC points (archive-first when fresh, else venue REST)."""
         sym_u = clean_upper_scalar(symbol)
         days_i = safe_pos_int(days, default=None)
         if not sym_u or days_i is None:
             return []
         is_eq = is_equity_symbol(sym_u)
+        if _parse_bool_flag(use_archive, True) and (cache_dir is not None or botcore.is_shared_disk_cache_enabled()):
+            eff_cache_dir = cache_dir or get_cachedb_dir()
+            for cand in self._archive_symbol_candidates(symbol):
+                pts_cached = load_ohlc_archive_points(
+                    eff_cache_dir,
+                    cand,
+                    interval,
+                    lookback_days=days_i,
+                    drop_incomplete=False,
+                    allow_market_closed_stale=is_eq or is_equity_symbol(cand),
+                )
+                if pts_cached:
+                    return pts_cached
         tok_sym, is_tok = (("", False) if is_eq else resolve_kraken_tokenized_pair(symbol))
         target_scope = "equities" if is_eq else "crypto"
         query_sym = sym_u if is_eq else (tok_sym if is_tok else symbol)

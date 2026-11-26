@@ -82,7 +82,10 @@ from intelligence.macro.daemon_ssot import (
     write_daemon_heartbeat,
 )
 from intelligence.macro.news_feed_collector import NewsFeedCollector
-from intelligence.sentiment.collectors.long_horizon_collector import collect_long_horizon_snapshot
+from intelligence.sentiment.collectors.long_horizon_collector import (
+    collect_intraday_ohlc_archives,
+    collect_long_horizon_snapshot,
+)
 from intelligence.macro_sentiment_ssot import (
     load_venue_balances_state,
     resolve_derived_telemetry_intervals,
@@ -437,6 +440,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         macro_calendar_interval_sec: Optional[float] = None,
         etf_flows_interval_sec: Optional[float] = None,
         long_horizon_interval_sec: Optional[float] = None,
+        ohlc_intraday_archive_interval_sec: Optional[float] = None,
         venue_balances_interval_sec: Optional[float] = None,
         skip_news: bool = False,
         skip_external: bool = False,
@@ -467,6 +471,9 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
         self.macro_calendar_interval_sec = safe_pos_float(macro_calendar_interval_sec, derived["macro_calendar_interval_sec"])
         self.etf_flows_interval_sec = safe_pos_float(etf_flows_interval_sec, derived["etf_flows_interval_sec"])
         self.long_horizon_interval_sec = safe_pos_float(long_horizon_interval_sec, derived["long_horizon_interval_sec"])
+        self.ohlc_intraday_archive_interval_sec = safe_pos_float(
+            ohlc_intraday_archive_interval_sec, derived["ohlc_intraday_archive_interval_sec"]
+        )
         self.pretrade_caches_interval_sec = max(60.0, self.orderbook_interval_sec * 3.0)
         self.venue_balances_interval_sec = safe_pos_float(venue_balances_interval_sec, self.pretrade_caches_interval_sec)
         self.skip_news = _parse_bool_flag(skip_news, False)
@@ -780,6 +787,33 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "Long-horizon structure updated (%s): %d symbols",
                 snap.get("horizon_label", "?"),
                 len(snap.get("items") or ()),
+            ),
+        )
+
+    def update_intraday_ohlc_archives(self, force: bool = False, now: Optional[float] = None) -> bool:
+        """Incrementally update durable 1h and 4h OHLCV bar archives in cachedb/prices/."""
+        _ = force
+        fresh_guard = resolve_macro_fresh_guard_sec(
+            getattr(self, "ohlc_intraday_archive_interval_sec", None),
+            default_interval_sec=3600.0,
+        )
+        ws_dir = resolve_workspace_dir_from_cachedb(self.cache_dir) or "."
+        return self._run_macro_snapshot_update(
+            label="intraday OHLC archives",
+            now=now,
+            collect_fn=lambda eff_now: collect_intraday_ohlc_archives(
+                self.cache_dir,
+                timeout_sec=5.0,
+                persist=True,
+                now_ts=eff_now,
+                skip_if_fresh_sec=fresh_guard,
+                workspace_dir=ws_dir,
+            ),
+            is_valid_fn=lambda snap: bool(snap.get("bar_counts") or snap.get("skipped_fresh")),
+            on_success_log=lambda snap: logger.debug(
+                "Intraday OHLC archives synced (%s): %d symbols",
+                ",".join(snap.get("timeframes") or ()),
+                snap.get("symbol_count", snap.get("symbols", 0)),
             ),
         )
 
@@ -1106,6 +1140,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 (not self.skip_external and hasattr(self, "macro_calendar_interval_sec"), "_last_macro_calendar_ts", getattr(self, "macro_calendar_interval_sec", 21600.0), self.update_macro_calendar, (force,), 12.0, "macro_calendar", "macro_calendar_updated", None),
                 (not self.skip_external and hasattr(self, "etf_flows_interval_sec"), "_last_etf_flows_ts", getattr(self, "etf_flows_interval_sec", 7200.0), self.update_etf_flows, (force,), 12.0, "etf_flows", "etf_flows_updated", None),
                 (not self.skip_external and hasattr(self, "long_horizon_interval_sec"), "_last_long_horizon_ts", getattr(self, "long_horizon_interval_sec", 21600.0), self.update_long_horizon, (force,), 20.0, "long_horizon", "long_horizon_updated", None),
+                (not self.skip_external and hasattr(self, "ohlc_intraday_archive_interval_sec"), "_last_ohlc_intraday_archive_ts", getattr(self, "ohlc_intraday_archive_interval_sec", 3600.0), self.update_intraday_ohlc_archives, (force,), 24.0, "ohlc_intraday_archive", "ohlc_intraday_archive_updated", None),
                 (not self.skip_external and bool(self._active_liquidation_collectors()), "_last_realized_liq_ts", getattr(self, "derivatives_interval_sec", 30.0), self.update_realized_liquidations, (force,), 5.0, "realized_liquidations", "realized_liquidations_updated", None),
                 (not self.skip_external, "_last_pretrade_caches_ts", self.pretrade_caches_interval_sec, self.update_pretrade_caches, (force,), 24.0, "pretrade_caches", "pretrade_caches_updated", None),
                 (not self.skip_external, "_last_venue_balances_ts", self.venue_balances_interval_sec, self.update_venue_balances, (force,), 24.0, "venue_balances", "venue_balances_updated", None),
@@ -1187,6 +1222,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 "macro_calendar": getattr(self, "macro_calendar_interval_sec", None),
                 "etf_flows": getattr(self, "etf_flows_interval_sec", None),
                 "long_horizon": getattr(self, "long_horizon_interval_sec", None),
+                "ohlc_intraday_archive": getattr(self, "ohlc_intraday_archive_interval_sec", None),
                 "venue_balances": getattr(self, "venue_balances_interval_sec", None),
             },
             extra=extra_hb,

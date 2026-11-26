@@ -729,6 +729,7 @@ def resolve_derived_telemetry_intervals(
         "macro_calendar_interval_sec": _sec("macro_calendar_interval_mult", 60.0),
         "etf_flows_interval_sec": _sec("etf_flows_interval_mult", 20.0),
         "long_horizon_interval_sec": _sec("long_horizon_interval_mult", 60.0),
+        "ohlc_intraday_archive_interval_sec": _sec("ohlc_intraday_archive_interval_mult", 10.0),
         "fear_greed_interval_sec": _sec("fear_greed_interval_mult", 5.0),
         "sensor_stale_age_min": round(
             exec_min * _parse_cfg_ratio(_raw_interval("sensor_stale_age_mult"), 11.0 / 12.0),
@@ -1099,11 +1100,30 @@ def get_yahoo_daily_chart_url(symbol: str, range_str: str) -> str:
     )
 
 
+def get_yahoo_ohlc_chart_url(symbol: str, range_str: str, interval: str = "1d") -> str:
+    return _require_feed_str("yahoo_ohlc_chart_url_template").format(
+        symbol=urllib.parse.quote(str(symbol or "").strip()),
+        range_str=urllib.parse.quote(str(range_str or "6mo").strip()),
+        interval=urllib.parse.quote(str(interval or "1d").strip()),
+    )
+
+
 def get_binance_daily_klines_url(symbol: str, limit: int, end_ms: int) -> str:
     lim_i = max(1, min(1000, _botcore.safe_int(limit, default=365)))
     end_i = max(1, _botcore.safe_int(end_ms, default=1))
     return _require_feed_str("binance_daily_klines_url_template").format(
         symbol=urllib.parse.quote(str(symbol or "").strip().upper()),
+        limit=lim_i,
+        end_ms=end_i,
+    )
+
+
+def get_binance_ohlc_klines_url(symbol: str, interval: str, limit: int, end_ms: int) -> str:
+    lim_i = max(1, min(1000, _botcore.safe_int(limit, default=365)))
+    end_i = max(1, _botcore.safe_int(end_ms, default=1))
+    return _require_feed_str("binance_ohlc_klines_url_template").format(
+        symbol=urllib.parse.quote(str(symbol or "").strip().upper()),
+        interval=urllib.parse.quote(str(interval or "1d").strip()),
         limit=lim_i,
         end_ms=end_i,
     )
@@ -1115,6 +1135,26 @@ def get_kraken_daily_ohlc_url(pair: str, since_sec: int) -> str:
         pair=urllib.parse.quote(str(pair or "").strip()),
         since_sec=since_i,
     )
+
+
+def get_kraken_ohlc_url(
+    pair: str,
+    interval_min: int,
+    since_sec: int,
+    *,
+    tokenized: bool = False,
+) -> str:
+    iv_i = max(1, _botcore.safe_int(interval_min, default=1440))
+    since_i = max(0, _botcore.safe_int(since_sec, default=0))
+    url = _require_feed_str("kraken_ohlc_url_template").format(
+        pair=urllib.parse.quote(str(pair or "").strip()),
+        interval_min=iv_i,
+        since_sec=since_i,
+    )
+    if tokenized:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}asset_class=tokenized_asset"
+    return url
 
 
 get_hyperliquid_info_url = _bind_feed_url_getter(

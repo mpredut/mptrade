@@ -1,12 +1,11 @@
-"""Persistent incremental OHLCV bar archive store (Layer 3, multi-timeframe ready).
+"""Persistent incremental multi-timeframe OHLCV bar archive store (Layer 3).
 
 Stores canonical ``[ts_ms, open, high, low, close, volume]`` bars per ``(timeframe, symbol)``
 under ``cachedb/prices/cache_ohlc_bars_<TF>_<SYM>.json`` with ``ARCHIVE_DURABLE`` persistence
 (``fsync=True``, ``.previous`` backup, compact JSON, serialized via ``generation_transaction``).
 
-Stage 1 consumers use ``timeframe="1d"`` for multi-year long-horizon structure and chart zoom;
-the file layout, bucketing, merge logic, and incremental fetch planner are timeframe-agnostic
-so Stage 2 can plug in intraday intervals (e.g. ``4h``, ``1h``) without schema changes.
+Supports ``1d`` (multi-year long-horizon structure), ``4h`` (shadow/walk-forward replay & zoom),
+and ``1h`` (survival/regime analysis, walk-forward & intraday zoom) from one unified SSOT store.
 """
 from __future__ import annotations
 
@@ -32,7 +31,28 @@ from state_io import (
 
 OHLC_BAR_ARCHIVE_SCHEMA_VERSION = 1
 _MS_PER_MINUTE = 60_000
+_MS_PER_DAY = 86_400_000
 _LOCAL_FALLBACK_SOURCE = "local_sparse"
+_EQUITY_CLOSED_MARKET_STALE_SEC = 96.0 * 3600.0
+
+
+@dataclass(frozen=True)
+class ArchiveTimeframePolicy:
+    """Declarative lookback, retention, and incremental overlap policy per canonical timeframe."""
+
+    timeframe: str
+    interval_min: int
+    default_lookback_days: int
+    max_retention_days: int
+    overlap_bars: int
+    start_tolerance_bars: int
+
+
+ARCHIVE_TIMEFRAME_POLICIES: Dict[str, ArchiveTimeframePolicy] = {
+    "1d": ArchiveTimeframePolicy("1d", 1440, 1096, 1825, 5, 7),
+    "4h": ArchiveTimeframePolicy("4h", 240, 365, 1095, 6, 12),
+    "1h": ArchiveTimeframePolicy("1h", 60, 180, 365, 8, 24),
+}
 
 
 @dataclass(frozen=True)
@@ -47,9 +67,24 @@ class BarFetchPlan:
     prefix_end_ms: Optional[int] = None
 
 
-def resolve_archive_timeframe(timeframe: str = "1d") -> Tuple[int, str]:
-    """Validate and canonicalize ``timeframe`` into ``(interval_min, interval_str)``."""
+def resolve_archive_timeframe(timeframe: Any = "1d") -> Tuple[int, str]:
+    """Validate and canonicalize ``timeframe`` (string or minutes int) into ``(interval_min, interval_str)``."""
     return parse_ohlc_interval(timeframe, venue_label="OHLC archive")
+
+
+def resolve_archive_policy(timeframe: Any = "1d") -> ArchiveTimeframePolicy:
+    """Return the declarative ``ArchiveTimeframePolicy`` for ``timeframe``."""
+    interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    if (pol := ARCHIVE_TIMEFRAME_POLICIES.get(tf_str)) is not None:
+        return pol
+    return ArchiveTimeframePolicy(
+        timeframe=tf_str,
+        interval_min=interval_min,
+        default_lookback_days=180 if interval_min < 1440 else 1096,
+        max_retention_days=365 if interval_min < 1440 else 1825,
+        overlap_bars=6,
+        start_tolerance_bars=12,
+    )
 
 
 def _bar_bucket_key(ts_ms: float, interval_min: int) -> Any:
@@ -149,15 +184,7 @@ def merge_ohlc_archive_bars(
     interval_min: int = 1440,
     incoming_is_fallback: bool = False,
 ) -> List[List[float]]:
-    """Losslessly merge ``existing_bars`` with ``incoming_bars`` keyed by timeframe bucket.
-
-    - All historical buckets from ``existing_bars`` are preserved.
-    - Authoritative ``incoming_bars`` replace overlapping buckets (refreshing the tail bar
-      without double-counting volume).
-    - When ``incoming_is_fallback=True`` (e.g. ``local_sparse`` ticks during an outage),
-      incoming rows only fill buckets absent from ``existing_bars`` so real exchange OHLCV
-      is never downgraded.
-    """
+    """Losslessly merge ``existing_bars`` with ``incoming_bars`` keyed by timeframe bucket."""
     eff_interval = max(1, safe_pos_int(interval_min, default=1440) or 1440)
     norm_existing = normalize_ohlc_archive_bars(existing_bars, interval_min=eff_interval)
     norm_incoming = normalize_ohlc_archive_bars(incoming_bars, interval_min=eff_interval)
@@ -170,6 +197,69 @@ def merge_ohlc_archive_bars(
             continue
         merged[b_key] = bar
     return [merged[k] for k in sorted(merged.keys())]
+
+
+def aggregate_ohlc_bars(
+    bars: Sequence[Sequence[Any]],
+    *,
+    target_interval_min: int,
+) -> List[List[float]]:
+    """Deterministically resample finer OHLCV bars into a coarser timeframe (e.g. ``1h -> 4h``)."""
+    eff_target = max(1, safe_pos_int(target_interval_min, default=240) or 240)
+    target_ms = eff_target * _MS_PER_MINUTE
+    norm_in = normalize_ohlc_archive_bars(bars, interval_min=1)
+    if not norm_in:
+        return []
+    buckets: Dict[Any, List[float]] = {}
+    for row in norm_in:
+        ts_ms, o_v, h_v, l_v, c_v, v_v = row
+        if eff_target >= 1440:
+            b_key: Any = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+            b_ts = safe_int(
+                datetime.strptime(b_key, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000.0,
+                default=safe_int(ts_ms, default=0),
+            )
+        else:
+            b_ts = (safe_int(ts_ms, default=0) // target_ms) * target_ms
+            b_key = b_ts
+        cur = buckets.get(b_key)
+        if cur is None:
+            buckets[b_key] = _round_bar_row(b_ts, o_v, h_v, l_v, c_v, v_v)
+        else:
+            cur[2] = round(max(cur[2], h_v), 6)
+            cur[3] = round(min(cur[3], l_v), 6)
+            cur[4] = round(c_v, 6)
+            cur[5] = round(cur[5] + max(0.0, v_v), 2)
+    return [buckets[k] for k in sorted(buckets.keys())]
+
+
+def filter_closed_archive_bars(
+    bars: Sequence[Sequence[float]],
+    *,
+    interval_min: int,
+    now_ms: Optional[int] = None,
+) -> List[List[float]]:
+    """Drop trailing bars whose interval has not yet closed relative to ``now_ms``."""
+    if not bars:
+        return []
+    eff_now = safe_pos_int(now_ms, default=None)
+    if eff_now is None:
+        eff_now = safe_int(resolve_now_ts() * 1000.0, default=1)
+    eff_interval = max(1, safe_pos_int(interval_min, default=60) or 60)
+    interval_ms = eff_interval * _MS_PER_MINUTE
+    out = [list(b) for b in bars]
+    if eff_interval >= 1440:
+        today_utc = datetime.fromtimestamp(eff_now / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+        while out:
+            b_day = datetime.fromtimestamp(out[-1][0] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+            if b_day >= today_utc or (out[-1][0] + interval_ms) > eff_now:
+                out.pop()
+            else:
+                break
+        return out
+    while out and (out[-1][0] + interval_ms) > eff_now:
+        out.pop()
+    return out
 
 
 def _is_authoritative_archive(doc: Optional[Mapping[str, Any]]) -> bool:
@@ -188,8 +278,8 @@ def plan_incremental_bar_fetch(
     needed_start_ms: int,
     now_ms: int,
     timeframe: str = "1d",
-    overlap_bars: int = 5,
-    start_tolerance_bars: int = 7,
+    overlap_bars: Optional[int] = None,
+    start_tolerance_bars: Optional[int] = None,
 ) -> BarFetchPlan:
     """Compute minimal network fetch range given an existing persisted archive.
 
@@ -199,10 +289,13 @@ def plan_incremental_bar_fetch(
       - ``incremental`` when history back to ``needed_start_ms`` is already covered (fetches only
         ``[last_ts_ms - overlap_bars * interval_ms .. now_ms]``).
     """
-    interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    policy = resolve_archive_policy(timeframe)
+    interval_min, tf_str = policy.interval_min, policy.timeframe
     interval_ms = interval_min * _MS_PER_MINUTE
     eff_end = max(1, safe_int(now_ms, default=1))
     eff_need = max(0, min(eff_end, safe_int(needed_start_ms, default=0)))
+    eff_overlap = max(1, safe_int(overlap_bars, default=policy.overlap_bars)) if overlap_bars is not None else policy.overlap_bars
+    eff_tol = max(0, safe_int(start_tolerance_bars, default=policy.start_tolerance_bars)) if start_tolerance_bars is not None else policy.start_tolerance_bars
 
     if not _is_authoritative_archive(archive_doc) or not isinstance(archive_doc, Mapping):
         return BarFetchPlan(
@@ -233,7 +326,7 @@ def plan_incremental_bar_fetch(
 
     covered_candidates = [v for v in (first_ts, req_from) if v is not None and v > 0]
     covered_from_ms = min(covered_candidates) if covered_candidates else first_ts
-    tol_ms = max(0, safe_int(start_tolerance_bars, default=7)) * interval_ms
+    tol_ms = eff_tol * interval_ms
 
     if eff_need + tol_ms < covered_from_ms:
         return BarFetchPlan(
@@ -245,7 +338,6 @@ def plan_incremental_bar_fetch(
             prefix_end_ms=first_ts,
         )
 
-    eff_overlap = max(1, safe_int(overlap_bars, default=5))
     inc_start = max(0, last_ts - eff_overlap * interval_ms)
     return BarFetchPlan(
         mode="incremental",
@@ -256,7 +348,7 @@ def plan_incremental_bar_fetch(
     )
 
 
-def ohlc_bar_archive_path(cache_dir: str, symbol: str, timeframe: str = "1d") -> str:
+def ohlc_bar_archive_path(cache_dir: str, symbol: str, timeframe: Any = "1d") -> str:
     """Resolve canonical ``cachedb/prices/cache_ohlc_bars_<TF>_<SYM>.json`` path."""
     _, tf_str = resolve_archive_timeframe(timeframe)
     fname = cache_ohlc_bars_filename(symbol, timeframe=tf_str)
@@ -266,7 +358,7 @@ def ohlc_bar_archive_path(cache_dir: str, symbol: str, timeframe: str = "1d") ->
 def load_ohlc_bar_archive(
     cache_dir: str,
     symbol: str,
-    timeframe: str = "1d",
+    timeframe: Any = "1d",
 ) -> Optional[Dict[str, Any]]:
     """Passively read persisted OHLCV bar archive for ``(symbol, timeframe)`` with ``.previous`` recovery."""
     path = ohlc_bar_archive_path(cache_dir, symbol, timeframe=timeframe)
@@ -282,7 +374,7 @@ def load_ohlc_bar_archive(
 def load_ohlc_archive_bars(
     cache_dir: str,
     symbol: str,
-    timeframe: str = "1d",
+    timeframe: Any = "1d",
 ) -> List[List[float]]:
     """Return normalized bars from the persisted OHLCV bar archive, or ``[]`` when absent."""
     interval_min, tf_str = resolve_archive_timeframe(timeframe)
@@ -292,29 +384,219 @@ def load_ohlc_archive_bars(
     return normalize_ohlc_archive_bars(doc.get("bars") or (), interval_min=interval_min)
 
 
+def load_ohlc_archive_candles(
+    cache_dir: str,
+    symbol: str,
+    timeframe: Any = "1d",
+    *,
+    drop_incomplete: bool = True,
+    since_ms: Optional[int] = None,
+    end_ms: Optional[int] = None,
+    now_ms: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return canonical OHLC candle dicts ``{'timestamp', 'open', 'high', 'low', 'close', 'volume'}`` from disk."""
+    interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    bars = load_ohlc_archive_bars(cache_dir, symbol, timeframe=tf_str)
+    if not bars:
+        return []
+    if drop_incomplete:
+        bars = filter_closed_archive_bars(bars, interval_min=interval_min, now_ms=now_ms)
+    s_ms = safe_pos_int(since_ms, default=None) if since_ms is not None else None
+    e_ms = safe_pos_int(end_ms, default=None) if end_ms is not None else None
+    out: List[Dict[str, Any]] = []
+    for row in bars:
+        t_ms = safe_int(row[0], default=0)
+        if s_ms is not None and t_ms < s_ms:
+            continue
+        if e_ms is not None and t_ms > e_ms:
+            continue
+        out.append({
+            "timestamp": t_ms // 1000,
+            "open": row[1],
+            "high": row[2],
+            "low": row[3],
+            "close": row[4],
+            "volume": row[5] if len(row) >= 6 else 0.0,
+        })
+    return out
+
+
+def _archive_doc_is_fresh_and_covered(
+    doc: Mapping[str, Any],
+    bars: Sequence[Sequence[float]],
+    *,
+    interval_min: int,
+    lookback_days: Optional[int],
+    now_ts: float,
+    max_stale_bars: int,
+    min_coverage_ratio: float,
+    allow_market_closed_stale: bool,
+) -> bool:
+    if not _is_authoritative_archive(doc) or not bars:
+        return False
+    interval_sec = max(60, interval_min * 60)
+    last_bar_sec = bars[-1][0] / 1000.0
+    updated_ts = safe_pos_float(doc.get("updated_ts"), default=0.0) or 0.0
+    max_bar_age = max(interval_sec * max(2, max_stale_bars), 3600.0)
+    if allow_market_closed_stale:
+        max_bar_age = max(max_bar_age, _EQUITY_CLOSED_MARKET_STALE_SEC)
+    if (now_ts - last_bar_sec) > max_bar_age:
+        return False
+    if updated_ts > 0.0 and (now_ts - updated_ts) > max(max_bar_age, 25_200.0):
+        return False
+    if lookback_days is not None and lookback_days > 0:
+        needed_start_ms = max(0, safe_int((now_ts - lookback_days * 86400.0) * 1000.0, default=0))
+        req_from = safe_pos_int(doc.get("requested_from_ms"), default=None)
+        first_ms = safe_pos_int(bars[0][0], default=0) or 0
+        span_ms = max(0, safe_int(bars[-1][0] - first_ms, default=0))
+        req_span_ms = lookback_days * _MS_PER_DAY
+        # Accept when archive covers >= min_coverage_ratio of requested window OR exchange history was already exhausted back to needed_start_ms.
+        has_span = span_ms >= (req_span_ms * max(0.0, min(1.0, min_coverage_ratio)))
+        exhausted_past_need = req_from is not None and req_from <= (needed_start_ms + 7 * interval_sec * 1000)
+        if not (has_span or exhausted_past_need):
+            return False
+    return True
+
+
+def _bars_are_contiguous(bars: Sequence[Sequence[float]], interval_min: int) -> bool:
+    if len(bars) < 2:
+        return True
+    expected_ms = max(1, interval_min) * _MS_PER_MINUTE
+    for prev, curr in zip(bars, bars[1:]):
+        delta = safe_int(curr[0], default=0) - safe_int(prev[0], default=0)
+        if delta != expected_ms:
+            return False
+    return True
+
+
+def load_ohlc_archive_points(
+    cache_dir: str,
+    symbol: str,
+    timeframe: Any = "1h",
+    *,
+    lookback_days: int,
+    now_ts: Optional[float] = None,
+    max_stale_bars: int = 3,
+    min_coverage_ratio: float = 0.70,
+    drop_incomplete: bool = False,
+    allow_market_closed_stale: bool = False,
+) -> Optional[List[Tuple[float, float]]]:
+    """Read-only archive-first ``(epoch_sec, close)`` loader for survival/trend consumers; returns ``None`` on cache miss/stale."""
+    try:
+        interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    except ValueError:
+        return None
+    doc = load_ohlc_bar_archive(cache_dir, symbol, timeframe=tf_str)
+    if not isinstance(doc, dict):
+        return None
+    eff_now = resolve_now_ts(now_ts)
+    eff_now_ms = safe_int(eff_now * 1000.0, default=1)
+    bars = normalize_ohlc_archive_bars(doc.get("bars") or (), interval_min=interval_min)
+    if not _archive_doc_is_fresh_and_covered(
+        doc,
+        bars,
+        interval_min=interval_min,
+        lookback_days=lookback_days,
+        now_ts=eff_now,
+        max_stale_bars=max_stale_bars,
+        min_coverage_ratio=min_coverage_ratio,
+        allow_market_closed_stale=allow_market_closed_stale,
+    ):
+        return None
+    if drop_incomplete:
+        bars = filter_closed_archive_bars(bars, interval_min=interval_min, now_ms=eff_now_ms)
+    cutoff_ms = max(0, eff_now_ms - max(1, safe_int(lookback_days, default=30)) * _MS_PER_DAY)
+    pts = [(row[0] / 1000.0, row[4]) for row in bars if row[0] >= cutoff_ms]
+    return pts if len(pts) >= 2 else None
+
+
+def load_ohlc_archive_dataset(
+    cache_dir: str,
+    symbol: str,
+    timeframe: Any = "1h",
+    *,
+    lookback_days: Optional[int] = None,
+    drop_incomplete: bool = True,
+    now_ts: Optional[float] = None,
+    max_stale_bars: int = 3,
+    min_coverage_ratio: float = 0.70,
+    require_contiguous: bool = False,
+    allow_market_closed_stale: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """Read-only archive-first candle dataset loader for walk-forward/backtest consumers; returns ``None`` on miss/stale/gap."""
+    try:
+        interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    except ValueError:
+        return None
+    doc = load_ohlc_bar_archive(cache_dir, symbol, timeframe=tf_str)
+    if not isinstance(doc, dict):
+        return None
+    eff_now = resolve_now_ts(now_ts)
+    eff_now_ms = safe_int(eff_now * 1000.0, default=1)
+    bars = normalize_ohlc_archive_bars(doc.get("bars") or (), interval_min=interval_min)
+    if not _archive_doc_is_fresh_and_covered(
+        doc,
+        bars,
+        interval_min=interval_min,
+        lookback_days=lookback_days,
+        now_ts=eff_now,
+        max_stale_bars=max_stale_bars,
+        min_coverage_ratio=min_coverage_ratio,
+        allow_market_closed_stale=allow_market_closed_stale,
+    ):
+        return None
+    if drop_incomplete:
+        bars = filter_closed_archive_bars(bars, interval_min=interval_min, now_ms=eff_now_ms)
+    if lookback_days is not None and lookback_days > 0:
+        cutoff_ms = max(0, eff_now_ms - lookback_days * _MS_PER_DAY)
+        bars = [row for row in bars if row[0] >= cutoff_ms]
+    if len(bars) < 2:
+        return None
+    if require_contiguous and not _bars_are_contiguous(bars, interval_min):
+        return None
+    return [
+        {
+            "timestamp": safe_int(row[0], default=0) // 1000,
+            "open": row[1],
+            "high": row[2],
+            "low": row[3],
+            "close": row[4],
+            "volume": row[5] if len(row) >= 6 else 0.0,
+        }
+        for row in bars
+    ]
+
+
 def upsert_ohlc_bar_archive(
     cache_dir: str,
     symbol: str,
     incoming_bars: Sequence[Sequence[Any]],
     *,
-    timeframe: str = "1d",
+    timeframe: Any = "1d",
     source: str = "",
     requested_from_ms: Optional[int] = None,
     now_ts: Optional[float] = None,
     incoming_is_fallback: bool = False,
+    max_retention_days: Optional[int] = None,
     persist: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Merge ``incoming_bars`` into the durable per-symbol OHLCV archive under ``generation_transaction``.
 
-    Never discards older persisted bars; updates ``requested_from_ms`` to the earliest attempted
-    network lookback so short-history or API-capped assets (e.g. Kraken 720-bar cap) do not
-    re-trigger full backfills on every refresh cycle.
+    Never discards bars inside the timeframe retention window; updates ``requested_from_ms`` to the
+    earliest attempted network lookback so short-history or API-capped assets (e.g. Kraken 720-bar
+    cap) never re-trigger full backfills on every refresh cycle.
     """
     sym_s = str(symbol or "").strip()
     if not sym_s:
         return None
-    interval_min, tf_str = resolve_archive_timeframe(timeframe)
+    policy = resolve_archive_policy(timeframe)
+    interval_min, tf_str = policy.interval_min, policy.timeframe
     eff_now = resolve_now_ts(now_ts)
+    eff_retention = (
+        safe_pos_int(max_retention_days, default=None)
+        if max_retention_days is not None
+        else policy.max_retention_days
+    )
     path = ohlc_bar_archive_path(cache_dir, sym_s, timeframe=tf_str)
 
     def _merge_with_existing(existing: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -327,6 +609,11 @@ def upsert_ohlc_bar_archive(
         )
         if not merged_bars:
             return existing if isinstance(existing, dict) else None
+        if eff_retention is not None and eff_retention > 0:
+            prune_cut_ms = max(0, safe_int((eff_now - eff_retention * 86400.0) * 1000.0, default=0))
+            pruned = [b for b in merged_bars if b[0] >= prune_cut_ms]
+            if pruned:
+                merged_bars = pruned
 
         ex_source = str(existing.get("source") or "").strip() if isinstance(existing, dict) else ""
         inc_source = str(source or "").strip()

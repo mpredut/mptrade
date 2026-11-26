@@ -592,6 +592,7 @@ def render_ascii_chart_view(
     item: Mapping[str, Any],
     *,
     daily_bars: Optional[Sequence[Sequence[Any]]] = None,
+    bars_override: Optional[Sequence[Sequence[Any]]] = None,
     start_ym: Optional[str] = None,
     end_ym: Optional[str] = None,
     months: Optional[int] = None,
@@ -599,9 +600,26 @@ def render_ascii_chart_view(
     width: int = 60,
     height: int = 12,
 ) -> str:
-    """Render an exact ASCII price chart and OHLC summary for any chosen slice within the stored long-horizon bars."""
+    """Render an exact ASCII price chart and OHLC summary for any chosen slice (1w, 1d, 4h, or 1h)."""
     tf = str(timeframe or "1w").strip().lower()
-    if daily_bars:
+    is_intraday = tf in ("1h", "4h")
+    if bars_override:
+        bars = [
+            [
+                (t_v if t_v > 1e11 else t_v * 1000.0),
+                safe_pos_float(b[1], 0.0) or 0.0,
+                safe_pos_float(b[2], 0.0) or 0.0,
+                safe_pos_float(b[3], 0.0) or 0.0,
+                safe_pos_float(b[4], 0.0) or 0.0,
+                safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0,
+            ]
+            for b in bars_override
+            if isinstance(b, (list, tuple))
+            and len(b) >= 5
+            and (t_v := safe_pos_float(b[0], default=None)) is not None
+        ]
+        bars.sort(key=lambda r: r[0])
+    elif daily_bars:
         norm_daily = _normalize_daily_bars(daily_bars)
         bars = norm_daily if tf == "1d" else aggregate_weekly_bars(norm_daily)
     else:
@@ -626,14 +644,16 @@ def render_ascii_chart_view(
     if not sliced:
         return f"No bars in requested window for {item.get('symbol', '?')}."
 
-    d0 = datetime.fromtimestamp(sliced[0][0] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
-    d1 = datetime.fromtimestamp(sliced[-1][0] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+    date_fmt = "%Y-%m-%d %H:%M" if is_intraday else "%Y-%m-%d"
+    d0 = datetime.fromtimestamp(sliced[0][0] / 1000.0, tz=timezone.utc).strftime(date_fmt)
+    d1 = datetime.fromtimestamp(sliced[-1][0] / 1000.0, tz=timezone.utc).strftime(date_fmt)
     open_p, close_p = sliced[0][1], sliced[-1][4]
     lo_p = min(b[3] for b in sliced)
     hi_p = max(b[2] for b in sliced)
     chg = _pct_chg(close_p, open_p)
     pos = _range_pos(close_p, lo_p, hi_p)
-    swings = compute_zigzag_swings(sliced, threshold_pct=12.0 if len(sliced) > 20 else 6.0, max_pivots=10)
+    sw_thr = 5.0 if tf == "1h" else (8.0 if tf == "4h" else (12.0 if len(sliced) > 20 else 6.0))
+    swings = compute_zigzag_swings(sliced, threshold_pct=sw_thr, max_pivots=10)
     sw_str = " -> ".join(f"{s['ym']}:{_fmt_compact_px(s['px'])}" for s in swings) if swings else "-"
 
     w = max(16, min(80, safe_int(width, default=60)))
@@ -672,9 +692,12 @@ def render_ascii_chart_view(
         lvl = hi_p - (span * r_idx / max(1, h - 1))
         lines.append(f"{_fmt_range_px(lvl):>10s} |{''.join(grid[r_idx])}|")
     lines.append(f"{'':>10s} +{'-' * w}+")
-    mid_d = datetime.fromtimestamp(sliced[n // 2][0] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
-    pad = max(1, (w - len(d0) - len(mid_d) - len(d1)) // 2)
-    lines.append(f"{'':>11s}{d0}{' ' * pad}{mid_d}{' ' * pad}{d1}")
+    axis_fmt = "%m-%d %H:%M" if is_intraday else "%Y-%m-%d"
+    a0 = datetime.fromtimestamp(sliced[0][0] / 1000.0, tz=timezone.utc).strftime(axis_fmt)
+    mid_d = datetime.fromtimestamp(sliced[n // 2][0] / 1000.0, tz=timezone.utc).strftime(axis_fmt)
+    a1 = datetime.fromtimestamp(sliced[-1][0] / 1000.0, tz=timezone.utc).strftime(axis_fmt)
+    pad = max(1, (w - len(a0) - len(mid_d) - len(a1)) // 2)
+    lines.append(f"{'':>11s}{a0}{' ' * pad}{mid_d}{' ' * pad}{a1}")
     return "\n".join(lines)
 
 
