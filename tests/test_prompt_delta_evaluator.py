@@ -250,13 +250,17 @@ def test_multigroup_cadence_and_transparent_rendering() -> None:
 
     full_prompt = build_supervisor_prompt(sensors, logs, compact_rules=False, delta_plan=plan1)
     assert "### 0. CLOCK & SNAPSHOT: 2026-11-26 12:00:00 EET (Thu)" in full_prompt
+    assert "  * Live: " in full_prompt and "  * Macro: " in full_prompt
     s0_i = full_prompt.index("### 0. CLOCK & SNAPSHOT:")
     s1_i = full_prompt.index("### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:")
-    s2_i = full_prompt.index("### 2. MACRO, REGIME & NEWS:")
-    s3_i = full_prompt.index("### 3. MARKET PRICES & TRENDS (ALL COINS):")
-    s4_i = full_prompt.index("### 4. ORDERBOOK, FLOW & DERIVATIVES:")
-    assert s0_i < s1_i < s2_i < s3_i < s4_i
+    s2_i = full_prompt.index("### 2. MACRO, REGIME & CROSS-MARKET:")
+    s3_i = full_prompt.index("### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW \u2014 ALL COINS):")
+    assert s0_i < s1_i < s2_i < s3_i
+    # Cross-market US equities table lives in Section 2 (Macro & Cross-Market), not Section 1 (Portfolio)
+    assert s2_i < full_prompt.index("Cross-Market US Equities Telemetry") < s3_i
     assert "PILLAR 2" not in full_prompt
+    # Unified 3-line card under BTCUSDC with Trend / Book / Flow
+    assert "    - Trend: " in full_prompt and "    - Book: " in full_prompt and "    - Flow: " in full_prompt
     assert "Raport Execu\u021bie [YYYY-MM-DD HH:MM:SS EET]" in full_prompt
     assert "- Snapshot Mode: FULL_KEYFRAME (reason=cold_turn)" in full_prompt
     assert "Fear & Greed:" in full_prompt
@@ -692,4 +696,12 @@ def test_wave1_tables_units_and_venue_specs_g2_elision() -> None:
     )
     assert bad_tbl != full_txt
     assert any(v.code == "PROMPT_VENUE_PRECISION" for v in audit_rendered_prompt_text(bad_tbl))
+
+    # Invariant verifier catches OB imbalance math corruption inside a unified multi-line symbol card
+    bad_ob = full_txt.replace(
+        "ob_imbalance=0.542 (bid_depth=$450.0K, ask_depth=$380.0K)",
+        "ob_imbalance=0.95 (bid_depth=$450.0K, ask_depth=$380.0K)",
+    )
+    assert bad_ob != full_txt
+    assert any(v.code == "PROMPT_OB_IMBALANCE_MATH" for v in audit_rendered_prompt_text(bad_ob))
 

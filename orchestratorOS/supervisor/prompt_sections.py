@@ -404,9 +404,12 @@ def _format_macro_and_news_section(
     *,
     now_ts: Optional[float] = None,
     delta_plan: Optional[Any] = None,
+    include_cross_market: bool = False,
 ) -> List[str]:
-    """Format Section 1 (Macro, Sentiment, Geopolitical & Live Breaking News) for the AI prompt."""
-    is_equities_scope = str(asset_scope or "all").strip().lower() == "equities"
+    """Format Section 2 (Macro, Regime, Cross-Market & Live Breaking News) for the AI prompt."""
+    scope_spec = resolve_scope_presentation(asset_scope)
+    scope_s = scope_spec.scope_key
+    is_equities_scope = scope_spec.is_equities
     ref_now = (
         safe_pos_float(now_ts, default=None)
         or safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
@@ -675,13 +678,13 @@ def _format_macro_and_news_section(
     if is_equities_scope:
         eq_reg_line = format_equity_macro_regime_line(mb_bench) if isinstance(mb_bench, dict) and mb_bench else "NEUTRAL"
         lines = [
-            "\n### 2. MACRO, REGIME & NEWS:",
+            "\n### 2. MACRO, REGIME & CROSS-MARKET:",
             f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
             f"- Geopolitical Threat Shield{gt_tag}: {gt_line}",
         ]
     else:
         lines = [
-            "\n### 2. MACRO, REGIME & NEWS:",
+            "\n### 2. MACRO, REGIME & CROSS-MARKET:",
         ]
         if delta_plan is None or delta_plan.should_show("fear_greed"):
             fg_tag = delta_plan.tag_for("fear_greed") if (delta_plan is not None and fg) else ""
@@ -714,6 +717,16 @@ def _format_macro_and_news_section(
         lines.append(
             f"- US Equities, Futures & Macro Rates Benchmarks (SPY / QQQ / ES=F / NQ=F / DXY / US10Y 24h Delta): {mb_bench_line}"
         )
+    if include_cross_market and isinstance(ps.get("cross_market_context"), dict) and ps["cross_market_context"]:
+        cm_view = evaluate_portfolio_prompt_view(
+            {"cross_market_context": ps["cross_market_context"]},
+            asset_scope=asset_scope,
+        )
+        if cm_view["crypto_bellwethers"]:
+            lines.extend(_format_cross_market_crypto_table(cm_view["crypto_bellwethers"]))
+        if (delta_plan is None or delta_plan.should_show("equity_bellwethers")) and cm_view["equity_bellwethers"]:
+            eq_tag = delta_plan.tag_for("equity_bellwethers") if delta_plan is not None else ""
+            lines.extend(_format_cross_market_equities_table(cm_view["equity_bellwethers"], scope_s=scope_s, tag=eq_tag))
     if not is_equities_scope and (delta_plan is None or delta_plan.should_show("etf_flows")):
         etf_flows = _resolve_macro_sensor(sensors, macro, "etf_flows", ps=ps)
         if etf_flows:
@@ -909,6 +922,281 @@ def _is_compact_observe_only_symbol(
     return is_obs, True
 
 
+def _build_market_price_symbol_record(
+    sym: str,
+    pinfo: Dict[str, Any],
+    sib_specs: List[Any],
+    *,
+    btc_entry: Optional[Dict[str, Any]],
+    obs_syms: set[str],
+    compact_observe_only: bool,
+    active_symbols: Optional[set[str]],
+) -> Dict[str, Any]:
+    """Build reusable price/trend prompt parts for both single-line and unified-card market sections."""
+    px = pinfo.get("price")
+    px_f = safe_float(px, 0.0)
+    px_str = _fmt_px(px_f, px)
+    is_obs_sym, is_compact_obs = _is_compact_observe_only_symbol(
+        sym,
+        obs_syms,
+        compact_observe_only=compact_observe_only,
+        active_symbols=active_symbols,
+    )
+    obs_lbl = " [OBSERVE-ONLY]" if is_obs_sym else ""
+    sib_lbl = ""
+    sib_syms: List[str] = []
+    if sib_specs:
+        sib_parts: List[str] = []
+        for sib_sym, s_px, diff_pct in sib_specs:
+            sib_syms.append(str(sib_sym))
+            if s_px > 0:
+                diff_s = (
+                    ""
+                    if diff_pct is None
+                    else (f" [{fmt_signed(diff_pct * 100.0, 1)}bps]" if abs(diff_pct) < 0.005 else f" [{fmt_signed(diff_pct)}%]")
+                )
+                sib_parts.append(f"{sib_sym}={_fmt_px(s_px)}{diff_s}")
+            else:
+                sib_parts.append(sib_sym)
+        if sib_parts:
+            sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
+
+    eq_qmeta_sfx = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
+    if is_compact_obs:
+        c_extras: List[str] = []
+        c_hmap: Dict[str, str] = {}
+        for h_lbl, h_k in (("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct")):
+            if h_k in pinfo and pinfo.get(h_k) is not None:
+                c_hmap[h_lbl] = f"{fmt_signed(pinfo.get(h_k))}%"
+        c_horizons = " ".join(f"{k}={v}" for k, v in c_hmap.items())
+        pos_24h = pinfo.get("pos_24h_pct")
+        if pos_24h is None and px_f > 0 and pinfo.get("low_24h") and pinfo.get("high_24h"):
+            pos_24h = compute_horizon_range_dict(
+                px_f, safe_float(pinfo.get("low_24h"), 0.0), safe_float(pinfo.get("high_24h"), 0.0), "24h"
+            ).get("pos_24h_pct")
+        if c_horizons or pos_24h is not None:
+            c_extras.append(" ".join(p for p in (c_horizons, f"pos_24h={pos_24h}%" if pos_24h is not None else "") if p))
+        ctx_parts: List[str] = []
+        span_7d_c = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
+        is_part_7d_c = bool(pinfo.get("is_partial_7d")) or (span_7d_c is not None and span_7d_c < 120.0)
+        if "chg_7d_pct" in pinfo and pinfo.get("chg_7d_pct") is not None and not is_part_7d_c:
+            c_7d = f"7d={fmt_signed(pinfo.get('chg_7d_pct'))}%"
+            c_extras.append(c_7d)
+            ctx_parts.append(c_7d)
+        if not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC" and btc_entry:
+            vb_c = [
+                f"{h_lbl}={fmt_signed(a_v - b_v)}%"
+                for h_lbl, h_k in (("1h", "chg_1h_pct"), ("24h", "chg_24h_pct"))
+                if (a_v := safe_float(pinfo.get(h_k), None)) is not None
+                and (b_v := safe_float(btc_entry.get(h_k), None)) is not None
+            ]
+            if vb_c:
+                vb_s = f"vs_btc({', '.join(vb_c)})"
+                c_extras.append(vb_s)
+                ctx_parts.append(vb_s)
+        if pinfo.get("long_trend_dir"):
+            lt_c = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h)"
+            c_extras.append(lt_c)
+            ctx_parts.append(lt_c)
+        if eq_qmeta_sfx:
+            ctx_parts.append(eq_qmeta_sfx.strip())
+        c_extra_s = f" | {' | '.join(c_extras)}" if c_extras else ""
+        return {
+            "sym": sym,
+            "sib_lbl": sib_lbl,
+            "sib_syms": sib_syms,
+            "px_str": px_str,
+            "is_obs_sym": is_obs_sym,
+            "is_compact_obs": True,
+            "obs_lbl": obs_lbl,
+            "eq_qmeta_sfx": eq_qmeta_sfx,
+            "full_extras": [],
+            "compact_cols": {
+                "px_str": px_str,
+                "15m": c_hmap.get("15m", "-"),
+                "1h": c_hmap.get("1h", "-"),
+                "6h": c_hmap.get("6h", "-"),
+                "24h": c_hmap.get("24h", "-"),
+                "pos_24h": f"{pos_24h}%" if pos_24h is not None else "-",
+                "context": ", ".join(ctx_parts) if ctx_parts else "-",
+            },
+            "legacy_line": f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_sfx}{c_extra_s}",
+        }
+
+    extras: List[str] = []
+    _m24_h_keys = (
+        "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
+        "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
+    )
+    if "chg_15m_pct" in pinfo or any(pinfo.get(k) is not None for k in _m24_h_keys):
+        all_horizons = "".join(
+            f"{h_lbl}={fmt_signed(pinfo.get(h_k))}% "
+            for h_lbl, h_k in (
+                ("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"),
+                ("15m", "chg_15m_pct"), ("30m", "chg_30m_pct"), ("1h", "chg_1h_pct"),
+                ("3h", "chg_3h_pct"), ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
+            )
+            if h_k in pinfo and pinfo.get(h_k) is not None
+        )
+        extras.append(f"{all_horizons}{_format_horizon_range(pinfo, px_f, '24h')}")
+        if isinstance(pinfo.get("recent_tape_15m"), list) and pinfo["recent_tape_15m"]:
+            tape_str = f"tape_15m=[{', '.join(str(x) for x in pinfo['recent_tape_15m'])}]"
+            if pinfo.get("low_15m") is not None and pinfo.get("high_15m") is not None:
+                pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
+                tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
+            extras.append(tape_str)
+    if all(pinfo.get(k) is not None for k in ("poc_px", "val_px", "vah_px")):
+        fb_vp = build_vp_position_dict(
+            px_f,
+            safe_float(pinfo.get("poc_px"), 0.0),
+            safe_float(pinfo.get("val_px"), 0.0),
+            safe_float(pinfo.get("vah_px"), 0.0),
+        )
+        poc_d, val_d, vah_d = (
+            safe_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
+            for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
+        )
+        va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
+        va_pos = round(max(-100.0, min(200.0, safe_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
+        sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
+        sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
+        lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
+        va_hold_sfx = format_va_hold_suffix(pinfo, va_regime=fb_vp.get("va_regime") or pinfo.get("va_regime"))
+        vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
+        extras.append(
+            f"vol_profile(POC={pinfo.get('poc_px')}[{fmt_signed(poc_d)}%]{sec_poc_sfx}{lvn_sfx}, "
+            f"VAL={pinfo.get('val_px')}[{fmt_signed(val_d)}%], "
+            f"VAH={pinfo.get('vah_px')}[{fmt_signed(vah_d)}%], "
+            f"va_pos={va_pos}%{va_hold_sfx}{vp_src_sfx})"
+        )
+    if sv_summary := format_session_vwap_summary(pinfo, cur_px=px_f, fmt_px_fn=_fmt_px):
+        extras.append(f"session_vwap={sv_summary}")
+    if sess_parts := format_session_extremes_parts(pinfo):
+        extras.append(f"sessions({', '.join(sess_parts)})")
+
+    span_7d_h = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
+    is_partial_7d = bool(pinfo.get("is_partial_7d")) or (span_7d_h is not None and span_7d_h < 120.0)
+    is_sub24h_dup_7d = is_partial_7d or (
+        "chg_24h_pct" not in pinfo
+        and pinfo.get("low_24h") is not None
+        and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+    )
+    is_non_btc_crypto = not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC"
+    if is_non_btc_crypto:
+        vs_btc_parts: List[str] = []
+        if btc_entry:
+            for h_lbl, h_k in (
+                ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"),
+                ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
+            ):
+                if h_lbl == "7d" and is_sub24h_dup_7d:
+                    continue
+                if h_k in pinfo and h_k in btc_entry:
+                    a_v = safe_float(pinfo.get(h_k), None)
+                    b_v = safe_float(btc_entry.get(h_k), None)
+                    if a_v is not None and b_v is not None:
+                        vs_btc_parts.append(f"{h_lbl}={fmt_signed(a_v - b_v)}%")
+        if vs_btc_parts:
+            extras.append(f"vs_btc({', '.join(vs_btc_parts)})")
+        cross_parts = (
+            ([f"pos={pinfo['alt_btc_pos_24h_pct']}%"] if pinfo.get("alt_btc_pos_24h_pct") is not None else [])
+            + [
+                f"{c_lbl}={fmt_signed(pinfo.get(c_k))}%"
+                for c_lbl, c_k in (("dd_high", "alt_btc_dd_24h_high_pct"), ("bounce_low", "alt_btc_bounce_24h_low_pct"))
+                if pinfo.get(c_k) is not None
+            ]
+            + [
+                f"{sc_lbl}={safe_float(pinfo.get(sc_k), 0.0):.2f}"
+                for sc_lbl, sc_k in (("beta", "beta_btc_24h"), ("corr", "corr_btc_24h"))
+                if pinfo.get(sc_k) is not None
+            ]
+        )
+        if cross_parts:
+            extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
+
+    if pinfo.get("bottom_structure_6h"):
+        _, b_parts = format_bottom_structure_6h_parts(
+            pinfo,
+            prior_label="prior_low",
+            px_prefix="",
+        )
+        if b_parts:
+            extras.append(f"bottom_6h({', '.join(b_parts)})")
+
+    if "chg_7d_pct" in pinfo and not is_sub24h_dup_7d:
+        extras.append(
+            f"7d={fmt_signed(pinfo.get('chg_7d_pct'))}% "
+            f"{_format_horizon_range(pinfo, px_f, '7d')}"
+        )
+    is_dup_swing = is_partial_7d or (
+        is_sub24h_dup_7d
+        and not pinfo.get("recent_swings_7d")
+        and (pinfo.get("swing_low_px"), pinfo.get("swing_high_px")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
+    )
+    if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None and not is_dup_swing:
+        sw_ral = safe_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
+        sw_pb = safe_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
+        maj_parts: List[str] = []
+        if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None:
+            maj_parts.append(
+                f"major_low={pinfo.get('major_swing_low_px')}"
+                f"(rally={fmt_signed(pinfo.get('rally_from_major_low_pct'))}%)"
+            )
+        if pinfo.get("pullback_from_major_high_pct") is not None and pinfo.get("major_swing_high_px") is not None:
+            maj_parts.append(
+                f"major_high={pinfo.get('major_swing_high_px')}"
+                f"(pb={fmt_signed(pinfo.get('pullback_from_major_high_pct'))}%)"
+            )
+        maj_sfx = f", {', '.join(maj_parts)}" if maj_parts else ""
+        hist_sfx = ""
+        if isinstance(pinfo.get("recent_swings_7d"), list) and pinfo["recent_swings_7d"]:
+            amp_s = (
+                f", avg_amp={pinfo.get('avg_swing_amp_7d_pct')}%"
+                if pinfo.get("avg_swing_amp_7d_pct") is not None
+                else ""
+            )
+            hist_sfx = f" swings_7d=[{', '.join(str(x) for x in pinfo['recent_swings_7d'])}]{amp_s}"
+        extras.append(
+            f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
+            f"rally_low={fmt_signed(sw_ral)}%, pullback_high={fmt_signed(sw_pb)}%{maj_sfx}){hist_sfx}"
+        )
+    if pinfo.get("vol_1h_pct") is not None and safe_pos_float(pinfo.get("atr_1h_pct"), default=None) is None:
+        extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
+    if atr_parts := format_atr_parts(pinfo):
+        extras.append(f"atr({', '.join(atr_parts)})")
+    if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
+        extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
+    if kin_parts := format_kinematic_parts(pinfo, compact=True):
+        extras.append(f"kinematics({', '.join(kin_parts)})")
+    if pinfo.get("long_trend_dir"):
+        lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
+        if pinfo.get("long_trend_est_rem_hours") is not None:
+            lt_str += f", est_rem={pinfo.get('long_trend_est_rem_hours')}h"
+        if pinfo.get("weibull_median_d") is not None:
+            lt_str += f", med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d"
+        lt_str += ")"
+        extras.append(lt_str)
+    elif pinfo.get("weibull_median_d") is not None or pinfo.get("long_trend_neutral"):
+        if pinfo.get("weibull_median_d") is not None:
+            extras.append(f"long_trend=NEUTRAL(med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d)")
+        else:
+            extras.append("long_trend=NEUTRAL")
+    extra_str = f" | {' | '.join(extras)}" if extras else ""
+    return {
+        "sym": sym,
+        "sib_lbl": sib_lbl,
+        "sib_syms": sib_syms,
+        "px_str": px_str,
+        "is_obs_sym": is_obs_sym,
+        "is_compact_obs": False,
+        "obs_lbl": obs_lbl,
+        "eq_qmeta_sfx": eq_qmeta_sfx,
+        "full_extras": extras,
+        "compact_cols": {},
+        "legacy_line": f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_sfx}{extra_str}",
+    }
+
+
 def _format_market_prices_section(
     prices_and_trends: Dict[str, Any],
     asset_scope: Any = "all",
@@ -916,234 +1204,23 @@ def _format_market_prices_section(
     compact_observe_only: bool = False,
     active_symbols: Optional[set[str]] = None,
 ) -> List[str]:
-    """Format Section 3A (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
+    """Format standalone Section 3 (Live Market Prices, Multi-Horizon Trends & 24h/7d Evolution)."""
     view = evaluate_market_prices_prompt_view(prices_and_trends)
     btc_entry = view["btc_entry"]
     obs_syms = observe_only_registry_symbols()
     scope_spec = resolve_scope_presentation(asset_scope)
     lines = [f"\n### 3. MARKET PRICES & TRENDS ({scope_spec.market_prices_hdr}):"]
     for sym, pinfo, sib_specs in view["rows"]:
-        px = pinfo.get("price")
-        px_f = safe_float(px, 0.0)
-        px_str = _fmt_px(px_f, px)
-        is_obs_sym, is_compact_obs = _is_compact_observe_only_symbol(
+        rec = _build_market_price_symbol_record(
             sym,
-            obs_syms,
+            pinfo,
+            sib_specs,
+            btc_entry=btc_entry,
+            obs_syms=obs_syms,
             compact_observe_only=compact_observe_only,
             active_symbols=active_symbols,
         )
-        obs_lbl = " [OBSERVE-ONLY]" if is_obs_sym else ""
-        sib_lbl = ""
-        if sib_specs:
-            sib_parts: List[str] = []
-            for sib_sym, s_px, diff_pct in sib_specs:
-                if s_px > 0:
-                    diff_s = (
-                        ""
-                        if diff_pct is None
-                        else (f" [{fmt_signed(diff_pct * 100.0, 1)}bps]" if abs(diff_pct) < 0.005 else f" [{fmt_signed(diff_pct)}%]")
-                    )
-                    sib_parts.append(f"{sib_sym}={_fmt_px(s_px)}{diff_s}")
-                else:
-                    sib_parts.append(sib_sym)
-            if sib_parts:
-                sib_lbl = f" (sibling venue: {', '.join(sib_parts)})"
-
-        if is_compact_obs:
-            c_extras: List[str] = []
-            c_horizons = " ".join(
-                f"{h_lbl}={fmt_signed(pinfo.get(h_k))}%"
-                for h_lbl, h_k in (("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"), ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct"))
-                if h_k in pinfo and pinfo.get(h_k) is not None
-            )
-            pos_24h = pinfo.get("pos_24h_pct")
-            if pos_24h is None and px_f > 0 and pinfo.get("low_24h") and pinfo.get("high_24h"):
-                pos_24h = compute_horizon_range_dict(
-                    px_f, safe_float(pinfo.get("low_24h"), 0.0), safe_float(pinfo.get("high_24h"), 0.0), "24h"
-                ).get("pos_24h_pct")
-            if c_horizons or pos_24h is not None:
-                c_extras.append(" ".join(p for p in (c_horizons, f"pos_24h={pos_24h}%" if pos_24h is not None else "") if p))
-            span_7d_c = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
-            is_part_7d_c = bool(pinfo.get("is_partial_7d")) or (span_7d_c is not None and span_7d_c < 120.0)
-            if "chg_7d_pct" in pinfo and pinfo.get("chg_7d_pct") is not None and not is_part_7d_c:
-                c_extras.append(f"7d={fmt_signed(pinfo.get('chg_7d_pct'))}%")
-            if not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC" and btc_entry:
-                vb_c = [
-                    f"{h_lbl}={fmt_signed(a_v - b_v)}%"
-                    for h_lbl, h_k in (("1h", "chg_1h_pct"), ("24h", "chg_24h_pct"))
-                    if (a_v := safe_float(pinfo.get(h_k), None)) is not None
-                    and (b_v := safe_float(btc_entry.get(h_k), None)) is not None
-                ]
-                if vb_c:
-                    c_extras.append(f"vs_btc({', '.join(vb_c)})")
-            if pinfo.get("long_trend_dir"):
-                c_extras.append(f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h)")
-            eq_qmeta_c = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
-            c_extra_s = f" | {' | '.join(c_extras)}" if c_extras else ""
-            lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_c}{c_extra_s}")
-            continue
-
-        extras: List[str] = []
-        _m24_h_keys = (
-            "chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct",
-            "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct",
-        )
-        if "chg_15m_pct" in pinfo or any(pinfo.get(k) is not None for k in _m24_h_keys):
-            all_horizons = "".join(
-                f"{h_lbl}={fmt_signed(pinfo.get(h_k))}% "
-                for h_lbl, h_k in (
-                    ("1m", "chg_1m_pct"), ("3m", "chg_3m_pct"), ("5m", "chg_5m_pct"),
-                    ("15m", "chg_15m_pct"), ("30m", "chg_30m_pct"), ("1h", "chg_1h_pct"),
-                    ("3h", "chg_3h_pct"), ("6h", "chg_6h_pct"), ("12h", "chg_12h_pct"), ("24h", "chg_24h_pct"),
-                )
-                if h_k in pinfo and pinfo.get(h_k) is not None
-            )
-            extras.append(f"{all_horizons}{_format_horizon_range(pinfo, px_f, '24h')}")
-            if isinstance(pinfo.get("recent_tape_15m"), list) and pinfo["recent_tape_15m"]:
-                tape_str = f"tape_15m=[{', '.join(str(x) for x in pinfo['recent_tape_15m'])}]"
-                if pinfo.get("low_15m") is not None and pinfo.get("high_15m") is not None:
-                    pos15_sfx = f" pos_15m={pinfo['pos_15m_pct']}%" if pinfo.get("pos_15m_pct") is not None else ""
-                    tape_str += f" 15m_range=[{pinfo['low_15m']}, {pinfo['high_15m']}]{pos15_sfx}"
-                extras.append(tape_str)
-        if all(pinfo.get(k) is not None for k in ("poc_px", "val_px", "vah_px")):
-            fb_vp = build_vp_position_dict(
-                px_f,
-                safe_float(pinfo.get("poc_px"), 0.0),
-                safe_float(pinfo.get("val_px"), 0.0),
-                safe_float(pinfo.get("vah_px"), 0.0),
-            )
-            poc_d, val_d, vah_d = (
-                safe_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
-                for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
-            )
-            va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")
-            va_pos = round(max(-100.0, min(200.0, safe_float(va_pos_raw, 50.0))), 1) if va_pos_raw is not None else None
-            sec_poc_val = pinfo.get("sec_poc_px") if pinfo.get("sec_poc_px") is not None else pinfo.get("hvn2_px")
-            sec_poc_sfx = f", sec_POC={sec_poc_val}" if sec_poc_val is not None else ""
-            lvn_sfx = f", LVN={pinfo.get('lvn_px')}" if pinfo.get("lvn_px") is not None else ""
-            va_hold_sfx = format_va_hold_suffix(pinfo, va_regime=fb_vp.get("va_regime") or pinfo.get("va_regime"))
-            vp_src_sfx = f", vp_source={pinfo['vp_source']}" if pinfo.get("vp_source") else ""
-            extras.append(
-                f"vol_profile(POC={pinfo.get('poc_px')}[{fmt_signed(poc_d)}%]{sec_poc_sfx}{lvn_sfx}, "
-                f"VAL={pinfo.get('val_px')}[{fmt_signed(val_d)}%], "
-                f"VAH={pinfo.get('vah_px')}[{fmt_signed(vah_d)}%], "
-                f"va_pos={va_pos}%{va_hold_sfx}{vp_src_sfx})"
-            )
-        if sv_summary := format_session_vwap_summary(pinfo, cur_px=px_f, fmt_px_fn=_fmt_px):
-            extras.append(f"session_vwap={sv_summary}")
-        if sess_parts := format_session_extremes_parts(pinfo):
-            extras.append(f"sessions({', '.join(sess_parts)})")
-
-        span_7d_h = safe_pos_float(pinfo.get("span_7d_hours"), default=None)
-        is_partial_7d = bool(pinfo.get("is_partial_7d")) or (span_7d_h is not None and span_7d_h < 120.0)
-        is_sub24h_dup_7d = is_partial_7d or (
-            "chg_24h_pct" not in pinfo
-            and pinfo.get("low_24h") is not None
-            and (pinfo.get("low_7d"), pinfo.get("high_7d")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
-        )
-        is_non_btc_crypto = not is_equity_or_tokenized_symbol(sym) and canonical_base_asset(sym) != "BTC"
-        if is_non_btc_crypto:
-            vs_btc_parts: List[str] = []
-            if btc_entry:
-                for h_lbl, h_k in (
-                    ("15m", "chg_15m_pct"), ("1h", "chg_1h_pct"),
-                    ("6h", "chg_6h_pct"), ("24h", "chg_24h_pct"), ("7d", "chg_7d_pct"),
-                ):
-                    if h_lbl == "7d" and is_sub24h_dup_7d:
-                        continue
-                    if h_k in pinfo and h_k in btc_entry:
-                        a_v = safe_float(pinfo.get(h_k), None)
-                        b_v = safe_float(btc_entry.get(h_k), None)
-                        if a_v is not None and b_v is not None:
-                            vs_btc_parts.append(f"{h_lbl}={fmt_signed(a_v - b_v)}%")
-            if vs_btc_parts:
-                extras.append(f"vs_btc({', '.join(vs_btc_parts)})")
-            cross_parts = (
-                ([f"pos={pinfo['alt_btc_pos_24h_pct']}%"] if pinfo.get("alt_btc_pos_24h_pct") is not None else [])
-                + [
-                    f"{c_lbl}={fmt_signed(pinfo.get(c_k))}%"
-                    for c_lbl, c_k in (("dd_high", "alt_btc_dd_24h_high_pct"), ("bounce_low", "alt_btc_bounce_24h_low_pct"))
-                    if pinfo.get(c_k) is not None
-                ]
-                + [
-                    f"{sc_lbl}={safe_float(pinfo.get(sc_k), 0.0):.2f}"
-                    for sc_lbl, sc_k in (("beta", "beta_btc_24h"), ("corr", "corr_btc_24h"))
-                    if pinfo.get(sc_k) is not None
-                ]
-            )
-            if cross_parts:
-                extras.append(f"alt_btc_24h({', '.join(cross_parts)})")
-
-        if pinfo.get("bottom_structure_6h"):
-            _, b_parts = format_bottom_structure_6h_parts(
-                pinfo,
-                prior_label="prior_low",
-                px_prefix="",
-            )
-            if b_parts:
-                extras.append(f"bottom_6h({', '.join(b_parts)})")
-
-        if "chg_7d_pct" in pinfo and not is_sub24h_dup_7d:
-            extras.append(
-                f"7d={fmt_signed(pinfo.get('chg_7d_pct'))}% "
-                f"{_format_horizon_range(pinfo, px_f, '7d')}"
-            )
-        is_dup_swing = is_partial_7d or (
-            is_sub24h_dup_7d
-            and not pinfo.get("recent_swings_7d")
-            and (pinfo.get("swing_low_px"), pinfo.get("swing_high_px")) == (pinfo.get("low_24h"), pinfo.get("high_24h"))
-        )
-        if pinfo.get("swing_low_px") is not None and pinfo.get("swing_high_px") is not None and not is_dup_swing:
-            sw_ral = safe_float(pinfo.get("rally_from_swing_low_pct"), 0.0)
-            sw_pb = safe_float(pinfo.get("pullback_from_swing_high_pct"), 0.0)
-            maj_parts: List[str] = []
-            if pinfo.get("rally_from_major_low_pct") is not None and pinfo.get("major_swing_low_px") is not None:
-                maj_parts.append(
-                    f"major_low={pinfo.get('major_swing_low_px')}"
-                    f"(rally={fmt_signed(pinfo.get('rally_from_major_low_pct'))}%)"
-                )
-            if pinfo.get("pullback_from_major_high_pct") is not None and pinfo.get("major_swing_high_px") is not None:
-                maj_parts.append(
-                    f"major_high={pinfo.get('major_swing_high_px')}"
-                    f"(pb={fmt_signed(pinfo.get('pullback_from_major_high_pct'))}%)"
-                )
-            maj_sfx = f", {', '.join(maj_parts)}" if maj_parts else ""
-            hist_sfx = ""
-            if isinstance(pinfo.get("recent_swings_7d"), list) and pinfo["recent_swings_7d"]:
-                amp_s = (
-                    f", avg_amp={pinfo.get('avg_swing_amp_7d_pct')}%"
-                    if pinfo.get("avg_swing_amp_7d_pct") is not None
-                    else ""
-                )
-                hist_sfx = f" swings_7d=[{', '.join(str(x) for x in pinfo['recent_swings_7d'])}]{amp_s}"
-            extras.append(
-                f"swing_wave(low={pinfo.get('swing_low_px')}, high={pinfo.get('swing_high_px')}, "
-                f"rally_low={fmt_signed(sw_ral)}%, pullback_high={fmt_signed(sw_pb)}%{maj_sfx}){hist_sfx}"
-            )
-        if pinfo.get("vol_1h_pct") is not None and safe_pos_float(pinfo.get("atr_1h_pct"), default=None) is None:
-            extras.append(f"vol_1h={pinfo.get('vol_1h_pct')}%")
-        if atr_parts := format_atr_parts(pinfo):
-            extras.append(f"atr({', '.join(atr_parts)})")
-        if (kv := safe_float(pinfo.get("kalman_vel"), None)) is not None and abs(kv) >= 1e-9:
-            extras.append(f"kalman_vel={_fmt_slope_val(kv, 5)}")
-        if kin_parts := format_kinematic_parts(pinfo, compact=True):
-            extras.append(f"kinematics({', '.join(kin_parts)})")
-        if pinfo.get("long_trend_dir"):
-            lt_str = f"long_trend={str(pinfo.get('long_trend_dir')).upper()}({pinfo.get('long_trend_hours')}h"
-            if pinfo.get("long_trend_est_rem_hours") is not None:
-                lt_str += f", est_rem={pinfo.get('long_trend_est_rem_hours')}h"
-            if pinfo.get("weibull_median_d") is not None:
-                lt_str += f", med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d"
-            lt_str += ")"
-            extras.append(lt_str)
-        elif pinfo.get("weibull_median_d") is not None or pinfo.get("long_trend_neutral"):
-            if pinfo.get("weibull_median_d") is not None:
-                extras.append(f"long_trend=NEUTRAL(med_d={pinfo.get('weibull_median_d')}d/p90={pinfo.get('weibull_p90_d')}d)")
-            else:
-                extras.append("long_trend=NEUTRAL")
-        eq_qmeta_sfx = format_equity_quote_meta_suffix(pinfo) if is_equity_symbol(sym) else ""
-        extra_str = f" | {' | '.join(extras)}" if extras else ""
-        lines.append(f"  * {sym}{sib_lbl}: Price={px_str}{obs_lbl}{eq_qmeta_sfx}{extra_str}")
+        lines.append(rec["legacy_line"])
     return lines
 
 
@@ -1195,6 +1272,360 @@ def _format_3b_source_ages_suffix(
     return f", source_ages({', '.join(stale_parts)})"
 
 
+def _build_microstructure_symbol_record(
+    row: Dict[str, Any],
+    rendered_agg_spot: set[tuple[str, str]],
+    *,
+    now_ts: Optional[float],
+    derived_3b_itvs: Dict[str, float],
+    obs_syms_3b: set[str],
+    compact_observe_only: bool,
+    active_symbols: Optional[set[str]],
+) -> Dict[str, Any]:
+    """Build reusable book/liq and flow/deriv prompt parts for both single-line and unified-card views."""
+    sym = row["sym"]
+    sib_3b = row["sib_3b"]
+    b_canon_3b = row["b_canon"]
+    minfo = row["minfo"]
+    cur_px = row["cur_px"]
+    ob_mid = row["ob_mid"]
+    ob_ref_px = row["ob_ref_px"]
+    b_bid = row["b_bid"]
+    b_ask = row["b_ask"]
+    caps = row["caps"]
+    sym_is_tok_xstock_3b = row["sym_is_tok"]
+    shared_perp_sym = row["shared_perp_sym"]
+    ob_age_3b = row["ob_age_s"]
+    ob_is_frozen = row["ob_is_frozen"]
+    has_perp_cvd = row["has_perp_cvd"]
+    no_flow = row["no_flow"]
+    show_spot_cvd = row["show_spot_cvd"]
+    show_whale_long = row["show_whale_long"]
+    show_whale_long_delta = row["show_whale_long_delta"]
+    deriv_mode = row["deriv_mode"]
+    tok_spot_only = row["tok_spot_only"]
+
+    sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
+    _, is_compact_obs_3b = _is_compact_observe_only_symbol(
+        sym,
+        obs_syms_3b,
+        compact_observe_only=compact_observe_only,
+        active_symbols=active_symbols,
+    )
+    if is_compact_obs_3b:
+        c3b_parts: List[str] = []
+        if ob_is_frozen:
+            c3b_parts.append(f"orderbook=STALE_FROZEN({ob_age_3b:.0f}s)")
+        elif tok_spot_only or no_flow or shared_perp_sym is not None:
+            if minfo.get("ob_imbalance") is not None:
+                c3b_parts.append(f"{caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')}")
+        if shared_perp_sym is not None:
+            c3b_parts.append(f"perp_whale_flow=shared_with_{shared_perp_sym}")
+        elif not tok_spot_only and not no_flow:
+            if minfo.get("taker_buy_sell_ratio") is not None:
+                c3b_parts.append(f"taker_ratio={minfo.get('taker_buy_sell_ratio')}")
+            if has_perp_cvd:
+                c3b_parts.append(f"cvd_15m={_fmt_signed_usd(safe_float(minfo.get('cvd_15m_usd'), 0.0))}")
+            if deriv_mode == "cboe_options":
+                if minfo.get("oi_1h_chg_pct") is not None:
+                    c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
+            elif deriv_mode != "none":
+                if (f_ann_c := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
+                    c3b_parts.append(f"funding_ann={fmt_signed(f_ann_c, 1)}%")
+                if minfo.get("oi_1h_chg_pct") is not None:
+                    c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
+                if caps.has_crypto_perpetuals and (b_bps_c := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+                    c3b_parts.append(f"perp_basis={fmt_signed(b_bps_c, 1)}bps")
+        if not ob_is_frozen and (sp_c := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+            c3b_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sp_c)}[real_spot]")
+        if not ob_is_frozen and (rv1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
+            c3b_parts.append(f"rvol_1h={rv1h:.2f}x")
+        obs_str = ", ".join(c3b_parts)
+        return {
+            "sym": sym,
+            "sym_lbl": sym_3b_lbl,
+            "is_compact_obs": True,
+            "shared_perp_sym": shared_perp_sym,
+            "book_str": "",
+            "flow_str": "",
+            "obs_flow_str": obs_str,
+            "legacy_line": f"  * {sym_3b_lbl} [OBSERVE-ONLY]: {obs_str}" if obs_str else "",
+        }
+
+    bw_px = minfo.get("bid_wall_px")
+    aw_px = minfo.get("ask_wall_px")
+    bw_px_f = safe_float(bw_px, 0.0)
+    aw_px_f = safe_float(aw_px, 0.0)
+    bw_dist = f", dist={fmt_signed((bw_px_f - ob_ref_px) / ob_ref_px * 100.0)}%" if ob_ref_px > 0 and bw_px_f > 0 else ""
+    aw_dist = f", dist={fmt_signed((aw_px_f - ob_ref_px) / ob_ref_px * 100.0)}%" if ob_ref_px > 0 and aw_px_f > 0 else ""
+    spread_sfx = ""
+    if not ob_is_frozen and minfo.get("spread_bps") is not None:
+        ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
+        ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
+        spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
+
+    d1_b = safe_float(minfo.get("depth_1pct_bid_usd"), 0.0)
+    d1_a = safe_float(minfo.get("depth_1pct_ask_usd"), 0.0)
+    b_dep_v = safe_float(minfo.get("bid_depth_usd"), 0.0)
+    a_dep_v = safe_float(minfo.get("ask_depth_usd"), 0.0)
+    b_span_pct = safe_pos_float(minfo.get("book_span_pct"), default=0.0) or 0.0
+    bw_cap_tag = format_book_window_cap_tag(b_span_pct)
+    if bw_cap_tag and b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
+        depth_1pct_sfx = f", {bw_cap_tag}, slip_2k={minfo.get('est_slip_2k_bps')}bps"
+    elif bw_cap_tag and (d1_b > 0.0 or d1_a > 0.0):
+        depth_1pct_sfx = (
+            f", {bw_cap_tag}, "
+            f"depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+        )
+    else:
+        depth_1pct_sfx = (
+            f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+            if (d1_b > 0.0 or d1_a > 0.0)
+            else ""
+        )
+
+    cvd_sfx = ""
+    if has_perp_cvd:
+        cvd_u = safe_float(minfo.get("cvd_15m_usd"), 0.0)
+        usd_s = _fmt_signed_usd(cvd_u)
+        cvd_b = minfo.get("cvd_15m_base")
+        cvd_b_s = fmt_signed(cvd_b, 3, strip_zeros=True) if cvd_b is not None else ""
+        cvd_sfx = (
+            f", cvd_15m={cvd_b_s} {b_canon_3b} ({usd_s})"
+            if cvd_b is not None
+            else f", cvd_15m={usd_s}"
+        )
+        if mh_parts := format_flow_horizon_parts(minfo, _fmt_signed_usd):
+            cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
+    if show_spot_cvd:
+        sp_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), 0.0)
+        cvd_sfx += f", spot_cvd_15m={_fmt_signed_usd(sp_cvd)}{format_spot_cvd_source_tag(minfo)}"
+    if (
+        shared_perp_sym is None
+        and not ob_is_frozen
+        and (agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
+        and (b_canon_3b, agg_sp_part) not in rendered_agg_spot
+    ):
+        rendered_agg_spot.add((b_canon_3b, agg_sp_part))
+        cvd_sfx += f", {agg_sp_part}"
+    if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
+        cvd_sfx += f", {', '.join(sp_vol_parts)}"
+
+    basis_sfx = ""
+    basis_parts: List[str] = []
+    if caps.has_crypto_perpetuals and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
+        b_d15 = safe_float(minfo.get("basis_delta_15m_bps"), None)
+        b_d15_s = f"(d15m={fmt_signed(b_d15, 1)}bps)" if (b_d15 is not None and abs(b_d15) >= 0.1) else ""
+        basis_parts.append(f"perp_basis={fmt_signed(b_bps, 1)}bps{b_d15_s}")
+    if caps.has_crypto_perpetuals and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
+        f_d1h = safe_float(minfo.get("funding_delta_1h_bps"), None)
+        f_d1h_s = f"(d1h={fmt_signed(f_d1h)}bps)" if (f_d1h is not None and abs(f_d1h) >= 0.05) else ""
+        basis_parts.append(f"funding_ann={fmt_signed(f_ann, 1)}%{f_d1h_s}")
+    if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
+        basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={fmt_signed(arb_bps, 1)}bps")
+        if (net_b := safe_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
+            fee_basis = str(minfo.get("arb_fee_basis") or "maker").strip().lower()
+            basis_parts.append(f"net_buy_edge={fmt_signed(net_b, 1)}bps[{fee_basis}](best_buy={minfo['best_buy_venue']})")
+    if basis_parts:
+        basis_sfx = f", {', '.join(basis_parts)}"
+
+    liq_sfx = ""
+    if caps.has_liquidation_clusters and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
+        liq_ref_px = ob_ref_px if (ob_ref_px > 0 and not ob_is_frozen) else cur_px
+        liq_parts: List[str] = []
+        for l_lbl, px_k, usd_k, dist_k in (
+            ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
+            ("short_liq", "short_liq_px", "short_liq_usd", "short_liq_dist_pct"),
+            ("deep_long", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
+            ("deep_short", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
+        ):
+            if minfo.get(px_k) is None:
+                continue
+            l_px = safe_float(minfo.get(px_k), 0.0)
+            if liq_ref_px > 0 and l_px > 0:
+                l_d = ((l_px - liq_ref_px) / liq_ref_px) * 100.0
+            else:
+                l_d = safe_float(minfo.get(dist_k), 0.0)
+            liq_parts.append(
+                f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {fmt_signed(l_d)}%]"
+            )
+        liq_parts.append(f"src={minfo.get('liq_source') or 'model_est'}")
+        liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
+    if caps.has_liquidation_clusters and (
+        (rl_l := safe_float(minfo.get("realized_liq_15m_long_usd"), None)) is not None
+        and (rl_s := safe_float(minfo.get("realized_liq_15m_short_usd"), None)) is not None
+        and (rl_l > 0.0 or rl_s > 0.0 or (safe_float(minfo.get("realized_liq_15m_events"), 0.0) or 0.0) > 0.0)
+    ):
+        rl_n = safe_int(minfo.get("realized_liq_15m_events"), 0) or 0
+        rl_n_sfx = f", n={rl_n}" if rl_n > 0 else ""
+        rl_src_tag = format_realized_liq_sources_tag(minfo, multi_only=True)
+        rl_src_sfx = f", src={rl_src_tag}" if rl_src_tag else ""
+        liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
+
+    cd_sfx = ""
+    if isinstance(cd_map := minfo.get("cycle_delta"), dict):
+        cd_parts: List[str] = []
+        if cd_map.get("dt_min") is not None:
+            cd_parts.append(f"dt={cd_map['dt_min']}m")
+        if (d_ob := safe_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
+            cd_parts.append(f"d_ob={fmt_signed(d_ob, 3)}")
+        if shared_perp_sym is None:
+            if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
+                cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
+            if (
+                not no_flow
+                and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
+                and abs(d_tr) >= 0.05
+            ):
+                cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
+            if (
+                show_whale_long_delta
+                and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
+                and abs(d_wl) >= 0.005
+            ):
+                cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
+            if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
+                cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
+        if len(cd_parts) > 1:
+            cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
+
+    l1_oi_v = safe_float(minfo.get("native_l1_oi_usd"), None)
+    oi_v = safe_float(minfo.get("oi_usd"), None)
+    has_distinct_l1_oi = bool(l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
+    oi_disp = _fmt_liq_usd(oi_v) if oi_v is not None else str(minfo.get("oi_usd"))
+    oi_lbl = f"{oi_disp} (l1_oi={_fmt_liq_usd(l1_oi_v)})" if has_distinct_l1_oi else oi_disp
+    book_core = (
+        f"orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed)"
+        if ob_is_frozen
+        else (
+            f"{caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')} "
+            f"(bid_depth={_fmt_liq_usd(b_dep_v)}, ask_depth={_fmt_liq_usd(a_dep_v)}){depth_1pct_sfx}, "
+            f"{caps.bid_zone_label}={bw_px} ({_fmt_liq_usd(minfo.get('bid_wall_usd'))}{bw_dist}), "
+            f"{caps.ask_zone_label}={aw_px} ({_fmt_liq_usd(minfo.get('ask_wall_usd'))}{aw_dist})"
+        )
+    )
+
+    if shared_perp_sym is not None:
+        arb_only_parts = [p for p in basis_parts if p.startswith(("arb_vs_", "net_buy_edge="))]
+        arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
+        sib_sp_parts: List[str] = []
+        if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+            sib_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sib_sp_cvd)}[real_spot]")
+        if (
+            not ob_is_frozen
+            and (sib_agg_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
+            and (b_canon_3b, sib_agg_part) not in rendered_agg_spot
+        ):
+            rendered_agg_spot.add((b_canon_3b, sib_agg_part))
+            sib_sp_parts.append(sib_agg_part)
+        if not ob_is_frozen:
+            sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
+        sib_sp_sfx = f", {', '.join(sib_sp_parts)}" if sib_sp_parts else ""
+        ob_age_sfx = _format_3b_source_ages_suffix(
+            minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=True
+        )
+        book_str = f"{book_core}{spread_sfx}{ob_age_sfx}" if not ob_is_frozen else f"{book_core}{ob_age_sfx}"
+        flow_bits = [p for p in (*sib_sp_parts, *arb_only_parts) if p]
+        if cd_sfx:
+            flow_bits.append(cd_sfx.lstrip(", "))
+        flow_bits.append(f"perp_whale_flow=shared_with_{shared_perp_sym}")
+        legacy_line = (
+            f"  * {sym_3b_lbl}: {book_core}{arb_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
+            if ob_is_frozen
+            else f"  * {sym_3b_lbl}: {book_core}{sib_sp_sfx}{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
+        )
+        return {
+            "sym": sym,
+            "sym_lbl": sym_3b_lbl,
+            "is_compact_obs": False,
+            "shared_perp_sym": shared_perp_sym,
+            "book_str": book_str,
+            "flow_str": ", ".join(flow_bits),
+            "obs_flow_str": "",
+            "legacy_line": legacy_line,
+        }
+
+    oi_1h_v = safe_float(minfo.get("oi_1h_chg_pct"), None)
+    oi_1h_lbl = (oi_1h_v + 0.0) if oi_1h_v is not None else minfo.get("oi_1h_chg_pct")
+    oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
+    oi_15m_sfx = f", oi_15m_chg={fmt_signed(oi_15m_v)}%" if oi_15m_v is not None else ""
+    if deriv_mode == "none":
+        deriv_oi_sfx = ""
+    elif deriv_mode == "cboe_options":
+        deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={oi_1h_lbl}%"
+    else:
+        fr_v = safe_float(minfo.get("funding_rate"), default=None)
+        pfr_v = safe_float(minfo.get("pred_funding_rate"), default=None)
+        has_ann_fund = safe_float(minfo.get("funding_annualized_pct"), default=None) is not None
+        fund_part = ""
+        if has_ann_fund:
+            if fr_v is not None and pfr_v is not None and abs(pfr_v - fr_v) > 1e-7:
+                fund_part = f", pred_funding_8h={_fmt_plain_float(pfr_v)}"
+        elif fr_v is not None:
+            pred_sfx = (
+                f" (pred={_fmt_plain_float(pfr_v)})"
+                if pfr_v is not None and abs(pfr_v - fr_v) > 1e-9
+                else ""
+            )
+            fund_part = f", funding={_fmt_plain_float(fr_v)}{pred_sfx}"
+        flow_src_sfx = ", perp_flow_src=bn_perp" if has_distinct_l1_oi else ""
+        deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={oi_1h_lbl}%{oi_15m_sfx}{flow_src_sfx}"
+    src_age_sfx = _format_3b_source_ages_suffix(
+        minfo,
+        now_ts=now_ts,
+        intervals=derived_3b_itvs,
+        ob_only=sym_is_tok_xstock_3b,
+        include_deriv=bool(deriv_oi_sfx),
+        is_equity=bool(row.get("sym_is_eq")),
+        no_flow=bool(no_flow),
+    )
+    wl_raw = safe_float(minfo.get("whale_long_pct"), default=None) if show_whale_long else None
+    wl_prefix = (
+        f"whale_long_pct={(wl_raw * 100.0 if wl_raw <= 1.0 else wl_raw):.1f}%, "
+        if wl_raw is not None
+        else (f"whale_long_pct={minfo.get('whale_long_pct')}, " if show_whale_long else "")
+    )
+    if tok_spot_only:
+        tok_sp_parts: List[str] = []
+        if not cvd_sfx and not ob_is_frozen and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
+            tok_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(tok_sp)}[real_spot]")
+        if not cvd_sfx and not ob_is_frozen:
+            tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
+        tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
+        flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
+    elif no_flow:
+        flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
+    else:
+        bv_s = _fmt_liq_usd(minfo.get("taker_buy_vol_usd"))
+        sv_s = _fmt_liq_usd(minfo.get("taker_sell_vol_usd"))
+        flow_3b_core = (
+            f"{wl_prefix}"
+            f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
+            f"(buy_v={bv_s}/sell_v={sv_s}){cvd_sfx}"
+        )
+    book_str = (
+        f"{book_core}{liq_sfx}"
+        if ob_is_frozen
+        else f"{book_core}{spread_sfx}{liq_sfx}"
+    )
+    flow_str = f"{flow_3b_core}{deriv_oi_sfx}{basis_sfx}{cd_sfx}{src_age_sfx}"
+    legacy_line = (
+        f"  * {sym_3b_lbl}: {book_core}, {flow_3b_core}{deriv_oi_sfx}{basis_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+        if ob_is_frozen
+        else f"  * {sym_3b_lbl}: {book_core}, {flow_3b_core}{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+    )
+    return {
+        "sym": sym,
+        "sym_lbl": sym_3b_lbl,
+        "is_compact_obs": False,
+        "shared_perp_sym": None,
+        "book_str": book_str,
+        "flow_str": flow_str,
+        "obs_flow_str": "",
+        "legacy_line": legacy_line,
+    }
+
+
 def _format_microstructure_section(
     microstructure: Dict[str, Any],
     prices_and_trends: Dict[str, Any],
@@ -1204,325 +1635,166 @@ def _format_microstructure_section(
     compact_observe_only: bool = False,
     active_symbols: Optional[set[str]] = None,
 ) -> List[str]:
-    """Format Section 3B (Orderbook Walls, Derivatives & Whale Flow)."""
+    """Format standalone Section 4 (Orderbook Walls, Derivatives & Whale Flow)."""
     scope_spec = resolve_scope_presentation(asset_scope)
     lines = [scope_spec.microstructure_hdr]
     derived_3b_itvs = resolve_derived_telemetry_intervals()
     obs_syms_3b = observe_only_registry_symbols() if compact_observe_only else set()
     rendered_agg_spot: set[tuple[str, str]] = set()
     for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends, now_ts=now_ts):
-        sym = row["sym"]
-        sib_3b = row["sib_3b"]
-        b_canon_3b = row["b_canon"]
-        minfo = row["minfo"]
-        cur_px = row["cur_px"]
-        ob_mid = row["ob_mid"]
-        ob_ref_px = row["ob_ref_px"]
-        b_bid = row["b_bid"]
-        b_ask = row["b_ask"]
-        caps = row["caps"]
-        sym_is_tok_xstock_3b = row["sym_is_tok"]
-        shared_perp_sym = row["shared_perp_sym"]
-        ob_age_3b = row["ob_age_s"]
-        ob_is_frozen = row["ob_is_frozen"]
-        has_perp_cvd = row["has_perp_cvd"]
-        no_flow = row["no_flow"]
-        show_spot_cvd = row["show_spot_cvd"]
-        show_whale_long = row["show_whale_long"]
-        show_whale_long_delta = row["show_whale_long_delta"]
-        deriv_mode = row["deriv_mode"]
-        tok_spot_only = row["tok_spot_only"]
-
-        sym_3b_lbl = f"{sym} ({', '.join(sib_3b)})" if sib_3b else sym
-        _, is_compact_obs_3b = _is_compact_observe_only_symbol(
-            sym,
-            obs_syms_3b,
+        rec = _build_microstructure_symbol_record(
+            row,
+            rendered_agg_spot,
+            now_ts=now_ts,
+            derived_3b_itvs=derived_3b_itvs,
+            obs_syms_3b=obs_syms_3b,
             compact_observe_only=compact_observe_only,
             active_symbols=active_symbols,
         )
-        if is_compact_obs_3b:
-            c3b_parts: List[str] = []
-            if ob_is_frozen:
-                c3b_parts.append(f"orderbook=STALE_FROZEN({ob_age_3b:.0f}s)")
-            elif tok_spot_only or no_flow or shared_perp_sym is not None:
-                if minfo.get("ob_imbalance") is not None:
-                    c3b_parts.append(f"{caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')}")
-            if shared_perp_sym is not None:
-                c3b_parts.append(f"perp_whale_flow=shared_with_{shared_perp_sym}")
-            elif not tok_spot_only and not no_flow:
-                if minfo.get("taker_buy_sell_ratio") is not None:
-                    c3b_parts.append(f"taker_ratio={minfo.get('taker_buy_sell_ratio')}")
-                if has_perp_cvd:
-                    c3b_parts.append(f"cvd_15m={_fmt_signed_usd(safe_float(minfo.get('cvd_15m_usd'), 0.0))}")
-                if deriv_mode == "cboe_options":
-                    if minfo.get("oi_1h_chg_pct") is not None:
-                        c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
-                elif deriv_mode != "none":
-                    if (f_ann_c := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
-                        c3b_parts.append(f"funding_ann={fmt_signed(f_ann_c, 1)}%")
-                    if minfo.get("oi_1h_chg_pct") is not None:
-                        c3b_parts.append(f"oi_1h_chg={minfo.get('oi_1h_chg_pct')}%")
-                    if caps.has_crypto_perpetuals and (b_bps_c := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
-                        c3b_parts.append(f"perp_basis={fmt_signed(b_bps_c, 1)}bps")
-            if not ob_is_frozen and (sp_c := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
-                c3b_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sp_c)}[real_spot]")
-            if not ob_is_frozen and (rv1h := safe_pos_float(minfo.get("rvol_1h"), default=None)) is not None:
-                c3b_parts.append(f"rvol_1h={rv1h:.2f}x")
-            if c3b_parts:
-                lines.append(f"  * {sym_3b_lbl} [OBSERVE-ONLY]: {', '.join(c3b_parts)}")
-            continue
-        bw_px = minfo.get("bid_wall_px")
-        aw_px = minfo.get("ask_wall_px")
-        bw_px_f = safe_float(bw_px, 0.0)
-        aw_px_f = safe_float(aw_px, 0.0)
-        bw_dist = f", dist={fmt_signed((bw_px_f - ob_ref_px) / ob_ref_px * 100.0)}%" if ob_ref_px > 0 and bw_px_f > 0 else ""
-        aw_dist = f", dist={fmt_signed((aw_px_f - ob_ref_px) / ob_ref_px * 100.0)}%" if ob_ref_px > 0 and aw_px_f > 0 else ""
-        spread_sfx = ""
-        if not ob_is_frozen and minfo.get("spread_bps") is not None:
-            ba_lbl = f" (bid={b_bid}/ask={b_ask})" if b_bid > 0 and b_ask > 0 else ""
-            ob_mid_lbl = f", ob_mid={round(ob_mid, 6)}" if ob_mid > 0 else ""
-            spread_sfx = f", spread={minfo.get('spread_bps')}bps{ba_lbl}{ob_mid_lbl}"
+        if rec["legacy_line"]:
+            lines.append(rec["legacy_line"])
+    return lines
 
-        d1_b = safe_float(minfo.get("depth_1pct_bid_usd"), 0.0)
-        d1_a = safe_float(minfo.get("depth_1pct_ask_usd"), 0.0)
-        b_dep_v = safe_float(minfo.get("bid_depth_usd"), 0.0)
-        a_dep_v = safe_float(minfo.get("ask_depth_usd"), 0.0)
-        b_span_pct = safe_pos_float(minfo.get("book_span_pct"), default=0.0) or 0.0
-        bw_cap_tag = format_book_window_cap_tag(b_span_pct)
-        if bw_cap_tag and b_span_pct < 0.95 and abs(d1_b - b_dep_v) < 1.0 and abs(d1_a - a_dep_v) < 1.0:
-            depth_1pct_sfx = f", {bw_cap_tag}, slip_2k={minfo.get('est_slip_2k_bps')}bps"
-        elif bw_cap_tag and (d1_b > 0.0 or d1_a > 0.0):
-            depth_1pct_sfx = (
-                f", {bw_cap_tag}, "
-                f"depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
+
+def _format_unified_markets_and_bellwethers_sections(
+    prices_and_trends: Dict[str, Any],
+    microstructure: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    asset_scope: Any = "all",
+    compact_observe_only: bool = True,
+    active_symbols: Optional[set[str]] = None,
+    held_symbols: Optional[set[str]] = None,
+    open_order_symbols: Optional[set[str]] = None,
+) -> List[str]:
+    """Format Section 3 (Per-Symbol Unified Price/Book/Flow Cards) and Section 4 (Observe-Only Bellwether Table)."""
+    scope_spec = resolve_scope_presentation(asset_scope)
+    obs_syms = observe_only_registry_symbols()
+    obs_syms_3b = obs_syms if compact_observe_only else set()
+    held_u = {str(s).strip().upper() for s in (held_symbols or ()) if s}
+    open_u = {str(s).strip().upper() for s in (open_order_symbols or ()) if s}
+
+    p_records: Dict[str, Dict[str, Any]] = {}
+    if prices_and_trends:
+        p_view = evaluate_market_prices_prompt_view(prices_and_trends)
+        btc_entry = p_view["btc_entry"]
+        for sym, pinfo, sib_specs in p_view["rows"]:
+            p_records[sym] = _build_market_price_symbol_record(
+                sym,
+                pinfo,
+                sib_specs,
+                btc_entry=btc_entry,
+                obs_syms=obs_syms,
+                compact_observe_only=compact_observe_only,
+                active_symbols=active_symbols,
             )
+
+    m_records: Dict[str, Dict[str, Any]] = {}
+    if microstructure:
+        derived_itvs = resolve_derived_telemetry_intervals()
+        rendered_agg_spot: set[tuple[str, str]] = set()
+        for row in evaluate_microstructure_prompt_view(microstructure, prices_and_trends, now_ts=now_ts):
+            mrec = _build_microstructure_symbol_record(
+                row,
+                rendered_agg_spot,
+                now_ts=now_ts,
+                derived_3b_itvs=derived_itvs,
+                obs_syms_3b=obs_syms_3b,
+                compact_observe_only=compact_observe_only,
+                active_symbols=active_symbols,
+            )
+            m_records[mrec["sym"]] = mrec
+
+    tradable_syms: List[str] = []
+    obs_only_syms: List[str] = []
+    for sym, prec in p_records.items():
+        if prec["is_compact_obs"]:
+            obs_only_syms.append(sym)
         else:
-            depth_1pct_sfx = (
-                f", depth_1pct=(bid={_fmt_liq_usd(d1_b)}/ask={_fmt_liq_usd(d1_a)}, slip_2k={minfo.get('est_slip_2k_bps')}bps)"
-                if (d1_b > 0.0 or d1_a > 0.0)
-                else ""
-            )
+            tradable_syms.append(sym)
 
-        cvd_sfx = ""
-        if has_perp_cvd:
-            cvd_u = safe_float(minfo.get("cvd_15m_usd"), 0.0)
-            usd_s = _fmt_signed_usd(cvd_u)
-            cvd_b = minfo.get("cvd_15m_base")
-            cvd_b_s = fmt_signed(cvd_b, 3, strip_zeros=True) if cvd_b is not None else ""
-            cvd_sfx = (
-                f", cvd_15m={cvd_b_s} {b_canon_3b} ({usd_s})"
-                if cvd_b is not None
-                else f", cvd_15m={usd_s}"
-            )
-            if mh_parts := format_flow_horizon_parts(minfo, _fmt_signed_usd):
-                cvd_sfx += f", flow_horizons({', '.join(mh_parts)})"
-        if show_spot_cvd:
-            sp_cvd = safe_float(minfo.get("spot_cvd_15m_usd"), 0.0)
-            cvd_sfx += f", spot_cvd_15m={_fmt_signed_usd(sp_cvd)}{format_spot_cvd_source_tag(minfo)}"
-        if (
-            shared_perp_sym is None
-            and not ob_is_frozen
-            and (agg_sp_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
-            and (b_canon_3b, agg_sp_part) not in rendered_agg_spot
-        ):
-            rendered_agg_spot.add((b_canon_3b, agg_sp_part))
-            cvd_sfx += f", {agg_sp_part}"
-        if sp_vol_parts := format_spot_volume_rvol_parts(minfo, _fmt_liq_usd):
-            cvd_sfx += f", {', '.join(sp_vol_parts)}"
+    def _tradable_sort_key(s: str) -> tuple[int, str]:
+        su = s.strip().upper()
+        sk = clean_symbol_key(s) or su
+        if not scope_spec.is_equities and not is_equity_or_tokenized_symbol(s) and canonical_base_asset(s) == "BTC":
+            return (0, su)
+        if su in held_u or sk in held_u:
+            return (1, su)
+        if su in open_u or sk in open_u:
+            return (2, su)
+        return (3, su)
 
-        basis_sfx = ""
-        basis_parts: List[str] = []
-        if caps.has_crypto_perpetuals and (b_bps := safe_float(minfo.get("perp_spot_basis_bps"), None)) is not None:
-            b_d15 = safe_float(minfo.get("basis_delta_15m_bps"), None)
-            b_d15_s = f"(d15m={fmt_signed(b_d15, 1)}bps)" if (b_d15 is not None and abs(b_d15) >= 0.1) else ""
-            basis_parts.append(f"perp_basis={fmt_signed(b_bps, 1)}bps{b_d15_s}")
-        if caps.has_crypto_perpetuals and (f_ann := safe_float(minfo.get("funding_annualized_pct"), None)) is not None:
-            f_d1h = safe_float(minfo.get("funding_delta_1h_bps"), None)
-            f_d1h_s = f"(d1h={fmt_signed(f_d1h)}bps)" if (f_d1h is not None and abs(f_d1h) >= 0.05) else ""
-            basis_parts.append(f"funding_ann={fmt_signed(f_ann, 1)}%{f_d1h_s}")
-        if (arb_bps := safe_float(minfo.get("cross_venue_arb_bps"), None)) is not None and minfo.get("cross_venue_peer"):
-            basis_parts.append(f"arb_vs_{minfo['cross_venue_peer']}={fmt_signed(arb_bps, 1)}bps")
-            if (net_b := safe_float(minfo.get("net_buy_edge_vs_peer_bps"), None)) is not None and minfo.get("best_buy_venue"):
-                fee_basis = str(minfo.get("arb_fee_basis") or "maker").strip().lower()
-                basis_parts.append(f"net_buy_edge={fmt_signed(net_b, 1)}bps[{fee_basis}](best_buy={minfo['best_buy_venue']})")
-        if basis_parts:
-            basis_sfx = f", {', '.join(basis_parts)}"
+    tradable_syms.sort(key=_tradable_sort_key)
 
-        liq_sfx = ""
-        if caps.has_liquidation_clusters and minfo.get("long_liq_px") is not None and minfo.get("short_liq_px") is not None:
-            liq_ref_px = ob_ref_px if (ob_ref_px > 0 and not ob_is_frozen) else cur_px
-            liq_parts: List[str] = []
-            for l_lbl, px_k, usd_k, dist_k in (
-                ("long_liq", "long_liq_px", "long_liq_usd", "long_liq_dist_pct"),
-                ("short_liq", "short_liq_px", "short_liq_usd", "short_liq_dist_pct"),
-                ("deep_long", "long_liq_deep_px", "long_liq_deep_usd", "long_liq_deep_dist_pct"),
-                ("deep_short", "short_liq_deep_px", "short_liq_deep_usd", "short_liq_deep_dist_pct"),
-            ):
-                if minfo.get(px_k) is None:
+    lines: List[str] = []
+    used_micro: set[str] = set()
+    if tradable_syms or any(not mr["is_compact_obs"] for mr in m_records.values()):
+        s3_hdr = (
+            "\n### 3. TRADABLE US EQUITIES (UNIFIED PRICE, VOLUME ZONES & FLOW):"
+            if scope_spec.is_equities
+            else "\n### 3. TRADABLE MARKETS (UNIFIED PRICE, BOOK & FLOW \u2014 ALL COINS):"
+        )
+        lines.append(s3_hdr)
+        for sym in tradable_syms:
+            prec = p_records[sym]
+            lines.append(f"  * {sym}{prec['sib_lbl']}: Price={prec['px_str']}{prec['obs_lbl']}{prec['eq_qmeta_sfx']}")
+            if prec["full_extras"]:
+                lines.append(f"    - Trend: {' | '.join(prec['full_extras'])}")
+            mrec = m_records.get(sym)
+            if mrec is not None:
+                used_micro.add(sym)
+                if mrec["book_str"]:
+                    lines.append(f"    - Book: {mrec['book_str']}")
+                if mrec["flow_str"]:
+                    lines.append(f"    - Flow: {mrec['flow_str']}")
+            for m_sym, cand_m in sorted(m_records.items()):
+                if m_sym in used_micro or cand_m["is_compact_obs"]:
                     continue
-                l_px = safe_float(minfo.get(px_k), 0.0)
-                if liq_ref_px > 0 and l_px > 0:
-                    l_d = ((l_px - liq_ref_px) / liq_ref_px) * 100.0
-                else:
-                    l_d = safe_float(minfo.get(dist_k), 0.0)
-                liq_parts.append(
-                    f"{l_lbl}=${minfo.get(px_k)}[{_fmt_liq_usd(minfo.get(usd_k))}, {fmt_signed(l_d)}%]"
-                )
-            liq_parts.append(f"src={minfo.get('liq_source') or 'model_est'}")
-            liq_sfx = f", liq_clusters({', '.join(liq_parts)})"
-        if caps.has_liquidation_clusters and (
-            (rl_l := safe_float(minfo.get("realized_liq_15m_long_usd"), None)) is not None
-            and (rl_s := safe_float(minfo.get("realized_liq_15m_short_usd"), None)) is not None
-            and (rl_l > 0.0 or rl_s > 0.0 or (safe_float(minfo.get("realized_liq_15m_events"), 0.0) or 0.0) > 0.0)
-        ):
-            rl_n = safe_int(minfo.get("realized_liq_15m_events"), 0) or 0
-            rl_n_sfx = f", n={rl_n}" if rl_n > 0 else ""
-            rl_src_tag = format_realized_liq_sources_tag(minfo, multi_only=True)
-            rl_src_sfx = f", src={rl_src_tag}" if rl_src_tag else ""
-            liq_sfx += f", realized_liq_15m(long={_fmt_liq_usd(rl_l)}, short={_fmt_liq_usd(rl_s)}{rl_n_sfx}{rl_src_sfx})"
+                if cand_m["shared_perp_sym"] == sym or m_sym in prec["sib_syms"]:
+                    used_micro.add(m_sym)
+                    lines.append(f"  * {cand_m['sym_lbl']} (sibling of {sym}):")
+                    if cand_m["book_str"]:
+                        lines.append(f"    - Book: {cand_m['book_str']}")
+                    if cand_m["flow_str"]:
+                        lines.append(f"    - Flow: {cand_m['flow_str']}")
+        for m_sym, mrec in sorted(m_records.items()):
+            if m_sym in used_micro or mrec["is_compact_obs"]:
+                continue
+            used_micro.add(m_sym)
+            lines.append(f"  * {mrec['sym_lbl']}:")
+            if mrec["book_str"]:
+                lines.append(f"    - Book: {mrec['book_str']}")
+            if mrec["flow_str"]:
+                lines.append(f"    - Flow: {mrec['flow_str']}")
 
-        cd_sfx = ""
-        if isinstance(cd_map := minfo.get("cycle_delta"), dict):
-            cd_parts: List[str] = []
-            if cd_map.get("dt_min") is not None:
-                cd_parts.append(f"dt={cd_map['dt_min']}m")
-            if (d_ob := safe_float(cd_map.get("ob_imbalance_delta"), None)) is not None and abs(d_ob) >= 0.0005:
-                cd_parts.append(f"d_ob={fmt_signed(d_ob, 3)}")
-            if shared_perp_sym is None:
-                if (d_cvd := safe_float(cd_map.get("cvd_15m_delta_usd"), None)) is not None and abs(d_cvd) >= 1.0:
-                    cd_parts.append(f"d_cvd={_fmt_signed_usd(d_cvd)}")
-                if (
-                    not no_flow
-                    and (d_tr := safe_float(cd_map.get("taker_ratio_delta"), None)) is not None
-                    and abs(d_tr) >= 0.05
-                ):
-                    cd_parts.append(f"d_tr={fmt_signed(d_tr)}")
-                if (
-                    show_whale_long_delta
-                    and (d_wl := safe_float(cd_map.get("whale_long_delta_pct"), None)) is not None
-                    and abs(d_wl) >= 0.005
-                ):
-                    cd_parts.append(f"d_whale_long={fmt_signed(d_wl * 100.0, 1)}pp")
-                if (d_oi := safe_float(cd_map.get("oi_delta_pct"), None)) is not None and abs(d_oi) >= 0.005:
-                    cd_parts.append(f"d_oi={fmt_signed(d_oi)}%")
-            if len(cd_parts) > 1:
-                cd_sfx = f", cycle_delta({', '.join(cd_parts)})"
+    for m_sym, mrec in sorted(m_records.items()):
+        if m_sym not in used_micro and mrec["is_compact_obs"] and m_sym not in obs_only_syms:
+            obs_only_syms.append(m_sym)
 
-        l1_oi_v = safe_float(minfo.get("native_l1_oi_usd"), None)
-        oi_v = safe_float(minfo.get("oi_usd"), None)
-        has_distinct_l1_oi = bool(l1_oi_v is not None and oi_v is not None and abs(l1_oi_v - oi_v) > 1.0)
-        oi_disp = _fmt_liq_usd(oi_v) if oi_v is not None else str(minfo.get("oi_usd"))
-        oi_lbl = (
-            f"{oi_disp} (l1_oi={_fmt_liq_usd(l1_oi_v)})"
-            if has_distinct_l1_oi
-            else oi_disp
-        )
-        if shared_perp_sym is not None:
-            arb_only_parts = [p for p in basis_parts if p.startswith(("arb_vs_", "net_buy_edge="))]
-            arb_sfx = f", {', '.join(arb_only_parts)}" if arb_only_parts else ""
-            sib_sp_parts: List[str] = []
-            if not ob_is_frozen and (sib_sp_cvd := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
-                sib_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(sib_sp_cvd)}[real_spot]")
-            if (
-                not ob_is_frozen
-                and (sib_agg_part := format_agg_spot_cvd_part(minfo, _fmt_signed_usd, _fmt_liq_usd))
-                and (b_canon_3b, sib_agg_part) not in rendered_agg_spot
-            ):
-                rendered_agg_spot.add((b_canon_3b, sib_agg_part))
-                sib_sp_parts.append(sib_agg_part)
-            if not ob_is_frozen:
-                sib_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
-            sib_sp_sfx = f", {', '.join(sib_sp_parts)}" if sib_sp_parts else ""
-            ob_age_sfx = _format_3b_source_ages_suffix(
-                minfo, now_ts=now_ts, intervals=derived_3b_itvs, ob_only=True
-            )
-            if ob_is_frozen:
-                lines.append(
-                    f"  * {sym_3b_lbl}: orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed)"
-                    f"{arb_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
-                )
-            else:
-                lines.append(
-                    f"  * {sym_3b_lbl}: {caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')} "
-                    f"(bid_depth={_fmt_liq_usd(b_dep_v)}, ask_depth={_fmt_liq_usd(a_dep_v)}){depth_1pct_sfx}, "
-                    f"{caps.bid_zone_label}={bw_px} ({_fmt_liq_usd(minfo.get('bid_wall_usd'))}{bw_dist}), "
-                    f"{caps.ask_zone_label}={aw_px} ({_fmt_liq_usd(minfo.get('ask_wall_usd'))}{aw_dist})"
-                    f"{sib_sp_sfx}{arb_sfx}{spread_sfx}{cd_sfx}{ob_age_sfx}, perp_whale_flow=shared_with_{shared_perp_sym}"
-                )
-            continue
+    if obs_only_syms:
+        def _obs_sort_key(s: str) -> tuple[int, str]:
+            b = canonical_base_asset(s)
+            if b == "ETH":
+                return (0, s)
+            if b == "SOL":
+                return (1, s)
+            return (2, s)
 
-        oi_1h_v = safe_float(minfo.get("oi_1h_chg_pct"), None)
-        oi_1h_lbl = (oi_1h_v + 0.0) if oi_1h_v is not None else minfo.get("oi_1h_chg_pct")
-        oi_15m_v = safe_float(minfo.get("oi_15m_chg_pct"), None)
-        oi_15m_sfx = f", oi_15m_chg={fmt_signed(oi_15m_v)}%" if oi_15m_v is not None else ""
-        if deriv_mode == "none":
-            deriv_oi_sfx = ""
-        elif deriv_mode == "cboe_options":
-            deriv_oi_sfx = f", oi_usd={oi_lbl} (cboe_options_oi), oi_1h_chg={oi_1h_lbl}%"
-        else:
-            fr_v = safe_float(minfo.get("funding_rate"), default=None)
-            pfr_v = safe_float(minfo.get("pred_funding_rate"), default=None)
-            has_ann_fund = safe_float(minfo.get("funding_annualized_pct"), default=None) is not None
-            fund_part = ""
-            if has_ann_fund:
-                if fr_v is not None and pfr_v is not None and abs(pfr_v - fr_v) > 1e-7:
-                    fund_part = f", pred_funding_8h={_fmt_plain_float(pfr_v)}"
-            elif fr_v is not None:
-                pred_sfx = (
-                    f" (pred={_fmt_plain_float(pfr_v)})"
-                    if pfr_v is not None and abs(pfr_v - fr_v) > 1e-9
-                    else ""
-                )
-                fund_part = f", funding={_fmt_plain_float(fr_v)}{pred_sfx}"
-            flow_src_sfx = ", perp_flow_src=bn_perp" if has_distinct_l1_oi else ""
-            deriv_oi_sfx = f"{fund_part}, oi_usd={oi_lbl}, oi_1h_chg={oi_1h_lbl}%{oi_15m_sfx}{flow_src_sfx}"
-        src_age_sfx = _format_3b_source_ages_suffix(
-            minfo,
-            now_ts=now_ts,
-            intervals=derived_3b_itvs,
-            ob_only=sym_is_tok_xstock_3b,
-            include_deriv=bool(deriv_oi_sfx),
-            is_equity=bool(row.get("sym_is_eq")),
-            no_flow=bool(no_flow),
-        )
-        wl_raw = safe_float(minfo.get("whale_long_pct"), default=None) if show_whale_long else None
-        wl_prefix = (
-            f"whale_long_pct={(wl_raw * 100.0 if wl_raw <= 1.0 else wl_raw):.1f}%, "
-            if wl_raw is not None
-            else (f"whale_long_pct={minfo.get('whale_long_pct')}, " if show_whale_long else "")
-        )
-        if tok_spot_only:
-            tok_sp_parts: List[str] = []
-            if not cvd_sfx and not ob_is_frozen and (tok_sp := safe_float(minfo.get("spot_cvd_15m_usd"), None)) is not None and minfo.get("spot_cvd_source") == "real_spot":
-                tok_sp_parts.append(f"spot_cvd_15m={_fmt_signed_usd(tok_sp)}[real_spot]")
-            if not cvd_sfx and not ob_is_frozen:
-                tok_sp_parts.extend(format_spot_volume_rvol_parts(minfo, _fmt_liq_usd))
-            tok_sp_sfx = f", {', '.join(tok_sp_parts)}" if tok_sp_parts else ""
-            flow_3b_core = f"perp_derivatives=N/A[spot_tokenized_equity]{cvd_sfx}{tok_sp_sfx}"
-        elif no_flow:
-            flow_3b_core = f"{wl_prefix}intraday_rth_flow=N/A[no_fresh_vol_bars]{cvd_sfx}"
-        else:
-            bv_s = _fmt_liq_usd(minfo.get("taker_buy_vol_usd"))
-            sv_s = _fmt_liq_usd(minfo.get("taker_sell_vol_usd"))
-            flow_3b_core = (
-                f"{wl_prefix}"
-                f"taker_ratio={minfo.get('taker_buy_sell_ratio')} "
-                f"(buy_v={bv_s}/sell_v={sv_s}){cvd_sfx}"
-            )
-        if ob_is_frozen:
+        obs_only_syms.sort(key=_obs_sort_key)
+        lines.extend([
+            "\n### 4. MARKET BELLWETHERS (OBSERVE-ONLY):",
+            "  | Symbol | Price | 15m | 1h | 6h | 24h | Pos24h | Context | Flow & Deriv |",
+            "  |---|---|---|---|---|---|---|---|---|",
+        ])
+        for sym in obs_only_syms:
+            prec = p_records.get(sym)
+            cc = prec["compact_cols"] if prec else {}
+            mrec = m_records.get(sym)
+            flow_col = (mrec["obs_flow_str"] if mrec and mrec["obs_flow_str"] else "-")
             lines.append(
-                f"  * {sym_3b_lbl}: orderbook=STALE_FROZEN({ob_age_3b:.0f}s; walls/imbalance/spot_cvd_15m suppressed), "
-                f"{flow_3b_core}"
-                f"{deriv_oi_sfx}{basis_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
-            )
-        else:
-            lines.append(
-                f"  * {sym_3b_lbl}: {caps.book_source_prefix}ob_imbalance={minfo.get('ob_imbalance')} "
-                f"(bid_depth={_fmt_liq_usd(b_dep_v)}, ask_depth={_fmt_liq_usd(a_dep_v)}){depth_1pct_sfx}, "
-                f"{caps.bid_zone_label}={bw_px} ({_fmt_liq_usd(minfo.get('bid_wall_usd'))}{bw_dist}), "
-                f"{caps.ask_zone_label}={aw_px} ({_fmt_liq_usd(minfo.get('ask_wall_usd'))}{aw_dist}), "
-                f"{flow_3b_core}"
-                f"{deriv_oi_sfx}{basis_sfx}{spread_sfx}{liq_sfx}{cd_sfx}{src_age_sfx}"
+                f"  | {sym} | {cc.get('px_str', '-')} | {cc.get('15m', '-')} | {cc.get('1h', '-')} | "
+                f"{cc.get('6h', '-')} | {cc.get('24h', '-')} | {cc.get('pos_24h', '-')} | "
+                f"{cc.get('context', '-')} | {flow_col} |"
             )
     return lines
 
@@ -1645,19 +1917,80 @@ def _format_venue_specs_table(
     return out
 
 
-def _format_open_limit_orders_table(clean_open_orders: List[Any]) -> List[str]:
-    """Format active resting exchange orders as a compact Markdown table without raw Python dict quoting."""
+def _format_open_limit_orders_table(
+    clean_open_orders: List[Any],
+    *,
+    active_plans: Optional[List[Dict[str, Any]]] = None,
+    return_linked: bool = False,
+) -> Any:
+    """Format active resting exchange orders as a compact Markdown table, optionally linking matching RESTING plans."""
     dict_orders = [o for o in clean_open_orders if isinstance(o, dict)]
     if not dict_orders:
-        return [
+        res_lines = [
             f"  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders: {clean_open_orders}"
         ]
-    out = [
-        "  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders:",
-        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Note |",
-        "    |---|---|---|---|---|---|---|---|---|---|---|---|",
-    ]
-    for o in dict_orders:
+        return (res_lines, set()) if return_linked else res_lines
+
+    plan_by_order_idx: Dict[int, str] = {}
+    linked_plan_indices: set[int] = set()
+    if active_plans:
+        for o_idx, o in enumerate(dict_orders):
+            o_ven = str(o.get("venue") or "").strip().lower()
+            o_sym = str(o.get("symbol") or "").strip().upper()
+            o_side = str(o.get("side") or "").strip().upper()
+            o_px = safe_pos_float(o.get("price"), default=None)
+            best_p_idx: Optional[int] = None
+            best_diff = math.inf
+            for p_idx, pl in enumerate(active_plans):
+                if p_idx in linked_plan_indices or not isinstance(pl, dict):
+                    continue
+                if str(pl.get("order_state") or "").strip().upper() != "RESTING":
+                    continue
+                if (
+                    str(pl.get("venue") or "").strip().lower() != o_ven
+                    or str(pl.get("symbol") or "").strip().upper() != o_sym
+                    or str(pl.get("side") or "").strip().upper() != o_side
+                ):
+                    continue
+                p_epx = safe_pos_float(pl.get("entry_px"), default=None)
+                diff = abs(p_epx - o_px) / max(o_px, 1e-12) if (p_epx is not None and o_px is not None) else 0.0
+                if diff < best_diff:
+                    best_diff = diff
+                    best_p_idx = p_idx
+            if best_p_idx is not None and best_diff <= 0.05:
+                linked_plan_indices.add(best_p_idx)
+                pl = active_plans[best_p_idx]
+                t_s = (
+                    f"{pl['target_px']}({fmt_signed(pl.get('target_dist_pct'))}%)"
+                    if pl.get("target_px") is not None and pl.get("target_dist_pct") is not None
+                    else (str(pl.get("target_px")) if pl.get("target_px") is not None else "-")
+                )
+                i_s = (
+                    f"{pl['invalidation_px']}({fmt_signed(pl.get('invalidation_dist_pct'))}%)"
+                    if pl.get("invalidation_px") is not None and pl.get("invalidation_dist_pct") is not None
+                    else (str(pl.get("invalidation_px")) if pl.get("invalidation_px") is not None else "-")
+                )
+                st_lbl = str(pl.get("status") or "ACTIVE")
+                plan_by_order_idx[o_idx] = f"{t_s}/{i_s} [{st_lbl}]"
+
+    has_linked = bool(plan_by_order_idx)
+    hdr_lbl = (
+        "  * Active Open Orders & Linked Trade Plans (Locking Liquidity) \u2014 open_limit_orders:"
+        if has_linked
+        else "  * Active Open Orders on Exchange (Locking Liquidity) \u2014 open_limit_orders:"
+    )
+    cols_hdr = (
+        "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Plan (Tgt/Inv) | Note |"
+        if has_linked
+        else "    | Venue | Symbol | Side | Price | Qty | Filled | ID | Actor | Age | Dist | Fill1h | Note |"
+    )
+    cols_sep = (
+        "    |---|---|---|---|---|---|---|---|---|---|---|---|---|"
+        if has_linked
+        else "    |---|---|---|---|---|---|---|---|---|---|---|---|"
+    )
+    out = [hdr_lbl, cols_hdr, cols_sep]
+    for o_idx, o in enumerate(dict_orders):
         ven = str(o.get("venue") or "-")
         sym = str(o.get("symbol") or "-")
         side = str(o.get("side") or "-")
@@ -1682,10 +2015,55 @@ def _format_open_limit_orders_table(clean_open_orders: List[Any]) -> List[str]:
         if o.get("recommended_front_run_px") is not None:
             notes.append(f"front_run={o['recommended_front_run_px']}")
         note_s = "; ".join(notes) if notes else "-"
+        plan_col = f" {plan_by_order_idx.get(o_idx, '-')} |" if has_linked else ""
         out.append(
-            f"    | {ven} | {sym} | {side} | {px} | {qty} | {filled} | {oid} | {actor} | {age} | {dist} | {fp} | {note_s} |"
+            f"    | {ven} | {sym} | {side} | {px} | {qty} | {filled} | {oid} | {actor} | {age} | {dist} | {fp} |{plan_col} {note_s} |"
         )
-    return out
+    return (out, linked_plan_indices) if return_linked else out
+
+
+def _format_exec_intent_item(item: Any) -> str:
+    """Format a single execution status or recent AI intent dict cleanly without raw Python dict quotes."""
+    if not isinstance(item, dict):
+        return str(item)
+    ven = item.get("venue") or "-"
+    sym = item.get("symbol") or "-"
+    side = item.get("side") or item.get("decision") or "-"
+    otype = item.get("order_type") or ""
+    raw_st = str(item.get("status") or "").strip()
+    ven_st = str(item.get("venue_status") or "").strip()
+    st = "RESTING_IN_BOOK" if raw_st == "RESTING_IN_BOOK" else (ven_st or raw_st or "-")
+    hdr = f"[{ven}] {sym} {side}" + (f" {otype}" if otype else "") + f" {st}"
+    details: List[str] = []
+    if item.get("fill_px") is not None:
+        details.append(f"fill_px={item['fill_px']}")
+    if item.get("limit_px") is not None:
+        details.append(f"limit_px={item['limit_px']}")
+    elif item.get("limit_price") is not None and item.get("limit_price") != item.get("fill_px"):
+        details.append(f"limit_px={item['limit_price']}")
+    if item.get("ref_px") is not None:
+        details.append(f"ref_px={item['ref_px']}")
+    if item.get("filled_qty") is not None and safe_float(item.get("filled_qty"), 0.0) > 0.0:
+        details.append(f"qty={_fmt_plain_float(item['filled_qty'])}")
+    if item.get("notional_usd") is not None:
+        details.append(f"notional=${safe_float(item['notional_usd'], 0.0):,.2f}")
+    if item.get("target_px") is not None:
+        details.append(f"target={item['target_px']}")
+    if item.get("invalidation_px") is not None:
+        details.append(f"inval={item['invalidation_px']}")
+    if item.get("slippage_bps") is not None:
+        details.append(f"slippage_bps={item['slippage_bps']}")
+    if item.get("arrival_shortfall_bps") is not None:
+        details.append(f"arr_bps={item['arrival_shortfall_bps']}")
+    if item.get("order_id") or item.get("orderId"):
+        details.append(f"id={item.get('order_id') or item.get('orderId')}")
+    if item.get("age_min") is not None:
+        details.append(f"age={item['age_min']}m")
+    elif item.get("age_h") is not None:
+        details.append(f"age={item['age_h']}h")
+    if item.get("reason"):
+        details.append(f"reason={item['reason']}")
+    return f"{hdr} ({', '.join(details)})" if details else hdr
 
 
 def _format_kraken_xstocks_line(xs_view: Dict[str, Any], *, scope_s: str, tag: str = "") -> str:
@@ -1901,6 +2279,7 @@ def _format_portfolio_section(
     min_usd: float = 0.0,
     max_usd: float = 2000.0,
     include_macro_benchmarks: bool = True,
+    include_cross_market: bool = True,
     now_ts: Optional[float] = None,
     delta_plan: Optional[Any] = None,
 ) -> List[str]:
@@ -1997,8 +2376,22 @@ def _format_portfolio_section(
             lines.append(f"  * Available Free Quote Cash per Venue: {', '.join(cash_parts)}")
     view = evaluate_portfolio_prompt_view(ps, asset_scope=asset_scope, max_usd=max_usd, min_usd=min_usd)
     if view["tradable_positions"]:
+        sorted_positions = sorted(
+            enumerate(view["tradable_positions"]),
+            key=lambda it: (
+                0
+                if (
+                    (safe_float(it[1].get("value_usd"), 0.0) or 0.0) >= 2.0
+                    or (safe_float(it[1].get("locked_base_qty"), 0.0) or 0.0) > 0.0
+                )
+                else (1 if (safe_float(it[1].get("locked_quote_usd"), 0.0) or 0.0) > 0.0 else 2),
+                -(safe_float(it[1].get("value_usd"), 0.0) or 0.0),
+                it[0],
+            ),
+        )
+        ordered_positions = [pv for _, pv in sorted_positions]
         lines.append("  * Live Tradable Spot Instruments (Eligible for Autonomous BUY / SELL):")
-        for pos_view in view["tradable_positions"]:
+        for pos_view in ordered_positions:
             lines.append(
                 _format_tradable_position_line(
                     pos_view,
@@ -2010,16 +2403,24 @@ def _format_portfolio_section(
             )
         if delta_plan is None or delta_plan.should_show("venue_specs"):
             vs_tag = delta_plan.tag_for("venue_specs") if delta_plan is not None else ""
-            lines.extend(_format_venue_specs_table(view["tradable_positions"], tag=vs_tag))
+            lines.extend(_format_venue_specs_table(ordered_positions, tag=vs_tag))
+    active_plans = view.get("active_ai_trade_plans") or []
+    linked_plan_indices: set[int] = set()
     if view["has_open_orders"]:
-        lines.extend(_format_open_limit_orders_table(view["clean_open_limit_orders"]))
+        oo_lines, linked_plan_indices = _format_open_limit_orders_table(
+            view["clean_open_limit_orders"],
+            active_plans=active_plans,
+            return_linked=True,
+        )
+        lines.extend(oo_lines)
     else:
         lines.append(
             "  * Active Open Limit Orders on Exchange \u2014 open_limit_orders: [] (none resting)"
         )
-    if active_plans := view.get("active_ai_trade_plans"):
+    unlinked_plans = [pl for idx, pl in enumerate(active_plans) if idx not in linked_plan_indices]
+    if unlinked_plans:
         lines.append("  * Active AI Trade Plans (Persistent Exit/Invalidation Memory):")
-        for pl in active_plans:
+        for pl in unlinked_plans:
             p_parts: List[str] = []
             ord_st = str(pl.get("order_state") or "FILLED")
             is_lim_anc = pl.get("dist_anchor") == "limit" or ord_st.strip().upper() == "RESTING"
@@ -2063,9 +2464,9 @@ def _format_portfolio_section(
     if (delta_plan is None or delta_plan.should_show("kraken_xstocks")) and (xs_view := view["kraken_xstocks"]):
         xs_tag = delta_plan.tag_for("kraken_xstocks") if delta_plan is not None else ""
         lines.append(_format_kraken_xstocks_line(xs_view, scope_s=scope_s, tag=xs_tag))
-    if view["crypto_bellwethers"]:
+    if include_cross_market and view["crypto_bellwethers"]:
         lines.extend(_format_cross_market_crypto_table(view["crypto_bellwethers"]))
-    if (delta_plan is None or delta_plan.should_show("equity_bellwethers")) and view["equity_bellwethers"]:
+    if include_cross_market and (delta_plan is None or delta_plan.should_show("equity_bellwethers")) and view["equity_bellwethers"]:
         eq_tag = delta_plan.tag_for("equity_bellwethers") if delta_plan is not None else ""
         lines.extend(_format_cross_market_equities_table(view["equity_bellwethers"], scope_s=scope_s, tag=eq_tag))
     mb_bench_3c = (
@@ -2125,12 +2526,22 @@ def _format_portfolio_section(
             if delta_plan is not None and (ro_tag := delta_plan.recent_order_tag(str(sym))) and ": " in ro_line:
                 ro_line = ro_line.replace(": ", f"{ro_tag}: ", 1)
             lines.append(ro_line)
-    if view["clean_last_cycle_execution_status"]:
-        lines.append(
-            f"  * Last Cycle Execution Status \u2014 last_cycle_execution_status: {view['clean_last_cycle_execution_status']}"
+    if clean_lces := view["clean_last_cycle_execution_status"]:
+        lces_s = (
+            "; ".join(_format_exec_intent_item(x) for x in clean_lces)
+            if isinstance(clean_lces, list)
+            else _format_exec_intent_item(clean_lces)
         )
-    for _, st_label, st_val in view["runtime_states"]:
-        lines.append(f"  * {st_label}: {st_val}")
+        lines.append(
+            f"  * Last Cycle Execution Status \u2014 last_cycle_execution_status: {lces_s}"
+        )
+    for st_key, st_label, st_val in view["runtime_states"]:
+        if st_key == "recent_ai_intents" and isinstance(st_val, list):
+            lines.append(f"  * {st_label}:")
+            for it in st_val:
+                lines.append(f"    - {_format_exec_intent_item(it)}")
+        else:
+            lines.append(f"  * {st_label}: {st_val}")
     return lines
 
 

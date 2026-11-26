@@ -2588,25 +2588,24 @@ def test_observe_only_3_3b_compression_and_aged_advisor_live_poc_labeling():
         portfolio_summary={"tradable_positions": [{"venue": "binance", "symbol": "BTCUSDC", "free_base": 0.01, "price": 60_693.81}]},
     )
     prompt = build_supervisor_prompt(snap, LogEventSummary(0, 0, 0), topic_spec("auto_cryptotrade_executor"), compact_rules=True)
-    eth_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * ETHUSDC")]
-    ant_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * ANTxUSD")]
-    btc_lines = [ln for ln in prompt.splitlines() if ln.startswith("  * BTCUSDC")]
-    assert len(eth_lines) == 2 and len(ant_lines) == 2 and len(btc_lines) == 2
-    # Tradable BTC keeps full VP + tape + L2 walls
-    assert "vol_profile(POC=60179.54" in btc_lines[0]
-    assert "bid_wall=60500.0" in btc_lines[1]
-    # Observe-only ETH & ANTx render compact bellwether lines (no tape/VP/L2 walls)
-    assert "[OBSERVE-ONLY]" in eth_lines[0] and "vs_btc(" in eth_lines[0] and "vol_profile(" not in eth_lines[0] and "tape_15m=" not in eth_lines[0]
-    assert "[OBSERVE-ONLY]" in eth_lines[1] and "taker_ratio=1.12" in eth_lines[1] and "bid_wall=" not in eth_lines[1]
-    assert "[OBSERVE-ONLY]" in ant_lines[0] and "vol_profile(" not in ant_lines[0]
-    assert "[OBSERVE-ONLY]" in ant_lines[1] and "ob_imbalance=0.55" in ant_lines[1] and "bid_wall=" not in ant_lines[1]
-    # Focusing ETHUSDC explicitly restores full detail
+    # Tradable BTC keeps full unified 3-line card (VP + tape + L2 walls) in Section 3
+    s3_part, s4_part = prompt.split("### 4. MARKET BELLWETHERS (OBSERVE-ONLY):", 1)
+    assert "  * BTCUSDC: Price=" in s3_part
+    assert "    - Trend: " in s3_part and "vol_profile(POC=60179.54" in s3_part
+    assert "    - Book: " in s3_part and "bid_wall=60500.0" in s3_part
+    assert "  * ETHUSDC" not in s3_part and "  * ANTxUSD" not in s3_part
+    # Observe-only ETH & ANTx render compact rows in Section 4 bellwether table (no tape/VP/L2 walls)
+    eth_row = next(ln for ln in s4_part.splitlines() if ln.strip().startswith("| ETHUSDC |"))
+    ant_row = next(ln for ln in s4_part.splitlines() if ln.strip().startswith("| ANTxUSD |"))
+    assert "vs_btc(" in eth_row and "taker_ratio=1.12" in eth_row and "vol_profile(" not in eth_row and "bid_wall=" not in eth_row
+    assert "ob_imbalance=0.55" in ant_row and "vol_profile(" not in ant_row and "bid_wall=" not in ant_row
+    # Focusing ETHUSDC explicitly restores full unified card detail in Section 3
     prompt_focus = build_supervisor_prompt(
         snap, LogEventSummary(0, 0, 0), topic_spec("auto_cryptotrade_executor"), focus_symbols=["ETHUSDC"], compact_rules=True
     )
-    eth_focus_lines = [ln for ln in prompt_focus.splitlines() if ln.startswith("  * ETHUSDC")]
-    assert "vol_profile(POC=1675.0" in eth_focus_lines[0]
-    assert "bid_wall=1690.0" in eth_focus_lines[1]
+    assert "  * ETHUSDC: Price=" in prompt_focus
+    assert "vol_profile(POC=1675.0" in prompt_focus
+    assert "bid_wall=1690.0" in prompt_focus
 
     # 2. Aged SentimentAdvisor citing POC surfaces live BTC/POC anchor & historical_summary tag
     sec1_poc = "\n".join(

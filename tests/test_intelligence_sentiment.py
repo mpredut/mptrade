@@ -2615,8 +2615,9 @@ def test_open_order_live_dist_recompute_bimodal_vah_and_range_ob_sync(tmp_path):
     )
     assert "AAPLx.T" not in sec_3c_lines
     assert "pnl_vs_avg_pct" not in sec_3c_lines
-    assert "'age_min': 500.0" not in sec_3c_lines
-    assert "'order_id': '202'" in sec_3c_lines
+    assert "age=500.0m" not in sec_3c_lines
+    assert "id=202" in sec_3c_lines
+    assert "'order_id':" not in sec_3c_lines
 
     # 12. Short-series Kalman warm-seed alignment and prompt fallback RESTING_IN_BOOK normalization
 
@@ -12053,9 +12054,9 @@ def test_item_3_8_offline_real_vol_upgrade_xstock_case_and_last_cycle_exec_align
             include_macro_benchmarks=False,
         )
     )
-    assert "last_cycle_execution_status: {'venue': 'kraken', 'symbol': 'SPCXxUSD'" in sec3c
+    assert "last_cycle_execution_status: [kraken] SPCXxUSD SELL FILLED" in sec3c
     assert "OID-REST-1" not in sec3c.split("last_cycle_execution_status:")[1].splitlines()[0]
-    assert "'symbol': 'SPCXxUSD'" in sec3c
+    assert "[kraken] SPCXxUSD SELL LIMIT FILLED" in sec3c
 
     sup_prompt = build_supervisor_prompt(
         TelemetrySensorSnapshot(evaluated_at_ts=now_s),
@@ -13334,7 +13335,8 @@ def test_sentiment_advisor_quantitative_prompt_enrichment_geopolitical_context_a
     assert "free_TAO=0.000003 ($0.0 USD)" in sec_3c_clean
     assert "3e-06" not in sec_3c_clean
     assert "'ts':" not in sec_3c_clean
-    assert "'age_h': 2.5" in sec_3c_clean
+    assert "age=2.5h" in sec_3c_clean
+    assert "'age_h':" not in sec_3c_clean
 
     from intelligence.sentiment.sentiment_advisor import _format_geopolitical_line
 
@@ -17847,7 +17849,7 @@ def test_prompt_accuracy_wave1_equity_proxy_rvol_delayed_macro_bellwethers_and_n
         spec=topic_spec("auto_sharetrade_executor"),
         focus_symbols=["NVDA_US_EQ"],
     )
-    assert "(ALL US EQUITIES)" in eq_prompt
+    assert "TRADABLE US EQUITIES (UNIFIED PRICE, VOLUME ZONES & FLOW)" in eq_prompt
     assert "(ALL COINS)" not in eq_prompt
     assert "multi-equity" in eq_prompt
     assert "Toate Ac\u021biunile" in eq_prompt

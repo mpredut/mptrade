@@ -121,7 +121,7 @@ def inspect_crypto_prompt(workspace_dir: str = ".") -> Dict[str, Any]:
         "free_quote_cash": "Available Free Quote Cash per Venue:" in prompt,
         "tradable_positions": "Live Tradable Spot Instruments" in prompt,
         "open_limit_orders": "open_limit_orders:" in prompt,
-        "active_ai_trade_plans": "Active AI Trade Plans" in prompt,
+        "active_ai_trade_plans": "Active AI Trade Plans" in prompt or "Linked Trade Plans" in prompt,
         "decision_scorecard": "ai_decision_scorecard" in prompt or "AI Decision Scorecard" in prompt,
         "calibration_feedback": "ai_calibration_feedback" in prompt or "Calibration" in prompt,
         "cycle_cost_anchors": "Active Cycle Cost & Drawdown Anchors:" in prompt,

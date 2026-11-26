@@ -43,6 +43,7 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_microstructure_section,
     _format_portfolio_section,
     _format_sre_and_fleet_section,
+    _format_unified_markets_and_bellwethers_sections,
 )
 from providers.ai_circuit_breaker import (
     DEFAULT_MAX_HOURLY_REPLACES_PER_SYMBOL,
@@ -59,6 +60,18 @@ from providers.ai_circuit_breaker import (
 )
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_LIVE_DOMAIN_AGE_KEYS = frozenset({
+    "prices",
+    "prices_newest",
+    "prices_oldest",
+    "orderbook",
+    "orderbook_newest",
+    "orderbook_oldest",
+    "derivatives_oldest",
+    "whale_oldest",
+    "short_trends",
+    "venue_balances",
+})
 
 
 def _resolve_gateway_survival_prompt_thresholds(
@@ -216,7 +229,8 @@ def build_supervisor_prompt(
         eff_now_s0 = eval_now_ts if eval_now_ts is not None else time.time()
         stale_thrs = resolve_telemetry_domain_stale_thresholds_sec(spec_scope_norm, now_ts=eff_now_s0)
         us_rth_open = is_us_rth_open(eff_now_s0)
-        age_tokens: List[str] = []
+        live_age_tokens: List[str] = []
+        macro_age_tokens: List[str] = []
         for k, v in domain_ages.items():
             if k in skip_domain_keys:
                 continue
@@ -230,9 +244,17 @@ def build_supervisor_prompt(
                 us_rth_open=us_rth_open,
                 thresholds=stale_thrs,
             )
-            age_tokens.append(f"{k}={format_age_sec_compact(v_f or 0.0)}{stale_tag}")
-        if age_tokens:
-            context_items.append(f"- Snapshot Domain Ages: {', '.join(age_tokens)}")
+            tok = f"{k}={format_age_sec_compact(v_f or 0.0)}{stale_tag}"
+            if k in _LIVE_DOMAIN_AGE_KEYS:
+                live_age_tokens.append(tok)
+            else:
+                macro_age_tokens.append(tok)
+        if live_age_tokens and macro_age_tokens:
+            context_items.append("- Snapshot Domain Ages:")
+            context_items.append(f"  * Live: {', '.join(live_age_tokens)}")
+            context_items.append(f"  * Macro: {', '.join(macro_age_tokens)}")
+        elif live_age_tokens or macro_age_tokens:
+            context_items.append(f"- Snapshot Domain Ages: {', '.join(live_age_tokens or macro_age_tokens)}")
     if not is_pure_sre and delta_plan is not None:
         context_items.extend(delta_plan.format_section0_lines())
     if spec.can_self_heal:
@@ -255,6 +277,7 @@ def build_supervisor_prompt(
                 min_usd=min_usd,
                 max_usd=max_usd,
                 include_macro_benchmarks=False,
+                include_cross_market=False,
                 now_ts=eval_now_ts,
                 delta_plan=delta_plan,
             )
@@ -266,26 +289,35 @@ def build_supervisor_prompt(
                 getattr(spec, "asset_scope", "all"),
                 now_ts=eval_now_ts,
                 delta_plan=delta_plan,
+                include_cross_market=True,
             )
         )
-    if not is_pure_sre and prices_and_trends:
+    if not is_pure_sre and (prices_and_trends or microstructure):
+        held_syms = {
+            str(p.get("symbol") or "").strip().upper()
+            for p in (portfolio_summary.get("tradable_positions") or ())
+            if isinstance(p, dict)
+            and p.get("symbol")
+            and (
+                (safe_nonneg_float(p.get("value_usd"), default=0.0) or 0.0) >= 2.0
+                or (safe_nonneg_float(p.get("locked_base_qty"), default=0.0) or 0.0) > 0.0
+            )
+        }
+        open_ord_syms = {
+            str(o.get("symbol") or "").strip().upper()
+            for o in (portfolio_summary.get("open_limit_orders") or ())
+            if isinstance(o, dict) and o.get("symbol")
+        }
         context_items.extend(
-            _format_market_prices_section(
+            _format_unified_markets_and_bellwethers_sections(
                 prices_and_trends,
-                asset_scope=spec_scope_norm,
-                compact_observe_only=True,
-                active_symbols=active_obs_syms,
-            )
-        )
-    if not is_pure_sre and microstructure:
-        context_items.extend(
-            _format_microstructure_section(
                 microstructure,
-                prices_and_trends,
                 now_ts=eval_now_ts,
                 asset_scope=spec_scope_norm,
                 compact_observe_only=True,
                 active_symbols=active_obs_syms,
+                held_symbols=held_syms,
+                open_order_symbols=open_ord_syms,
             )
         )
     if not is_pure_sre and focus_symbols:

@@ -2104,8 +2104,8 @@ def test_kraken_tradable_pairs_xstocks_and_hyperliquid_long_state_symmetry(tmp_p
     u_prompt = reconciler.gemini_auditor.last_prompt
     assert "* HYPEUSDC (sibling venue: HYPEUSD=$62.00 [-0.10%]): Price=$62.06" in u_prompt
     assert "\n  * HYPEUSD: Price=" not in u_prompt
-    assert "* HYPEUSDC (HYPEUSD): ob_imbalance=0.61" in u_prompt
-    assert "* ADAUSD: ob_imbalance=0.44" in u_prompt
+    assert "    - Book: ob_imbalance=0.61" in u_prompt
+    assert "  * ADAUSD:\n    - Book: ob_imbalance=0.44" in u_prompt
     assert "realized_pnl=+$18.45, tp_sold=[1, 2]" in u_prompt
     assert "API-TRADABLE 24/7 on 'kraken' at 0bps maker/taker fee" in u_prompt
     assert "Cross-Market US Equities Telemetry (Live/Extended & T212 Quotes, Multi-Horizon Deltas)" in u_prompt
@@ -3305,8 +3305,8 @@ def test_open_limit_orders_macro_benchmarks_and_last_cycle_execution_status(tmp_
     assert "open_limit_orders:" in prompt_text
     assert "| 777888 |" in prompt_text
     assert "last_cycle_execution_status:" in prompt_text
-    assert "'fill_px': 79214.39" in prompt_text
-    assert "'slippage_bps': 1.2" in prompt_text
+    assert "fill_px=79214.39" in prompt_text
+    assert "slippage_bps=1.2" in prompt_text
     assert "SPY=$582.40 (-0.85% 24h" in prompt_text
     assert "US10Y=4.28% (+1.12% 24h" in prompt_text
 

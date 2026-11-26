@@ -62,7 +62,8 @@ _SEC3_SYM_RE = re.compile(
     r"^\s*[\*-]\s*([A-Za-z0-9_]+)(?:\s*(?:\[[^\]]*\]|\([^)]*\)))*:\s*Price=\$?([0-9,]+(?:\.[0-9]+)?)(.*)$",
     re.MULTILINE,
 )
-_SEC3B_SYM_RE = re.compile(r"^\s*[\*-]\s*([A-Za-z0-9_]+)(?:\s*\[[^\]]*\])?:(.*)$", re.MULTILINE)
+_SEC3B_SYM_RE = re.compile(r"^\s*[\*-]\s*([A-Za-z0-9_]+)(?:\s*(?:\[[^\]]*\]|\([^)]*\)))*:(.*)$", re.MULTILINE)
+_UNIFIED_SUBLINE_RE = re.compile(r"^\s{2,}-\s*(Trend|Book|Flow):\s*(.*)$")
 _RANGE_RE = re.compile(
     r"(24h|7d)_range=\[([0-9.]+)(?:\.\.|,\s*)([0-9.]+)\]\s*(?:\(pos=|pos_(?:24h|7d)=)([0-9.]+)%"
 )
@@ -640,13 +641,54 @@ def audit_rendered_prompt_text(
                         )
                     )
 
-    # 4. Section 3 range pos math, vol_profile order/deltas, and session_vwap delta
-    for m_s3 in _SEC3_SYM_RE.finditer(prompt_text):
-        sym = m_s3.group(1)
-        px = _parse_money(m_s3.group(2))
-        rest = m_s3.group(3)
-        if px is None or px <= 0.0:
+    # 4 & 5. Collect both single-line and unified multi-line symbol cards (Trend / Book / Flow)
+    sec3_items: list[tuple[str, float, str]] = []
+    sec3b_items: list[tuple[str, str]] = []
+    prompt_lines = prompt_text.splitlines()
+    cur_card_sym: Optional[str] = None
+    cur_card_px: Optional[float] = None
+    cur_trend_parts: list[str] = []
+    cur_micro_parts: list[str] = []
+
+    def _flush_card() -> None:
+        if cur_card_sym is None:
+            return
+        if cur_card_px is not None and cur_card_px > 0.0 and cur_trend_parts:
+            sec3_items.append((cur_card_sym, cur_card_px, " | ".join(cur_trend_parts)))
+        if cur_micro_parts:
+            sec3b_items.append((cur_card_sym, ", ".join(cur_micro_parts)))
+
+    for raw_ln in prompt_lines:
+        if (m_sub := _UNIFIED_SUBLINE_RE.match(raw_ln)) is not None and cur_card_sym is not None:
+            sub_kind, sub_body = m_sub.group(1), m_sub.group(2)
+            if sub_kind == "Trend":
+                cur_trend_parts.append(sub_body)
+            else:
+                cur_micro_parts.append(sub_body)
             continue
+        _flush_card()
+        cur_card_sym = None
+        cur_card_px = None
+        cur_trend_parts = []
+        cur_micro_parts = []
+        if (m_s3 := _SEC3_SYM_RE.match(raw_ln)) is not None:
+            sym = m_s3.group(1)
+            px = _parse_money(m_s3.group(2))
+            rest = m_s3.group(3)
+            cur_card_sym = sym
+            cur_card_px = px
+            if rest.strip():
+                cur_trend_parts.append(rest)
+            continue
+        if (m_3b := _SEC3B_SYM_RE.match(raw_ln)) is not None:
+            sym, rest = m_3b.group(1), m_3b.group(2)
+            cur_card_sym = sym
+            if rest.strip():
+                cur_micro_parts.append(rest)
+    _flush_card()
+
+    # 4. Section 3 range pos math, vol_profile order/deltas, and session_vwap delta
+    for sym, px, rest in sec3_items:
         for m_rng in _RANGE_RE.finditer(rest):
             lbl = m_rng.group(1)
             lo = safe_pos_float(m_rng.group(2), default=None)
@@ -694,10 +736,9 @@ def audit_rendered_prompt_text(
                         )
                     )
 
-    # 5. Section 3B cross-venue arb symmetry, OB imbalance math, and wall ordering
+    # 5. Section 4 / unified-card cross-venue arb symmetry, OB imbalance math, and wall ordering
     arb_pairs: dict[tuple[str, str], float] = {}
-    for m_3b in _SEC3B_SYM_RE.finditer(prompt_text):
-        sym, rest = m_3b.group(1), m_3b.group(2)
+    for sym, rest in sec3b_items:
         if (m_arb := _ARB_VS_RE.search(rest)) is not None:
             peer = m_arb.group(1)
             val = safe_float(m_arb.group(2), default=None)

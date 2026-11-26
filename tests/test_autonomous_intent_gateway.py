@@ -992,7 +992,7 @@ def test_passive_limit_orders_order_replacement_and_contrarian_dip_prompt(temp_w
     assert "right at live BBO (`best_bid` for BUY / `best_ask` for SELL)" in prompt
     assert '"order_type": "LIMIT"' in prompt
     assert '"decision": "BUY" | "SELL" | "CANCEL" | "HOLD"' in prompt
-    assert "'order_type': 'LIMIT'" in prompt and "79850.0" in prompt
+    assert "BUY LIMIT" in prompt and "limit_px=79850.0" in prompt
 
     # 6. When a bot's open order locks wallet liquidity so free_balance is 0, replace_open_orders=True
     #    automatically cancels the locking bot order and re-clamps wallet balance so the AI can repair/reverse the trade
