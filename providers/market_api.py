@@ -209,6 +209,7 @@ class MarketApi:
         provider = self._route.get(symbol) or (self._route.get(sym_clean) if sym_clean else None)
         if provider is not None:
             return provider
+        had_error = False
         for candidate in self._providers:
             try:
                 if candidate.supports_symbol(sym_clean or symbol):
@@ -217,10 +218,13 @@ class MarketApi:
                         self._route[sym_clean] = candidate
                     return candidate
             except Exception:
+                had_error = True
                 continue
         # Behavior-preserving default: first configured provider.
+        # Do not permanently memoize the fallback when a candidate raised a transient error.
         default = self._providers[0]
-        self._route[symbol] = default
+        if not had_error:
+            self._route[symbol] = default
         return default
 
     def get_current_price(

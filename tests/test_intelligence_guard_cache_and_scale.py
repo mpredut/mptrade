@@ -2407,3 +2407,167 @@ def test_guard_producer_consumer_decoupling_and_topic_spec_dag_purity():
                 and node.func.attr in {"load", "loads", "dump", "dumps"}
             ):
                 raise AssertionError(f"{rel}:{node.lineno} calls raw json.{node.func.attr} outside state_io/botcore")
+
+
+def test_pass12_pretrade_telemetry_future_ts_and_pillar2_selection_invariants(tmp_path):
+    """Pass #12 invariants & cross-checks for PretradeTelemetrySnapshot, _fetch_pillar2_snapshot,
+    PretradePriceSeries24hStage, and PretradeTelemetryOrchestrator.read_snapshot."""
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import (
+        PretradeTelemetryOrchestrator,
+        PretradeTelemetrySnapshot,
+        _fetch_pillar2_snapshot,
+    )
+    from cachepaths import CACHE_DERIVATIVES_TELEMETRY_PREFIX, CACHE_ORDERBOOK_DEPTH_PREFIX
+
+    now_ts = 1_795_500_000.0
+
+    # 1. Pure invariants: PretradeTelemetrySnapshot rejects far-future timestamps (> now + 60s)
+    #    instead of clamping negative age to 0.0 (is_fresh=True), while tolerating minor NTP jitter (<= 60s).
+    future_snap = PretradeTelemetrySnapshot.from_raw(
+        {"24h Range": "+1.0%"},
+        symbol="BTCUSDC",
+        now_ts=now_ts,
+        source="cachedb",
+        ts=now_ts + 3600.0,
+        pillar_timestamps={"orderbook": now_ts + 3600.0, "price_24h": now_ts - 10.0},
+        max_age_sec=120.0,
+        enforce_freshness=True,
+    )
+    assert future_snap.age_sec is not None and future_snap.age_sec < -60.0
+    assert future_snap.is_fresh is False
+    assert future_snap.is_stale is True
+    assert future_snap.is_available is False
+    assert future_snap.unavailable_reason == "telemetry_stale"
+    sf = future_snap.source_freshness
+    assert sf["orderbook"]["fresh"] is False
+    assert sf["price_24h"]["fresh"] is True
+
+    # Re-evaluating an existing future snapshot via from_raw must keep it stale
+    reeval_future = PretradeTelemetrySnapshot.from_raw(
+        future_snap, symbol="BTCUSDC", now_ts=now_ts + 5.0, enforce_freshness=True
+    )
+    assert reeval_future.is_fresh is False
+    assert reeval_future.unavailable_reason == "telemetry_stale"
+
+    # Minor NTP skew (+10s <= 60s) remains valid and fresh
+    jitter_snap = PretradeTelemetrySnapshot.from_raw(
+        {"24h Range": "+1.0%"},
+        symbol="BTCUSDC",
+        now_ts=now_ts,
+        source="cachedb",
+        ts=now_ts + 10.0,
+        max_age_sec=120.0,
+        enforce_freshness=True,
+    )
+    assert jitter_snap.age_sec == 0.0
+    assert jitter_snap.is_fresh is True
+
+    # 2. Pure invariants: _fetch_pillar2_snapshot rejects far-future disk variants and lets valid disk beat ts=0/future mem
+    disk_files = {
+        str(tmp_path / f"{CACHE_DERIVATIVES_TELEMETRY_PREFIX}BTCUSDC.json"): {
+            "symbol": "BTCUSDC",
+            "funding_rate": 0.0001,
+            "ts": now_ts - 15.0,
+        },
+        str(tmp_path / f"{CACHE_DERIVATIVES_TELEMETRY_PREFIX}BTCUSDT.json"): {
+            "symbol": "BTCUSDT",
+            "funding_rate": 0.0999,
+            "ts": now_ts + 7200.0,  # corrupt far-future variant
+        },
+    }
+    rj = lambda p: disk_files.get(str(p))
+
+    # Case 2a: Valid in-memory snap vs corrupt far-future disk variant -> valid disk variant BTCUSDC (now-15) beats BTCUSDT (now+7200) and beats older mem (now-50)
+    older_mem = SimpleNamespace(symbol="BTCUSDC", funding_rate=0.0002, ts=now_ts - 50.0)
+    col_older = SimpleNamespace(_cache_dir=str(tmp_path), fetch=lambda *a, **k: older_mem)
+    picked_a = _fetch_pillar2_snapshot(
+        str(tmp_path),
+        "BTCUSDC",
+        lambda: col_older,
+        CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+        ["BTCUSDC", "BTCUSDT"],
+        ["BTCUSDC", "BTCUSDT"],
+        rj,
+        now_ts=now_ts,
+    )
+    assert isinstance(picked_a, dict) and picked_a["symbol"] == "BTCUSDC"
+
+    # Case 2b: Untimestamped (ts=0) and far-future in-memory snaps are replaced by valid fresh disk snapshot
+    for bad_mem_ts in (0.0, now_ts + 7200.0):
+        bad_mem = SimpleNamespace(symbol="BTCUSDC", funding_rate=0.5, ts=bad_mem_ts)
+        col_bad = SimpleNamespace(_cache_dir=str(tmp_path), fetch=lambda *a, **k: bad_mem)
+        picked_b = _fetch_pillar2_snapshot(
+            str(tmp_path),
+            "BTCUSDC",
+            lambda: col_bad,
+            CACHE_DERIVATIVES_TELEMETRY_PREFIX,
+            ["BTCUSDC", "BTCUSDT"],
+            ["BTCUSDC", "BTCUSDT"],
+            rj,
+            now_ts=now_ts,
+        )
+        assert isinstance(picked_b, dict) and picked_b["symbol"] == "BTCUSDC"
+
+    # Case 2c: Orderbook far-future disk file must NOT override valid in-memory snapshot
+    ob_disk = {
+        str(tmp_path / f"{CACHE_ORDERBOOK_DEPTH_PREFIX}BTCUSDC.json"): {
+            "symbol": "BTCUSDC",
+            "mid_price": 999999.0,
+            "ts": now_ts + 7200.0,
+        }
+    }
+    valid_ob_mem = SimpleNamespace(symbol="BTCUSDC", mid_price=60000.0, ts=now_ts - 5.0)
+    col_ob = SimpleNamespace(_cache_dir=str(tmp_path), fetch=lambda *a, **k: valid_ob_mem)
+    picked_ob = _fetch_pillar2_snapshot(
+        str(tmp_path),
+        "BTCUSDC",
+        lambda: col_ob,
+        CACHE_ORDERBOOK_DEPTH_PREFIX,
+        ["BTCUSDC"],
+        ["BTCUSDC"],
+        lambda p: ob_disk.get(str(p)),
+        now_ts=now_ts,
+    )
+    assert picked_ob is valid_ob_mem
+
+    # 3. Dependent cross-check: read_snapshot excludes far-future vb_ts price override and far-future source_timestamps
+    (tmp_path / "cache_current_price.json").write_text(
+        json.dumps({"items": {"SPCX_US_EQ": [[int((now_ts - 5.0) * 1000), 125.5]]}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "venue_balances_state.json").write_text(
+        json.dumps(
+            {
+                "pos:t212:SPCX_US_EQ": {
+                    "symbol": "SPCX_US_EQ",
+                    "price": 999.0,
+                    "ts": now_ts + 7200.0,  # corrupt far-future broker mark
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "cache_24_price_SPCX_US_EQ.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "SPCX_US_EQ": [
+                        [int((now_ts - 3600.0) * 1000), 124.0],
+                        [int((now_ts - 5.0) * 1000), 125.5],
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    orch = PretradeTelemetryOrchestrator()
+    ctx = orch._build_evaluation_context(str(tmp_path), "SPCX_US_EQ", allow_network=False, now_ts=now_ts)
+    orch.stages[0].evaluate(ctx)  # MacroPillarsStage
+    # Run PretradePriceSeries24hStage (inside QuantitativeSeriesAndMicrostructureStage or directly via read_snapshot)
+    snap_eq = orch.read_snapshot(
+        str(tmp_path), "SPCX_US_EQ", now_ts=now_ts, max_age_sec=120.0, enforce_freshness=True
+    )
+    # Corrupt future vb_ts price (999.0) must NOT override live 125.5 quote
+    assert all("999.0" not in str(v) for v in snap_eq.data.values())
+    assert snap_eq.ts <= now_ts + 60.0
+

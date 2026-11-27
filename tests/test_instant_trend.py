@@ -2316,3 +2316,106 @@ class TestWsBridgeIntegration(TempDirTestCase):
         self.assertEqual(buf.timestamps[0], orig_first_ts)
         self.assertEqual(len(buf.timestamps), orig_len + 1)
 
+    def test_pass12_short_trend_lock_free_io_dirty_retry_and_meta_fetchtime_strip(self):
+        """Pass #12 invariants & cross-checks for CacheShortTrendManager:
+        1. save_state_to_file() must NOT hold self._lock across disk I/O so WS callbacks (on_price_update)
+           never freeze behind filesystem stalls, and concurrent mutations keep _mem_dirty True.
+        2. _flush_live_symbol_file() must keep symbol in _dirty_live_symbols when disk write fails, then clear on retry.
+        3. load_state() must strip non-positive/invalid fetchtime entries from .meta.
+        4. update_snapshot() rollback on failed write must not deadlock and must match disk_reader after recovery.
+        """
+        now_s = time.time()
+        trend_file = os.path.join(self.tmp, "pass12_short_trend.json")
+        # 1. Pure invariant: .meta hydration strips non-positive / invalid fetchtimes and negative cursors
+        meta_path = trend_file + ".meta"
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "fetchtime": {
+                        "BTCUSDC": 1700000000000,
+                        "ETHUSDC": 0,
+                        "SOLUSDC": -10,
+                        "ADAUSDC": "0",
+                        "BAD": True,
+                    },
+                    "rest_sync_cursor": {
+                        "BTCUSDC": 1700000000000,
+                        "ETHUSDC": -5,
+                        "SOLUSDC": True,
+                    },
+                },
+                fh,
+            )
+        reader_meta = cm.CacheShortTrendManager(["BTCUSDC", "ETHUSDC"], trend_file, data_sync_mode="disk_reader")
+        self.assertEqual(reader_meta.fetchtime_per_symbol, {"BTCUSDC": 1700000000000})
+        self.assertEqual(reader_meta._rest_sync_cursor_per_symbol, {"BTCUSDC": 1700000000000})
+
+        # 2. Pure invariant: save_state_to_file() releases self._lock before disk I/O so WS ticks never stall
+        mgr = cm.CacheShortTrendManager(["BTCUSDC"], trend_file, data_sync_mode="producer")
+        self.addCleanup(mgr.shutdown)
+        mgr._set_mem("BTCUSDC", current_price=60000.0, gradient_recent=0.2, ts=now_s)
+        entered_io = threading.Event()
+        release_io = threading.Event()
+        real_atomic_write = cm.atomic_write_json
+
+        def _slow_atomic_write(path, payload, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(trend_file):
+                entered_io.set()
+                release_io.wait(timeout=3.0)
+            return real_atomic_write(path, payload, *args, **kwargs)
+
+        save_result = []
+
+        def _do_save():
+            save_result.append(mgr.save_state_to_file())
+
+        with patch.object(cm, "atomic_write_json", side_effect=_slow_atomic_write):
+            saver = threading.Thread(target=_do_save)
+            saver.start()
+            self.assertTrue(entered_io.wait(timeout=2.0), "save_state_to_file did not enter disk write")
+            t0 = time.monotonic()
+            # Concurrent WS callback & snapshot read must succeed immediately without blocking on disk I/O
+            mgr.on_price_update("BTCUSDC", int((now_s + 1.0) * 1000), 60123.0)
+            mgr._set_mem("BTCUSDC", current_price=60123.0, gradient_recent=0.35, ts=now_s + 1.0)
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            self.assertLess(elapsed_ms, 500.0, "on_price_update/_set_mem blocked behind disk I/O!")
+            release_io.set()
+            saver.join(timeout=3.0)
+        self.assertEqual(save_result, [True])
+        # Concurrent mutation during disk write must keep _mem_dirty=True so the newer price is not lost
+        self.assertTrue(mgr._mem_dirty)
+        self.assertTrue(mgr.save_state_to_file())
+        self.assertFalse(mgr._mem_dirty)
+
+        # 3. Pure invariant: failed live_<SYM>.json write retains symbol in _dirty_live_symbols until retry succeeds
+        mgr._persist_live_window(
+            "BTCUSDC",
+            "900",
+            {"gradient_recent": 0.4, "current_price": 60123.0, "ts": now_s + 1.0},
+            flush=False,
+        )
+        self.assertIn("BTCUSDC", mgr._dirty_live_symbols)
+        with patch.object(cm, "atomic_write_json", side_effect=OSError("transient disk error")):
+            self.assertFalse(mgr._flush_live_symbol_file("BTCUSDC"))
+        self.assertIn("BTCUSDC", mgr._dirty_live_symbols)
+        self.assertTrue(mgr._flush_live_symbol_file("BTCUSDC"))
+        self.assertNotIn("BTCUSDC", mgr._dirty_live_symbols)
+
+        # 4. Dependent cross-check: update_snapshot rollback on write failure + disk_reader agreement after recovery
+        with patch.object(cm, "atomic_write_json", side_effect=OSError("write failed")):
+            self.assertFalse(
+                mgr.update_snapshot("BTCUSDC", current_price=99999.0, gradient_recent=9.9, ts=now_s + 2.0)
+            )
+        self.assertAlmostEqual(mgr.get_snapshot("BTCUSDC")["current_price"], 60123.0)
+        self.assertTrue(
+            mgr.update_snapshot("BTCUSDC", current_price=60500.0, gradient_recent=0.5, ts=now_s + 3.0)
+        )
+        disk_reader = cm.CacheShortTrendManager(["BTCUSDC"], trend_file, data_sync_mode="disk_reader")
+        disk_snap = disk_reader.get_fresh_snapshot("BTCUSDC", now=now_s + 3.0)
+        self.assertIsNotNone(disk_snap)
+        self.assertAlmostEqual(disk_snap["current_price"], 60500.0)
+        live_900 = disk_reader._published_window("BTCUSDC", 900, now=now_s + 1.0)
+        self.assertIsNotNone(live_900)
+        self.assertAlmostEqual(live_900["current_price"], 60123.0)
+
+

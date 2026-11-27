@@ -3136,6 +3136,54 @@ def test_cycle25_limit_dust_snap_preserves_tick_fill_and_tight_slippage_bps_inva
     assert any(v.subject == "Exec.SELL.slippage_bps" for v in audit_rendered_prompt_text(bad_p))
 
 
+def test_pass12_va_pos_clamp_alignment_invariant_and_crosscheck() -> None:
+    """Pass #12: PROMPT_VA_POS_AND_LIQ_MATH must match [-100%, 200%] va_pos clamping across producer, renderer, and auditor."""
+    from intelligence.sentiment.evaluators.price_series_evaluator import build_vp_position_dict
+
+    # 1. Pure invariants: extreme breakouts above VAH (raw 211.9% -> 200.0%) and below VAL (raw -250.0% -> -100.0%) pass cleanly
+    clamped_prompt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * SPCXxUSD: Price=$130.98\n"
+        "    - Trend: 24h=+1.50% | vol_profile(POC=129.35[+1.26%], VAL=128.84[+1.66%], VAH=129.85[+0.87%], va_pos=200.0%, above_vah=12m, vp_source=REAL_VOL)\n"
+        "  * ANTxUSD: Price=$95.00\n"
+        "    - Trend: 24h=-4.00% | vol_profile(POC=101.00[-5.94%], VAL=100.00[-5.00%], VAH=102.00[-6.86%], va_pos=-100.0%, below_val=20m, vp_source=REAL_VOL)\n"
+    )
+    assert [v for v in audit_rendered_prompt_text(clamped_prompt) if v.code == "PROMPT_VA_POS_AND_LIQ_MATH"] == []
+
+    # 2. Negative invariants: wrong clamped values and unclamped out-of-bounds values are still caught
+    for bad_va_str, expected_subj in (
+        ("va_pos=150.0%", "SPCXxUSD:va_pos"),
+        ("va_pos=211.9%", "SPCXxUSD:va_pos"),
+        ("va_pos=-50.0%", "ANTxUSD:va_pos"),
+    ):
+        if "SPCX" in expected_subj:
+            mutated = clamped_prompt.replace("va_pos=200.0%", bad_va_str)
+        else:
+            mutated = clamped_prompt.replace("va_pos=-100.0%", bad_va_str)
+        va_viols = [v for v in audit_rendered_prompt_text(mutated) if v.code == "PROMPT_VA_POS_AND_LIQ_MATH"]
+        assert any(v.subject == expected_subj for v in va_viols), f"Expected {expected_subj} violation for {bad_va_str}"
+
+    # 3. Dependent cross-check: build_vp_position_dict -> prompt format -> audit_rendered_prompt_text agrees across all regimes
+    for sym, px, poc, val, vah in (
+        ("BTCUSDC", 60000.0, 59500.0, 59000.0, 61000.0),
+        ("SPCXxUSD", 130.98, 129.35, 128.84, 129.85),
+        ("ETHUSDC", 1600.0, 1750.0, 1700.0, 1760.0),
+    ):
+        vp = build_vp_position_dict(px, poc, val, vah)
+        rendered_line = (
+            "LIVE TELEMETRY SNAPSHOT:\n### 3. TRADABLE MARKETS:\n"
+            f"  * {sym}: Price=${px:.2f}\n"
+            f"    - Trend: 24h=+0.50% | vol_profile("
+            f"POC={poc:.2f}[{vp['poc_dist_pct']:+.2f}%], "
+            f"VAL={val:.2f}[{vp['val_dist_pct']:+.2f}%], "
+            f"VAH={vah:.2f}[{vp['vah_dist_pct']:+.2f}%], "
+            f"va_pos={vp['va_pos_pct']:.1f}%, vp_source=REAL_VOL)\n"
+        )
+        assert [v for v in audit_rendered_prompt_text(rendered_line) if v.code == "PROMPT_VA_POS_AND_LIQ_MATH"] == []
+
+
+
 
 
 

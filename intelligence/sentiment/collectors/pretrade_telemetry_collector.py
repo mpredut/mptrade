@@ -280,14 +280,16 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
                 and "Perpetual Funding Rate" not in self.data
             ):
                 continue
-            age_s = max(0.0, self.evaluated_at_ts - ts_val)
+            raw_age_s = self.evaluated_at_ts - ts_val
+            is_future_ts = raw_age_s < -60.0
+            age_s = raw_age_s if is_future_ts else max(0.0, raw_age_s)
             itv_s = safe_pos_float(intervals.get(name), self.max_age_sec) or self.max_age_sec
             out[name] = {
                 "ts": ts_val,
                 "age_sec": round(age_s, 1),
                 "interval_sec": round(itv_s, 1),
                 "age_ratio": round(age_s / itv_s, 2),
-                "fresh": age_s <= itv_s * PRETRADE_SOURCE_STALE_INTERVAL_MULT,
+                "fresh": (not is_future_ts) and (age_s <= itv_s * PRETRADE_SOURCE_STALE_INTERVAL_MULT),
             }
         return out
 
@@ -371,13 +373,17 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
             ):
                 return raw
             snap_ts = raw.ts
-            snap_age = max(0.0, eff_now - snap_ts) if snap_ts > 0.0 else raw.age_sec
+            if snap_ts > 0.0:
+                raw_snap_age = eff_now - snap_ts
+                snap_age = raw_snap_age if raw_snap_age < -60.0 else max(0.0, raw_snap_age)
+            else:
+                snap_age = raw.age_sec
             eff_unavail = unavailable_reason or raw.unavailable_reason
             eff_enforce = bool(enforce_freshness or raw.enforce_freshness or max_age_sec is not None)
             if eff_enforce and eff_unavail is None:
                 if not raw.data:
                     eff_unavail = "telemetry_empty"
-                elif snap_age is None or snap_age > eff_max_age:
+                elif snap_age is None or snap_age < 0.0 or snap_age > eff_max_age:
                     eff_unavail = "telemetry_stale"
             raw_canon_sym = raw.canonical_symbol
             if not raw_canon_sym:
@@ -429,13 +435,17 @@ class PretradeTelemetrySnapshot(Mapping[str, Any]):
         eff_ts = normalize_epoch_sec(ts if ts is not None else meta_ts, default=0.0) or 0.0
         if eff_ts <= 0.0 and source == "explicit" and raw_dict:
             eff_ts = eff_now
-        age_val = max(0.0, eff_now - eff_ts) if eff_ts > 0.0 else None
+        if eff_ts > 0.0:
+            raw_age_val = eff_now - eff_ts
+            age_val = raw_age_val if raw_age_val < -60.0 else max(0.0, raw_age_val)
+        else:
+            age_val = None
         eff_enforce = bool(enforce_freshness or max_age_sec is not None)
         eff_unavail = unavailable_reason or (str(meta_unavail) if meta_unavail else None)
         if eff_enforce and eff_unavail is None:
             if not raw_dict:
                 eff_unavail = "telemetry_empty"
-            elif age_val is not None and age_val > eff_max_age:
+            elif age_val is not None and (age_val < 0.0 or age_val > eff_max_age):
                 eff_unavail = "telemetry_stale"
             elif age_val is None and source != "explicit":
                 eff_unavail = "telemetry_timestamp_missing"
@@ -593,10 +603,17 @@ def _fetch_pillar2_snapshot(
     except Exception:
         snap = None
 
+    eff_now_p2 = resolve_now_ts(now_ts)
+    max_valid_ts_p2 = eff_now_p2 + 60.0
+
+    def _is_plausible_ts(ts_val: float) -> bool:
+        return 0.0 < ts_val <= max_valid_ts_p2
+
     variants = quote_variants if prefix == CACHE_ORDERBOOK_DEPTH_PREFIX else sym_variants
     prefer_freshest = prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX)
     disk_d: Optional[Dict[str, Any]] = None
     best_ts = -1.0
+    best_plausible = False
     for cand in variants:
         d = _rj(os.path.join(cachedb_dir, f"{prefix}{cand}.json"))
         if isinstance(d, dict):
@@ -605,10 +622,16 @@ def _fetch_pillar2_snapshot(
                 disk_d = cand_d
                 break
             ts_v = _snap_ts(cand_d)
-            if disk_d is None or ts_v > best_ts:
-                disk_d, best_ts = cand_d, ts_v
+            plausible_v = _is_plausible_ts(ts_v)
+            if disk_d is None or (plausible_v and not best_plausible) or (plausible_v == best_plausible and ts_v > best_ts):
+                disk_d, best_ts, best_plausible = cand_d, ts_v, plausible_v
 
     if snap is not None and disk_d is not None:
+        snap_ts_p2 = _snap_ts(snap)
+        disk_ts_p2 = _snap_ts(disk_d)
+        snap_valid_p2 = _is_plausible_ts(snap_ts_p2)
+        disk_valid_p2 = _is_plausible_ts(disk_ts_p2)
+        disk_beats_snap = disk_valid_p2 and ((not snap_valid_p2) or disk_ts_p2 > snap_ts_p2 + 1.0)
         if prefix == CACHE_ORDERBOOK_DEPTH_PREFIX:
             sym_u_p2 = clean_symbol_key(symbol)
             snap_sym_p2 = clean_symbol_key(obj_attr(snap, "symbol"))
@@ -618,12 +641,11 @@ def _fetch_pillar2_snapshot(
             if (
                 snap_sym_p2
                 and (disk_sym_p2 == sym_u_p2) == (snap_sym_p2 == sym_u_p2)
-                and _snap_ts(snap) > 0.0
-                and _snap_ts(disk_d) > _snap_ts(snap) + 1.0
+                and disk_beats_snap
             ):
                 return disk_d
         elif prefix in (CACHE_WHALE_SNAPSHOT_PREFIX, CACHE_DERIVATIVES_TELEMETRY_PREFIX):
-            if _snap_ts(snap) > 0.0 and _snap_ts(disk_d) > _snap_ts(snap) + 1.0:
+            if disk_beats_snap:
                 return disk_d
     return snap if snap is not None else disk_d
 
@@ -935,6 +957,8 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                     if clean_symbol_key(vb_v.get("symbol") or vb_k.split(":", 2)[-1]) == clean_symbol_key(symbol):
                         vb_px = safe_pos_float(vb_v.get("price"), default=0.0) or 0.0
                         vb_ts = safe_pos_float(vb_v.get("ts"), default=0.0) or 0.0
+                        if vb_ts > eff_now + 60.0:
+                            vb_ts = 0.0
                         if vb_px > 0.0:
                             if (
                                 vb_ts > 0.0
@@ -2338,7 +2362,7 @@ class PretradeTelemetryOrchestrator(TelemetryCacheCollectorInterface):
         )
         for stage in (stages or self.stages):
             stage.evaluate(ctx)
-        valid_ts = [t for t in ctx.source_timestamps if t > 0.0]
+        valid_ts = [t for t in ctx.source_timestamps if 0.0 < t <= eff_now + 60.0]
         snap_ts = max(valid_ts) if valid_ts else 0.0
         return PretradeTelemetrySnapshot.from_raw(
             ctx.telemetry,

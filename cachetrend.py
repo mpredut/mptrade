@@ -372,7 +372,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         self._disk_c24_cache = {}
         self._disk_json_memo = {}
         self._mem_dirty = False
+        self._mem_rev = 0
         self._dirty_live_symbols = set()
+        self._live_rev = {}
         # Writer state populated by start_computation: symbol/window to analyzer objects.
         self.windows = {}
         self.analyzers = {}
@@ -418,10 +420,22 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 raw_meta = read_json_dict(meta_path)
                 ft = raw_meta.get("fetchtime")
                 if isinstance(ft, dict):
-                    self.fetchtime_per_symbol = dict(ft)
+                    self.fetchtime_per_symbol = {
+                        str(k): ft_i
+                        for k, v in ft.items()
+                        if isinstance(k, str)
+                        and k.strip()
+                        and (ft_i := safe_pos_int(v, default=None)) is not None
+                    }
                 rc = raw_meta.get("rest_sync_cursor")
                 if isinstance(rc, dict):
-                    self._rest_sync_cursor_per_symbol = dict(rc)
+                    self._rest_sync_cursor_per_symbol = {
+                        str(k): rc_i
+                        for k, v in rc.items()
+                        if isinstance(k, str)
+                        and k.strip()
+                        and (rc_i := safe_nonneg_int(v, default=None)) is not None
+                    }
                 elif self.fetchtime_per_symbol:
                     self._rest_sync_cursor_per_symbol = dict(
                         self.fetchtime_per_symbol
@@ -789,6 +803,9 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             entry[ik] = prev_live[ik]
                 live_sym[wk] = entry
             self._dirty_live_symbols.add(symbol)
+            live_rev = getattr(self, "_live_rev", None)
+            if isinstance(live_rev, dict):
+                live_rev[symbol] = live_rev.get(symbol, 0) + 1
 
         w_big = wins.get(self.window_seconds[-1])
         v1h = self._compute_realized_vol_1h(symbol, w_big)
@@ -1394,18 +1411,30 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     stored["_last_c24_n_samples"] = ns_i
             sym_live[w_key] = stored
             self._dirty_live_symbols.add(symbol)
-            if flush and self.writer:
-                self._flush_live_symbol_file(symbol)
+            live_rev = getattr(self, "_live_rev", None)
+            if isinstance(live_rev, dict):
+                live_rev[symbol] = live_rev.get(symbol, 0) + 1
+            should_flush = bool(flush and self.writer)
+        if should_flush:
+            self._flush_live_symbol_file(symbol)
 
-    def _flush_live_symbol_file(self, symbol: str) -> None:
-        """Persist cachedb/24trend/live_<SYMBOL>.json with clean window-keyed entries and clear dirty flag."""
-        try:
-            if sym_live := self._live_windows.get(symbol):
-                clean = {
+    def _flush_live_symbol_file(self, symbol: str) -> bool:
+        """Persist cachedb/24trend/live_<SYMBOL>.json outside self._lock and clear dirty flag only on success."""
+        with self._lock:
+            sym_live = self._live_windows.get(symbol)
+            live_rev_map = getattr(self, "_live_rev", None)
+            snap_rev = live_rev_map.get(symbol, 0) if isinstance(live_rev_map, dict) else 0
+            clean = (
+                {
                     wk: self._strip_internal_fields(wv)
                     for wk, wv in sym_live.items()
                     if isinstance(wv, dict)
                 }
+                if sym_live
+                else None
+            )
+        if clean:
+            try:
                 save_json_state(
                     self._live_trend_file(symbol),
                     clean,
@@ -1413,9 +1442,14 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     write_fn=_cm_attr("atomic_write_json", atomic_write_json),
                     fsync=False,
                 )
-        except Exception as e:
-            print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
-        self._dirty_live_symbols.discard(symbol)
+            except Exception as e:
+                print(f"[{self.cls_name}] live write failure for {symbol}: {e}")
+                return False
+        with self._lock:
+            cur_rev = live_rev_map.get(symbol, 0) if isinstance(live_rev_map, dict) else 0
+            if cur_rev == snap_rev:
+                self._dirty_live_symbols.discard(symbol)
+        return True
 
     def _published_window(self, symbol, window_seconds, now=None):
         """Return a dynamic window published in 24trend/live_<SYMBOL>.json or shared file."""
@@ -1533,31 +1567,33 @@ class CacheShortTrendManager(CacheTrendManagerBase):
 
     # -- Transactional cross-process JSON store (via CacheManagerInterface) ----
     def save_state_to_file(self):
-        """Transactionally commit ``cache_short_trend.json`` and its ``.meta`` sidecar."""
+        """Transactionally commit ``cache_short_trend.json`` and its ``.meta`` sidecar without holding ``self.lock`` across disk I/O."""
         try:
-            with self.lock:
-                snapshot_mem = {
-                    str(sym): dict(val)
-                    for sym, val in self._mem.items()
-                    if isinstance(val, dict)
-                }
-                fetchtime = {}
-                for sym, val in snapshot_mem.items():
-                    ts_ms = self._snap_ts_ms(val)
-                    if ts_ms is not None:
-                        fetchtime[sym] = ts_ms
-                    elif sym in self.fetchtime_per_symbol and (
-                        prev_ft := safe_pos_int(self.fetchtime_per_symbol[sym], default=None)
-                    ) is not None:
-                        fetchtime[sym] = prev_ft
-                self.fetchtime_per_symbol = dict(fetchtime)
-                self._rest_sync_cursor_per_symbol = dict(fetchtime)
-                counts = {sym: 1 for sym in snapshot_mem}
-                metadata = {
-                    "counts": counts,
-                    "fetchtime": fetchtime,
-                    "rest_sync_cursor": dict(fetchtime),
-                }
+            with self._generation_lock():
+                with self.lock:
+                    mem_rev = getattr(self, "_mem_rev", 0)
+                    snapshot_mem = {
+                        str(sym): dict(val)
+                        for sym, val in self._mem.items()
+                        if isinstance(val, dict)
+                    }
+                    fetchtime = {}
+                    for sym, val in snapshot_mem.items():
+                        ts_ms = self._snap_ts_ms(val)
+                        if ts_ms is not None:
+                            fetchtime[sym] = ts_ms
+                        elif sym in self.fetchtime_per_symbol and (
+                            prev_ft := safe_pos_int(self.fetchtime_per_symbol[sym], default=None)
+                        ) is not None:
+                            fetchtime[sym] = prev_ft
+                    self.fetchtime_per_symbol = dict(fetchtime)
+                    self._rest_sync_cursor_per_symbol = dict(fetchtime)
+                    counts = {sym: 1 for sym in snapshot_mem}
+                    metadata = {
+                        "counts": counts,
+                        "fetchtime": fetchtime,
+                        "rest_sync_cursor": dict(fetchtime),
+                    }
                 write_json_fn = _cm_attr("atomic_write_json", atomic_write_json)
                 if (
                     getattr(write_json_fn, "__module__", None) == "state_io"
@@ -1573,9 +1609,13 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                     metadata,
                 ):
                     return False
-                self._mem_dirty = False
-                for symbol in list(self._live_windows.keys()):
-                    if symbol in self._dirty_live_symbols or not os.path.exists(
+                with self.lock:
+                    if getattr(self, "_mem_rev", 0) == mem_rev:
+                        self._mem_dirty = False
+                    live_symbols = list(self._live_windows.keys())
+                    dirty_live = set(self._dirty_live_symbols)
+                for symbol in live_symbols:
+                    if symbol in dirty_live or not os.path.exists(
                         self._live_trend_file(symbol)
                     ):
                         self._flush_live_symbol_file(symbol)
@@ -1662,6 +1702,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             self._mem[sym_key] = snap
             self.cache = self._mem
             self._mem_dirty = True
+            self._mem_rev = getattr(self, "_mem_rev", 0) + 1
             self._sync_symbol_cursor_from_snap(sym_key, snap)
 
     def update_snapshot(self, symbol, **fields):
@@ -1675,14 +1716,18 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 else None
             )
             self._set_mem(sym_key, **fields)
-            if self.writer:
-                if not self.save_state_to_file():
-                    if prev_snap is not None:
-                        self._mem[sym_key] = prev_snap
-                    else:
-                        self._mem.pop(sym_key, None)
-                    self._mem_dirty = False
-                    return False
+            snap_rev = getattr(self, "_mem_rev", 0)
+            should_write = bool(self.writer)
+        if should_write:
+            if not self.save_state_to_file():
+                with self._lock:
+                    if getattr(self, "_mem_rev", 0) == snap_rev:
+                        if prev_snap is not None:
+                            self._mem[sym_key] = prev_snap
+                        else:
+                            self._mem.pop(sym_key, None)
+                        self._mem_dirty = False
+                return False
         return True
 
     def _start_flush_loop(self):
@@ -1695,11 +1740,15 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         def run():
             while not self._stop_event.wait(self.FLUSH_INTERVAL_SEC):
                 with self._lock:
-                    if self._mem and (self._mem_dirty or self._dirty_live_symbols):
-                        self.save_state_to_file()
-            with self._lock:
-                if self.writer and self._mem and (self._mem_dirty or self._dirty_live_symbols):
+                    needs_flush = bool(self._mem and (self._mem_dirty or self._dirty_live_symbols))
+                if needs_flush:
                     self.save_state_to_file()
+            with self._lock:
+                needs_final = bool(
+                    self.writer and self._mem and (self._mem_dirty or self._dirty_live_symbols)
+                )
+            if needs_final:
+                self.save_state_to_file()
 
         self._flush_thread = threading.Thread(
             target=run, name="ShortTrendFlush", daemon=True

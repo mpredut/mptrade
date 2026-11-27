@@ -733,3 +733,31 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             poller_rl.stop(timeout=2.0)
 
+    def test_pass12_poller_late_empty_response_triggers_empty_backoff(self):
+        """Pass #12 invariant & cross-check: late-completing empty/None fetches must record empty_backoff_ts."""
+        late_empty_calls = [0]
+
+        class _SlowEmptyApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                late_empty_calls[0] += 1
+                time.sleep(0.11)
+                return None
+
+        cpm_empty = _StubCpm(_SlowEmptyApi(), pushed=[])
+        cpm_empty._enforce_rth_gate = True
+        poller_empty = cm._start_nonbinance_trend_poller(
+            cpm_empty,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            fetch_deadline_sec=0.05,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            time.sleep(0.45)
+            # After the first slow None finishes late, 60s empty_backoff_ts must prevent re-polling every cycle.
+            self.assertEqual(late_empty_calls[0], 1)
+        finally:
+            poller_empty.stop(timeout=2.0)
+
+

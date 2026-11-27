@@ -1507,3 +1507,32 @@ def test_t212_broker_lifecycle_soc_and_ssot_boundaries():
         is_market=True,
     )
 
+
+def test_pass12_provider_for_transient_supports_error_never_poisons_route() -> None:
+    """Pass #12 invariant & cross-check: transient supports_symbol() errors must not permanently memoize fallback default."""
+    default_prov = FakeProvider("Binance", supports="BTCUSDC", price=60000.0)
+    flaky_calls = [0]
+
+    class _FlakyProvider(FakeProvider):
+        def supports_symbol(self, symbol):
+            flaky_calls[0] += 1
+            if flaky_calls[0] == 1:
+                raise RuntimeError("transient venue catalog error")
+            return symbol == "HYPEUSD"
+
+    target_prov = _FlakyProvider("Kraken", supports="HYPEUSD", price=63.25)
+    mkt = MarketApi([default_prov, target_prov])
+
+    # 1. Pure invariant: transient exception falls back to default WITHOUT poisoning _route
+    assert mkt._provider_for("HYPEUSD") is default_prov
+    assert "HYPEUSD" not in mkt._route
+
+    # 2. Dependent cross-check: once transient error clears, get_current_price routes to target_prov and caches it
+    assert mkt.get_current_price("HYPEUSD") == pytest.approx(63.25)
+    assert mkt._route.get("HYPEUSD") is target_prov
+
+    # 3. Control invariant: clean non-match (no exception) still caches fallback default
+    assert mkt._provider_for("UNKNOWNPAIR") is default_prov
+    assert mkt._route.get("UNKNOWNPAIR") is default_prov
+
+

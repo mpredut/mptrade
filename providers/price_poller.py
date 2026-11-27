@@ -685,10 +685,9 @@ def start_nonbinance_trend_poller(
                             builtins.print(f"[NB-trend] {s}: {late_exc} (backoff {delay_s:.1f}s)")
                             continue
                         max_late_age = max(15.0, eff_interval * 2.0, eff_deadline * 4.0)
-                        if (
-                            (time.time() - prev_sub_ts) <= max_late_age
-                            and safe_pos_float(late_px, default=None) is not None
-                        ):
+                        if safe_pos_float(late_px, default=None) is None:
+                            empty_backoff_ts[s] = time.time()
+                        elif (time.time() - prev_sub_ts) <= max_late_age:
                             _apply_fetched_price(s, late_px, is_eq=prev_is_eq)
                             continue
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
