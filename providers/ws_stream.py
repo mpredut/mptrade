@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import socket
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -96,13 +97,27 @@ WS_RETRY_MAX = 60.0
 _ws_logger = logging.getLogger("providers.ws")
 
 
+def _ws_loop_exception_handler(loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+    """Downgrade orphaned DNS gaierror futures left after handshake timeout cancels without hiding real errors."""
+    exc = context.get("exception")
+    msg = str(context.get("message") or "")
+    if isinstance(exc, socket.gaierror) and "Future exception was never retrieved" in msg:
+        _ws_logger.debug("WS orphaned DNS lookup failed after reconnect timeout: %s", exc)
+        return
+    loop.default_exception_handler(context)
+
+
 def run_ws_event_loop(coro) -> None:
     """Run ``coro`` on a ``uvloop`` event loop when available, falling back to ``asyncio.run``."""
+    async def _managed() -> None:
+        asyncio.get_running_loop().set_exception_handler(_ws_loop_exception_handler)
+        await coro
+
     loop_factory = getattr(_uvloop, "new_event_loop", None)
     if callable(loop_factory) and getattr(asyncio.run, "__module__", "") == "asyncio.runners":
-        asyncio.run(coro, loop_factory=loop_factory)
+        asyncio.run(_managed(), loop_factory=loop_factory)
     else:
-        asyncio.run(coro)
+        asyncio.run(_managed())
 
 
 class AsyncReconnectStreamBase(ABC):

@@ -1624,6 +1624,33 @@ def test_ws_event_loop_uvloop_and_orjson_fast_path():
     bucket_line = state_io.format_jsonl_bucket_line("BTCUSDC", [1700000000000, 88000.5])
     assert bucket_line == '{"s":"BTCUSDC","i":[1700000000000,88000.5]}\n'
 
+    # Orphaned DNS gaierror future exceptions after WS handshake cancel are downgraded instead of invoking default_exception_handler
+    import socket
+    from providers.ws_stream import _ws_loop_exception_handler
+
+    forwarded = []
+
+    class _FakeLoop:
+        def default_exception_handler(self, ctx):
+            forwarded.append(ctx)
+
+    _ws_loop_exception_handler(
+        _FakeLoop(),
+        {
+            "message": "Future exception was never retrieved",
+            "exception": socket.gaierror(-3, "Temporary failure in name resolution"),
+        },
+    )
+    assert forwarded == []
+    _ws_loop_exception_handler(
+        _FakeLoop(),
+        {
+            "message": "Future exception was never retrieved",
+            "exception": RuntimeError("real bug"),
+        },
+    )
+    assert len(forwarded) == 1 and isinstance(forwarded[0]["exception"], RuntimeError)
+
 
 def test_thread_worker_invokes_subclass_main_initializing_cmd_queue_and_account_availability(monkeypatch):
     """Verify AsyncReconnectStreamBase._thread_worker invokes _main() on subclasses so _cmd_queue and _available are initialized."""

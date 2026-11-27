@@ -19587,6 +19587,122 @@ def test_cycle34_peak_px_24h_tail_persistence_and_equity_d_whale_long_gate(tmp_p
     assert cr_caps.allow_whale_long_delta_display({}, has_flow=True)
 
 
+def test_cycle35_post_close_boundary_equity_quotes_and_closed_kinematics(monkeypatch, tmp_path):
+    """Cycle 35 regression tests:
+    1. CacheCurrentPriceManager._fetch_remote_items keeps prefer_public_extended=True for equities even when a closing poll
+       crosses the 17:00 ET early-close (or 20:00 ET normal) POST boundary, preventing reversion to frozen T212 RTH close.
+    2. Fleet24hAndMicrostructureEnricher treats equity quotes stamped <=60s past POST close (e.g. 17:00:00.24 ET on Black
+       Friday) as POST -> yahoo_ext_cached in both _seed_t212_positions and _classify_yahoo_equity_quote_source, without
+       misclassifying quotes >60s into CLOSED.
+    3. apply_post_rth_price_override strips SHORT_KINEMATIC_METRIC_KEYS from m24 (not just entry) and CLOSED_EQUITY_INTRADAY_KEYS
+       prunes 90s/5m kinematics whenever quote_age_min > 30m even if post_rth_series_replaced is True.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import cacheprice as cp_mod
+    from intelligence.sentiment.collectors.microstructure_collector import Fleet24hAndMicrostructureEnricher
+    from intelligence.sentiment.evaluators.asset_session_policy import EquityRthSessionPolicy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_24h_series_enrichment,
+        compute_24h_price_metrics,
+    )
+
+    ny_tz = ZoneInfo("America/New_York")
+    # Black Friday 2026-11-27 early close: RTH 09:30-13:00 ET, POST 13:00-17:00 ET
+    ts_bf_rth = datetime(2026, 11, 27, 12, 59, 52, tzinfo=ny_tz).timestamp()
+    ts_bf_post_boundary = datetime(2026, 11, 27, 17, 0, 0, 240_000, tzinfo=ny_tz).timestamp()
+    ts_bf_after_grace = datetime(2026, 11, 27, 17, 2, 0, tzinfo=ny_tz).timestamp()
+    ts_bf_now = datetime(2026, 11, 27, 17, 22, 0, tzinfo=ny_tz).timestamp()
+
+    # 1. CacheCurrentPriceManager._fetch_remote_items keeps prefer_public_extended=True across 17:00:00.24 ET boundary
+    calls = []
+
+    class _FakeBoundaryApi:
+        def get_current_price(self, symbol, provider_name=None, prefer_public_extended=False):
+            calls.append((symbol, provider_name, prefer_public_extended))
+            return 132.63
+
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: ts_bf_post_boundary)
+    cpm = cp_mod.CacheCurrentPriceManager(
+        sync_ts=0.05,
+        symbols=["SPCX_US_EQ"],
+        filename=str(tmp_path / "cp_bf_boundary.json"),
+        market_api=_FakeBoundaryApi(),
+        provider_names={"SPCX_US_EQ": "t212"},
+        read_only=False,
+        data_sync_mode="producer",
+    )
+    rows = cpm.get_remote_items("SPCX_US_EQ", 0)
+    assert rows and rows[0][1] == pytest.approx(132.63)
+    assert calls and all(c == ("SPCX_US_EQ", "t212", True) for c in calls)
+
+    # 2. 17:00:00.24 ET closing-poll quote classifies as yahoo_ext_cached and is preserved over 4h-older T212 RTH close
+    q_src_b, q_ms_b = Fleet24hAndMicrostructureEnricher._classify_yahoo_equity_quote_source(
+        "ANT_US_EQ", ts_bf_post_boundary, ts_bf_now
+    )
+    assert q_src_b == "yahoo_ext_cached"
+    assert q_ms_b is None
+    q_src_late, _ = Fleet24hAndMicrostructureEnricher._classify_yahoo_equity_quote_source(
+        "ANT_US_EQ", ts_bf_after_grace, ts_bf_now
+    )
+    assert q_src_late == "yahoo_rth_close"
+
+    pt_bf = {
+        "NVDA_US_EQ": {"price": 149.80, "trend": 0, "growth_coefficient": 0.0},
+        "SPCX_US_EQ": {"price": 132.63, "trend": 0, "growth_coefficient": 0.0},
+    }
+    cp_bf = {
+        "NVDA_US_EQ": [[int(ts_bf_post_boundary * 1000), 149.80]],
+        "SPCX_US_EQ": [[int(ts_bf_post_boundary * 1000), 132.63]],
+    }
+    cached_bals_bf = {
+        "pos:t212:NVDA_US_EQ": {"symbol": "NVDA_US_EQ", "free": 0.0, "price": 150.165, "ts": ts_bf_rth},
+        "pos:t212:SPCX_US_EQ": {"symbol": "SPCX_US_EQ", "free": 1.8, "price": 133.43, "ts": ts_bf_rth},
+    }
+    Fleet24hAndMicrostructureEnricher._seed_t212_positions(
+        "", pt_bf, cp_bf, {}, cached_bals_bf, "", 0.0, ts_bf_now, lambda _p: None, False
+    )
+    assert pt_bf["NVDA_US_EQ"]["price"] == pytest.approx(149.80)
+    assert pt_bf["NVDA_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_bf["NVDA_US_EQ"]["quote_age_min"] == pytest.approx(22.0, abs=0.2)
+    assert pt_bf["SPCX_US_EQ"]["price"] == pytest.approx(132.63)
+    assert pt_bf["SPCX_US_EQ"]["quote_source"] == "yahoo_ext_cached"
+    assert pt_bf["SPCX_US_EQ"]["t212_close_px"] == pytest.approx(133.43)
+
+    # 3. apply_post_rth_price_override & prune_stale_short_metrics never leak phantom 90s/5m kinematics on closed equities
+    pol = EquityRthSessionPolicy()
+    base_ms = int(ts_bf_post_boundary * 1000)
+    series_rgnt = [
+        [base_ms - 6 * 3600_000, 0.967],
+        [base_ms - 600_000, 0.944],
+        [base_ms - 300_000, 0.944],
+        [base_ms - 180_000, 0.944],
+        [base_ms - 120_000, 0.944],
+        [base_ms - 60_000, 0.944],
+        [base_ms, 0.9633],
+    ]
+    m24_init = compute_24h_price_metrics(series_rgnt, is_equity=True, now_ts=ts_bf_now)
+    entry_rgnt = {"price": 0.9518, "quote_source": "t212_rth_close", "quote_age_min": 283.1}
+    ser_ov, m24_ov, ov_px, replaced = pol.evaluate_post_rth_override(
+        series_rgnt, dict(m24_init), 0.9518, ts_bf_now, entry=entry_rgnt
+    )
+    assert ov_px == pytest.approx(0.9518)
+    assert replaced is True
+    for k_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+        assert k_kin not in m24_ov
+    apply_24h_series_enrichment("RGNT_US_EQ", entry_rgnt, m24_ov, ser_ov, None)
+    # Even if a caller pre-populated kinematics on a >30m closed equity, prune_stale_short_metrics strips them
+    entry_rgnt["vel_90s_pct_min"] = 1.2314
+    entry_rgnt["vel_5m_pct_min"] = 0.6320
+    pol.prune_stale_short_metrics(
+        entry_rgnt, m24_ov, ser_ov, ts_bf_now, post_rth_series_replaced=True, include_kinematics=True
+    )
+    for k_kin in ("vel_90s_pct_min", "accel_90s_pct_min2", "vel_5m_pct_min", "accel_5m_pct_min2"):
+        assert k_kin not in entry_rgnt
+
+
+
 
 
 

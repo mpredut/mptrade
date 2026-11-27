@@ -3007,11 +3007,7 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
     def _fetch_remote_items(self, symbol, startTime, *, raise_errors: bool = False):
         try:
             provider_name = self.provider_name_for(symbol)
-            now_s = _now_time()
-            prefer_ext = bool(
-                self._is_equity_instrument(symbol)
-                and (is_us_rth_open(now_s) or is_us_extended_hours_open(now_s))
-            )
+            prefer_ext = bool(self._is_equity_instrument(symbol))
             with live_price_fetch_context(raise_errors=True):
                 if provider_name is None:
                     if prefer_ext:

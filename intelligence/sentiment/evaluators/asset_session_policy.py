@@ -565,8 +565,9 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
                 if not tail_cross_session_stale:
                     replaced = True
                     matched_series_24h = override_series_24h
-                if isinstance(entry, dict):
-                    for k_ov in (*_SHORT_SLOPE_OVERRIDE_KEYS, *SHORT_KINEMATIC_METRIC_KEYS):
+                for k_ov in (*_SHORT_SLOPE_OVERRIDE_KEYS, *SHORT_KINEMATIC_METRIC_KEYS):
+                    m24.pop(k_ov, None)
+                    if isinstance(entry, dict):
                         entry.pop(k_ov, None)
         if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
             m24["chg_24h_pct"] = pct_delta(override_px, s24_p0[1])

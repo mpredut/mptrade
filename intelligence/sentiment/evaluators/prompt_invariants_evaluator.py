@@ -186,7 +186,7 @@ _NET_BUY_EDGE_RE = re.compile(r"\bnet_buy_edge=([+-]?[0-9.]+)bps\[maker\]")
 _CAL_PLANS_RE = re.compile(r"\bplans=(\d+)\s*\(([^)]+)\)")
 _CAL_SIDE_RE = re.compile(r"\b(?:BUY|SELL):(\d+)hit/(\d+)inv/(\d+)early/(\d+)open\b")
 _CAL_HIT_RE = re.compile(r"\bhit=(\d+)%")
-_CAL_LIM_RE = re.compile(r"\bLIM\s+(\d+)/(\d+)\[(\d+)%\]")
+_CAL_LIM_RE = re.compile(r"\bLIM\s+(\d+)(?:/(\d+)\[(\d+)%\])?(?!/)")
 _CAL_OFFSET_BLOCK_RE = re.compile(r"\bfill_by_offset\(([^)]+)\)")
 _CAL_OFFSET_ITEM_RE = re.compile(r":(\d+)%\[(\d+)/(\d+)\]")
 _BREADTH_ADV_RE = re.compile(r"\badvance_ratio=([0-9.]+).*?\badvancing=(\d+)/(\d+)")
@@ -3429,10 +3429,10 @@ def _audit_prompt_calibration_and_breadth(
             vt_fills = vt_total = 0
             for m_lim in _CAL_LIM_RE.finditer(ln):
                 f_n = safe_nonneg_int(m_lim.group(1), default=0)
-                t_n = safe_nonneg_int(m_lim.group(2), default=0)
+                t_n = safe_nonneg_int(m_lim.group(2), default=f_n) if m_lim.group(2) is not None else f_n
                 vt_fills += f_n
                 vt_total += t_n
-                rep_p = safe_nonneg_float(m_lim.group(3), default=None)
+                rep_p = safe_nonneg_float(m_lim.group(3), default=None) if m_lim.group(3) is not None else None
                 if t_n <= 0 or f_n > t_n or (rep_p is not None and abs(rep_p - (f_n / t_n) * 100.0) > 1.0):
                     violations.append(
                         InvariantViolation(

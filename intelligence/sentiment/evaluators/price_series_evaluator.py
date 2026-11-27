@@ -2641,6 +2641,7 @@ CLOSED_EQUITY_INTRADAY_KEYS: Tuple[str, ...] = (
     "kalman_vel_std",
     "kalman_vel_z",
     "kalman_trend",
+    *SHORT_KINEMATIC_METRIC_KEYS,
     "bottom_structure_6h",
     "prior_6h_low_px",
     "recent_1h_low_px",

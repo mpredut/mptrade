@@ -3652,6 +3652,23 @@ def test_stale_spot_sell_reload_expiry_scorecard_consolidation_and_empty_prompt_
     assert [v.code for v in audit_rendered_prompt_text("   \n\t  ")] == ["PROMPT_EMPTY"]
 
 
+def test_calibration_math_counts_100pct_filled_venue_without_denominator():
+    """Verify venue_tca 'LIM N' (0 unfilled, 100% fill rate) is counted toward vt_fills/vt_total alongside 'LIM f/t[p%]'."""
+    line = (
+        "AI Execution & Plan Calibration (7d): "
+        "venue_tca(binance: LIM 57/103[55%] slip_bps=-3.0, hyperliquid: LIM 23/65[35%] slip_bps=-0.2, "
+        "kraken: LIM 4 slip_bps=+0.0 arr_bps=-29.1); "
+        "fill_by_offset(<=40bp:74%[46/62], 40-100bp:51%[29/57], >100bp:17%[9/53])\n"
+    )
+    assert [v for v in audit_rendered_prompt_text(line) if v.code == "PROMPT_CALIBRATION_MATH"] == []
+
+    # True overflow (85/173 > 84/172) still trips Calibration.offset_vs_venue_tca
+    bad_line = line.replace("<=40bp:74%[46/62]", "<=40bp:75%[47/63]")
+    bad_codes = [(v.code, v.subject) for v in audit_rendered_prompt_text(bad_line)]
+    assert ("PROMPT_CALIBRATION_MATH", "Calibration.offset_vs_venue_tca") in bad_codes
+
+
+
 
 
 

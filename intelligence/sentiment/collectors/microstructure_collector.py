@@ -2160,10 +2160,19 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
     cls_name = "Fleet24hAndMicrostructureEnricher"
     COLLECTOR_ID = "fleet_24h_and_microstructure"
     _MAX_INFLIGHT_QUOTE_SKEW_SEC: float = 60.0
+    _POST_CLOSE_SESSION_GRACE_SEC: float = 60.0
 
     @staticmethod
     def _prices_match_quote(px_a: float, px_b: float, *, rel_tol: float = 0.0005) -> bool:
         return px_a > 0.0 and px_b > 0.0 and abs(px_a - px_b) / max(px_a, px_b) <= rel_tol
+
+    @classmethod
+    def _resolve_equity_quote_session(cls, sym_k: str, quote_ts_sec: float) -> str:
+        sess = resolve_symbol_market_session(sym_k, quote_ts_sec)
+        if sess == "CLOSED" and quote_ts_sec > cls._POST_CLOSE_SESSION_GRACE_SEC:
+            if resolve_symbol_market_session(sym_k, quote_ts_sec - cls._POST_CLOSE_SESSION_GRACE_SEC) == "POST":
+                return "POST"
+        return sess
 
     @staticmethod
     def _classify_yahoo_equity_quote_source(
@@ -2172,7 +2181,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
         try:
             eq_open = bool(is_symbol_market_open(sym_k, eff_now))
             now_sess = resolve_symbol_market_session(sym_k, eff_now)
-            q_sess = resolve_symbol_market_session(sym_k, quote_ts_sec)
+            q_sess = Fleet24hAndMicrostructureEnricher._resolve_equity_quote_session(sym_k, quote_ts_sec)
         except Exception:
             eq_open, now_sess, q_sess = False, "", ""
         q_is_recent = -Fleet24hAndMicrostructureEnricher._MAX_INFLIGHT_QUOTE_SKEW_SEC <= (eff_now - quote_ts_sec) <= 20.0 * 60.0
@@ -2418,7 +2427,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
             cp_sess = ""
             if has_equity_suffix(ticker) and cp_ts_s_eq > 0.0:
                 try:
-                    cp_sess = resolve_symbol_market_session(ticker, cp_ts_s_eq)
+                    cp_sess = Fleet24hAndMicrostructureEnricher._resolve_equity_quote_session(ticker, cp_ts_s_eq)
                 except Exception:
                     cp_sess = ""
             cp_in_active_ext_sess = bool(
