@@ -119,38 +119,41 @@ def _append_audit(entry):
     append_jsonl_record(AUDIT_LOG, dict(entry, ts=datetime.now(timezone.utc).isoformat(timespec="seconds")))
 
 
-def _last_change_for(full_key):
-    """The most recent journal entry with action='applied' and a valid timestamp for full_key."""
-    for entry in reversed(read_jsonl_dicts(AUDIT_LOG)):
-        if entry.get("full_key") == full_key and entry.get("action") == "applied":
-            if (ts_raw := entry.get("ts")) and parse_iso_datetime_utc(str(ts_raw)) is not None:
-                return entry
-    return None
+def _last_change_for(full_key, *, now_utc: datetime | None = None):
+    """Return the newest non-future journal entry with action='applied' for full_key."""
+    eff_now = now_utc or datetime.now(timezone.utc)
+    max_dt = eff_now + timedelta(seconds=60)
+    best_entry = None
+    best_dt: datetime | None = None
+    for entry in read_jsonl_dicts(AUDIT_LOG):
+        if entry.get("full_key") != full_key or entry.get("action") != "applied":
+            continue
+        ts_raw = entry.get("ts")
+        if not ts_raw:
+            continue
+        parsed_dt = parse_iso_datetime_utc(str(ts_raw))
+        if parsed_dt is None:
+            continue
+        dt_utc = parsed_dt.astimezone(timezone.utc)
+        if dt_utc > max_dt:
+            continue
+        if best_dt is None or dt_utc >= best_dt:
+            best_dt = dt_utc
+            best_entry = entry
+    return best_entry
 
 
-def is_rate_limited(full_key: str) -> tuple[bool, str | None]:
+def is_rate_limited(full_key: str, *, now_utc: datetime | None = None) -> tuple[bool, str | None]:
     """Return (True, last_ts_str) when full_key was applied within MIN_DAYS_BETWEEN_CHANGES days."""
-    last_change = _last_change_for(full_key)
+    eff_now = now_utc or datetime.now(timezone.utc)
+    last_change = _last_change_for(full_key, now_utc=eff_now)
     if not last_change or not isinstance(last_change, dict) or not last_change.get("ts"):
         return False, None
     ts_str = str(last_change["ts"])
     if (last_dt := parse_iso_datetime_utc(ts_str)) is not None:
-        if datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc) < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
+        elapsed = eff_now - last_dt.astimezone(timezone.utc)
+        if -timedelta(seconds=60) <= elapsed < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
             return True, ts_str
-    return False, None
-    ts_str = str(last_change["ts"])
-    try:
-        last_ts = datetime.fromisoformat(ts_str)
-        last_utc = (
-            last_ts.astimezone(timezone.utc)
-            if last_ts.tzinfo is not None
-            else last_ts.replace(tzinfo=timezone.utc)
-        )
-        elapsed = datetime.now(timezone.utc) - last_utc
-        if elapsed < timedelta(days=MIN_DAYS_BETWEEN_CHANGES):
-            return True, ts_str
-    except (TypeError, ValueError):
-        pass
     return False, None
 
 

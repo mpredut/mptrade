@@ -1076,3 +1076,154 @@ def test_webchannel_reconnect_and_mid_turn_background_polls_do_not_mask_active_i
     assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
 
 
+def test_valid_activity_mtime_and_future_corrupt_store_files_never_deadlock_ui_sync_invariant(store, tmp_path):
+    """Pure invariant: corrupt non-positive or far-future mtimes/timestamps never permanently block ui-sync or active-check."""
+    cli, d1, _ = store
+    now = time.time()
+    future_ts = now + 7200.0
+    old_ts = now - 2400.0
+
+    assert asf._valid_activity_mtime(0, now) is None
+    assert asf._valid_activity_mtime(-5.0, now) is None
+    assert asf._valid_activity_mtime(None, now) is None
+    assert asf._valid_activity_mtime(True, now) is None
+    assert asf._valid_activity_mtime(float("nan"), now) is None
+    assert asf._valid_activity_mtime(future_ts, now) is None
+    assert asf._valid_activity_mtime(now + 30.0, now) == pytest.approx(now + 30.0)
+    assert asf._valid_activity_mtime(old_ts, now) == pytest.approx(old_ts)
+
+    # 1. Corrupt far-future RUNNING .db, D1 .db, cli-*.log, and brain transcript + future created_at never block ui-sync
+    conn = sqlite3.connect(asf.DB)
+    conn.execute("DROP TABLE conversation_summaries")
+    conn.execute("CREATE TABLE conversation_summaries (conversation_id text primary key, status text)")
+    conn.execute("INSERT INTO conversation_summaries VALUES ('corrupt-run', 'CASCADE_RUN_STATUS_RUNNING')")
+    conn.execute("INSERT INTO conversation_summaries VALUES ('pending-topic', 'CASCADE_RUN_STATUS_IDLE')")
+    conn.commit()
+    conn.close()
+
+    corrupt_db = d1 / "corrupt-run.db"
+    corrupt_db.write_text("x", encoding="utf-8")
+    os.utime(corrupt_db, (future_ts, future_ts))
+
+    pending_db = d1 / "pending-topic.db"
+    pending_db.write_text("y", encoding="utf-8")
+    os.utime(pending_db, (old_ts, old_ts))
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["corrupt-run"]))
+
+    log_dir = cli / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    future_log = log_dir / "cli-20990101_000000.log"
+    future_log.write_text(
+        "I0101 00:00:01.000000 1 remote_control_v2.go:2056] Connection status: Connected\n"
+        "I0101 00:00:02.000000 2 http_helpers.go:349] URL: https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse\n",
+        encoding="utf-8",
+    )
+    os.utime(future_log, (future_ts, future_ts))
+    assert asf._daemon_started_at() == 0.0
+
+    tp_dir = cli / "brain" / "corrupt-run" / ".system_generated" / "logs"
+    tp_dir.mkdir(parents=True, exist_ok=True)
+    tp = tp_dir / "transcript.jsonl"
+    future_iso = "2099-01-01T00:00:00Z"
+    tp.write_text(
+        json.dumps(
+            {
+                "step_index": 1,
+                "type": "PLANNER_RESPONSE",
+                "created_at": future_iso,
+                "tool_calls": [{"name": "schedule", "args": {"DurationSeconds": "600", "Prompt": "wake"}}],
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "step_index": 2,
+                "type": "GENERIC",
+                "created_at": future_iso,
+                "content": "Tool is running as a background task with task id: corrupt-run/task-future-1\nTask Description: bash sleep 5\n",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(tp, (old_ts, old_ts))
+    future_art = cli / "brain" / "corrupt-run" / "artifact.md"
+    future_art.write_text("future", encoding="utf-8")
+    os.utime(future_art, (future_ts, future_ts))
+
+    assert asf.mode_active_check(120) == asf.UI_SYNC_READY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+    # 2. Corrupt far-future child start_ticks in /proc never permanently flags active child tasks
+    proc_root = tmp_path / "proc_future"
+    cg_root = tmp_path / "cg_future"
+    cg_dir = cg_root / "user.slice" / "antigravity-cli-daemon.service"
+    cg_dir.mkdir(parents=True)
+    proc_root.mkdir(parents=True)
+    clk_tck = int(os.sysconf("SC_CLK_TCK")) if hasattr(os, "SC_CLK_TCK") else 100
+    btime = int(now) - 5000
+    (proc_root / "stat").write_text(f"cpu  1 2 3 4\nbtime {btime}\n", encoding="utf-8")
+
+    def _mk_proc(pid: int, ppid: int, started_at: float, cmd: str) -> None:
+        pdir = proc_root / str(pid)
+        pdir.mkdir(parents=True, exist_ok=True)
+        start_ticks = max(1, int((started_at - btime) * clk_tck))
+        rest = ["0"] * 25
+        rest[0] = "S"
+        rest[1] = str(ppid)
+        rest[19] = str(start_ticks)
+        (pdir / "stat").write_text(f"{pid} (proc) {' '.join(rest)}\n", encoding="utf-8")
+        (pdir / "cmdline").write_bytes(cmd.encode("utf-8").replace(b" ", b"\x00") + b"\x00")
+
+    _mk_proc(700, 1, now - 1000.0, "/home/predut/.local/bin/agy remote-control serve")
+    (proc_root / "700" / "cgroup").write_text("0::/user.slice/antigravity-cli-daemon.service\n", encoding="utf-8")
+    _mk_proc(701, 700, now + 7200.0, "bash ./offline/runners/run_dev_regression.sh")
+    (cg_dir / "cgroup.procs").write_text("700\n701\n", encoding="utf-8")
+    assert asf._daemon_has_active_child_tasks(daemon_pid=700, proc_root=str(proc_root), cgroup_root=str(cg_root)) is False
+
+
+def test_mode_post_monotonic_deadline_and_real_active_file_crosscheck(store, tmp_path, monkeypatch):
+    """Dependent cross-check: mode_post obeys time.monotonic() under wall-clock jumps, while real active files still block ui-sync alongside corrupt siblings."""
+    cli, d1, _ = store
+    now = time.time()
+    future_ts = now + 7200.0
+    old_ts = now - 2400.0
+
+    # Cross-check 1: corrupt future sibling does not hide a genuine active conversation file
+    bad_db = d1 / "corrupt-future.db"
+    bad_db.write_text("bad", encoding="utf-8")
+    os.utime(bad_db, (future_ts, future_ts))
+
+    live_db = d1 / "real-live.db"
+    live_db.write_text("live", encoding="utf-8")
+    os.utime(live_db, (now - 10.0, now - 10.0))
+
+    pending_db = d1 / "pending-topic.db"
+    pending_db.write_text("y", encoding="utf-8")
+    os.utime(pending_db, (old_ts, old_ts))
+    _set_rows(["corrupt-future", "real-live", "pending-topic"])
+    (cli / "agyhub_summaries_proto.pb").write_bytes(_pb_with_cids(["corrupt-future", "real-live"]))
+
+    assert asf.mode_active_check(120) == asf.UI_SYNC_BUSY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_BUSY
+
+    os.utime(live_db, (old_ts, old_ts))
+    assert asf.mode_active_check(120) == asf.UI_SYNC_READY
+    assert asf.mode_ui_sync_check(120) == asf.UI_SYNC_READY
+
+    # Cross-check 2: mode_post uses monotonic deadline even if wall clock steps backwards
+    mono_vals = iter([100.0, 100.0, 100.5, 101.2, 101.5])
+    wall_vals = iter([1_700_000_000.0, 1_699_000_000.0, 1_699_000_000.0])
+    checks = []
+    monkeypatch.setattr(asf.time, "monotonic", lambda: next(mono_vals, 200.0))
+    monkeypatch.setattr(asf.time, "time", lambda: next(wall_vals, 1_699_000_000.0))
+    monkeypatch.setattr(asf.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(asf, "main_pid", lambda: 12345)
+    monkeypatch.setattr(asf, "newest_daemon_log_ready", lambda since, pid: (checks.append((since, pid)), False)[1])
+    monkeypatch.setattr(asf, "checkpoint_db", lambda _p: False)
+    assert asf.mode_post(timeout=1) == 0
+    assert len(checks) == 2
+    assert checks[0] == (pytest.approx(1_700_000_000.0 - 15.0), 12345)
+
+
+

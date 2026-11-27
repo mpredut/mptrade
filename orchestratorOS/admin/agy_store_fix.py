@@ -462,12 +462,13 @@ def newest_daemon_log_ready(since: float, pid: str = "") -> bool:
 
 def mode_post(timeout: int = 50) -> int:
     timeout_s = safe_pos_float(timeout, default=50.0)
-    start = time.time()
-    deadline = start + timeout_s
+    wall_start = time.time()
+    mono_start = time.monotonic()
+    mono_deadline = mono_start + timeout_s
     ready = False
-    while time.time() < deadline:
+    while time.monotonic() < mono_deadline:
         pid = main_pid()
-        if newest_daemon_log_ready(start - 15, pid):
+        if newest_daemon_log_ready(wall_start - 15, pid):
             ready = True
             break
         time.sleep(0.2)
@@ -504,7 +505,7 @@ def mode_post(timeout: int = 50) -> int:
                 except OSError as e:
                     log.warning("post: cannot link %s -> %s: %s", p1, p2, e)
                     bad += 1
-    log.info("post: linked=%d already=%d problems=%d waited=%.0fs", linked, exists, bad, time.time() - start)
+    log.info("post: linked=%d already=%d problems=%d waited=%.0fs", linked, exists, bad, max(0.0, time.monotonic() - mono_start))
     return 0
 
 
@@ -718,9 +719,17 @@ def _daemon_has_active_child_tasks(
                 started_ts = os.stat(os.path.join(proc_root, str(cpid))).st_mtime
             except OSError:
                 continue
-        if (now_ts - started_ts) < bound_s:
+        if -60.0 <= (now_ts - started_ts) < bound_s:
             return True
     return False
+
+
+def _valid_activity_mtime(raw_ts: object, now_ts: float, *, max_future_skew_sec: float = 60.0) -> float | None:
+    """Return a strictly positive mtime bounded by ``now_ts + max_future_skew_sec``, else None."""
+    ts = safe_pos_float(raw_ts, default=None)
+    if ts is None or ts > now_ts + max_future_skew_sec:
+        return None
+    return ts
 
 
 def _glog_rel_ts(line: str) -> float | None:
@@ -747,12 +756,15 @@ def _glog_rel_ts(line: str) -> float | None:
 def _daemon_started_at() -> float:
     if not os.path.isdir(LOGS):
         return 0.0
+    now_ts = time.time()
     for ts, lf in sorted(
         ((log_started_at(lf), lf) for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log"))),
         reverse=True,
     ):
         if ts <= 0.0:
             break
+        if ts > now_ts + 60.0:
+            continue
         txt = read_text_file(lf, default=None, errors="ignore")
         if txt and ("Connection status:" in txt or "summary store: reconciliation complete" in txt):
             return ts
@@ -797,25 +809,31 @@ def last_store_activity() -> float:
                         try:
                             if os.path.exists(p):
                                 found_on_disk = True
-                                if (now - os.stat(p).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
+                                p_mt = _valid_activity_mtime(os.stat(p).st_mtime, now)
+                                if p_mt is not None and (now - p_mt) < _RUNNING_SESSION_MAX_AGE_SEC:
                                     return now
                         except OSError:
                             pass
                 tp_run = os.path.join(CLI, "brain", rcid, ".system_generated", "logs", "transcript.jsonl")
                 try:
-                    if os.path.exists(tp_run) and (now - os.stat(tp_run).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
-                        return now
+                    if os.path.exists(tp_run):
+                        tp_mt = _valid_activity_mtime(os.stat(tp_run).st_mtime, now)
+                        if tp_mt is not None and (now - tp_mt) < _RUNNING_SESSION_MAX_AGE_SEC:
+                            return now
                 except OSError:
                     pass
                 if not found_on_disk:
                     for sum_p in (DB, DB + "-wal"):
                         try:
-                            if os.path.exists(sum_p) and (now - os.stat(sum_p).st_mtime) < _RUNNING_SESSION_MAX_AGE_SEC:
-                                return now
+                            if os.path.exists(sum_p):
+                                sum_mt = _valid_activity_mtime(os.stat(sum_p).st_mtime, now)
+                                if sum_mt is not None and (now - sum_mt) < _RUNNING_SESSION_MAX_AGE_SEC:
+                                    return now
                         except OSError:
                             pass
         except sqlite3.Error:
             pass
+    scan_now = time.time()
     for d in (D1, D2):
         if os.path.isdir(d):
             for name in os.listdir(d):
@@ -823,13 +841,23 @@ def last_store_activity() -> float:
                 try:
                     cid = name.split(".", 1)[0]
                     if name.endswith((".db", ".db-wal")) and cid not in ignored:
-                        newest = max(newest, os.stat(p).st_mtime)
+                        p_mt = _valid_activity_mtime(os.stat(p).st_mtime, scan_now)
+                        if p_mt is not None:
+                            newest = max(newest, p_mt)
                 except OSError:
                     pass
     if os.path.isdir(LOGS):
         try:
-            cli_logs = sorted(glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")), key=os.path.getmtime, reverse=True)
-            for candidate_log in cli_logs[:10]:
+            log_candidates: list[tuple[float, str]] = []
+            for lf in glob.glob(os.path.join(glob.escape(LOGS), "cli-*.log")):
+                try:
+                    lf_mt = _valid_activity_mtime(os.path.getmtime(lf), scan_now)
+                except OSError:
+                    continue
+                if lf_mt is not None:
+                    log_candidates.append((lf_mt, lf))
+            log_candidates.sort(reverse=True)
+            for _cand_mt, candidate_log in log_candidates[:10]:
                 txt = read_text_file(candidate_log, default="", errors="ignore")
                 if not txt or ("Connection status:" not in txt and "summary store: reconciliation complete" not in txt):
                     continue
@@ -843,7 +871,9 @@ def last_store_activity() -> float:
                         None,
                     )
                     if matched_line is not None:
-                        log_mtime = os.stat(candidate_log).st_mtime
+                        log_mtime = _valid_activity_mtime(os.stat(candidate_log).st_mtime, time.time())
+                        if log_mtime is None:
+                            break
                         t_match = _glog_rel_ts(matched_line)
                         t_last = next((t for ln in reversed(all_lines) if (t := _glog_rel_ts(ln)) is not None), None)
                         delta: float | None = None
@@ -874,7 +904,8 @@ def last_store_activity() -> float:
                 st = os.stat(tp)
             except OSError:
                 continue
-            if (now_ts - st.st_mtime) > 86400 or (daemon_started_ts > 0.0 and st.st_mtime < daemon_started_ts):
+            tp_mtime = _valid_activity_mtime(st.st_mtime, now_ts)
+            if tp_mtime is None or (now_ts - tp_mtime) > 86400 or (daemon_started_ts > 0.0 and tp_mtime < daemon_started_ts):
                 continue
             records = read_tail_jsonl_dicts(tp, limit=80)
             oneshot_until = 0.0
@@ -892,8 +923,9 @@ def last_store_activity() -> float:
             def _record_ts(record: dict) -> float:
                 raw_ts = str(record.get("created_at") or "").strip()
                 if raw_ts and (dt := parse_iso_datetime_utc(raw_ts)) is not None:
-                    return dt.timestamp()
-                return st.st_mtime
+                    valid_rec_ts = _valid_activity_mtime(dt.timestamp(), now_ts)
+                    return valid_rec_ts if valid_rec_ts is not None else 0.0
+                return tp_mtime
 
             for rec in records:
                 step_type = str(rec.get("type") or "")
@@ -986,13 +1018,15 @@ def last_store_activity() -> float:
                         dur_s = safe_pos_float(dur_raw, default=None)
                         if dur_s is not None or cron_raw:
                             if dur_s is not None:
-                                oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
-                                sched_cond = cond_raw or "never"
+                                if sched_ts > 0.0:
+                                    oneshot_until = max(oneshot_until, sched_ts + dur_s + 120.0)
+                                    sched_cond = cond_raw or "never"
                             else:
                                 cron_active, cron_max_iter = True, 0
                             sched_task_id, awaiting_sched_task_id = "", True
             if any(
-                (now_ts - started_ts) < _ACTIVE_BG_TASK_MAX_AGE_SEC
+                started_ts > 0.0
+                and -60.0 <= (now_ts - started_ts) < _ACTIVE_BG_TASK_MAX_AGE_SEC
                 and (daemon_started_ts <= 0.0 or started_ts >= daemon_started_ts)
                 for started_ts in (*active_bg_tasks.values(), *active_subagents.values())
             ):
@@ -1000,7 +1034,7 @@ def last_store_activity() -> float:
             if cron_active or now_ts < oneshot_until:
                 is_repeating_loop = sched_calls >= 2 or cron_max_iter >= 2
                 is_stale_schedule = latest_sched_ts > 0.0 and (now_ts - latest_sched_ts) > 1800.0
-                is_stale_transcript = (now_ts - st.st_mtime) > 1800.0
+                is_stale_transcript = (now_ts - tp_mtime) > 1800.0
                 is_stale_user_input = latest_user_input_ts > 0.0 and (now_ts - latest_user_input_ts) > 1800.0
                 if is_repeating_loop or is_stale_schedule or is_stale_transcript or is_stale_user_input:
                     continue
@@ -1012,7 +1046,9 @@ def last_store_activity() -> float:
             dirs[:] = []
         for name in files:
             try:
-                newest = max(newest, os.stat(os.path.join(root, name)).st_mtime)
+                f_mt = _valid_activity_mtime(os.stat(os.path.join(root, name)).st_mtime, now_ts)
+                if f_mt is not None:
+                    newest = max(newest, f_mt)
             except OSError:
                 pass
     return newest

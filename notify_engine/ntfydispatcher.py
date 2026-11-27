@@ -245,7 +245,11 @@ class NtfyDispatcher:
         *,
         urgent: bool = False,
         skip_email: bool = False,
+        is_retry: bool = False,
     ) -> bool:
+        if is_retry:
+            with self._gated_dispatch_scope(orig_email=(title, body), skip_email=True):
+                return self._send_ntfy(title, body, priority, topic, True)
         gated = self._apply_ntfy_gate(title, body, priority, topic, alerts, urgent=urgent, skip_email=skip_email)
         if gated is None:
             return getattr(_GATED_DISPATCH_TLS, "last_gate_reason", "") in _GATE_ACCEPTED_REASONS
@@ -335,6 +339,14 @@ class NtfyDispatcher:
                     ra_f = safe_nonneg_float(retry_after, default=None)
                     time.sleep(min(ra_f, 30.0) if ra_f is not None else 1.0)
                     resp = http_requests_post(url, data=body_bytes, headers=headers, timeout=5, requests_mod=requests)
+                    if (
+                        safe_int(getattr(resp, "status_code", None), default=200) == 429
+                        and _is_provider_daily_limit(resp)
+                    ):
+                        text = getattr(resp, "text", "") or ""
+                        logging.warning(f"ntfy daily limit reached: {text}")
+                        _mark_provider_daily_limit("ntfy")
+                        return False
             status_code = safe_int(getattr(resp, "status_code", None), default=200)
             if hasattr(resp, "raise_for_status"):
                 resp.raise_for_status()
@@ -360,7 +372,15 @@ class NtfyDispatcher:
             self._enqueue_payload("email", {"subject": subject, "message": message})
         return ok
 
-    def dispatch_alerts(self, alerts: list, webhook_url: str = None, bot_name: str = "", *, skip_email: bool = False) -> bool:
+    def dispatch_alerts(
+        self,
+        alerts: list,
+        webhook_url: str = None,
+        bot_name: str = "",
+        *,
+        skip_email: bool = False,
+        is_retry: bool = False,
+    ) -> bool:
         if not isinstance(alerts, (list, tuple)) or not alerts:
             return False
         bot_name = _clean_str(bot_name)
@@ -469,6 +489,7 @@ class NtfyDispatcher:
             alerts=alerts,
             urgent=urgent,
             skip_email=skip_email,
+            is_retry=is_retry,
         )
 
     @staticmethod
@@ -659,6 +680,7 @@ class NtfyDispatcher:
                                     payload.get("alerts") or [],
                                     payload.get("webhook_url"),
                                     "",
+                                    is_retry=True,
                                 )
                             else:
                                 success = True

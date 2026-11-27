@@ -10,6 +10,7 @@ from cachepaths import (
     clean_scalar_str,
     state_path,
 )
+from core.time_market import normalize_epoch_sec
 from state_io import read_json_dict, save_json_state
 
 from .base import StateStoreBase
@@ -59,9 +60,12 @@ class OsResourcesWatchdogStateStore(StateStoreBase):
         if not cls.has_disk_file(str(cand)):
             return None, None, None
         age_h: Optional[float] = None
-        if now_ts is not None and os.path.exists(cand):
+        eff_now = normalize_epoch_sec(now_ts, default=None)
+        if eff_now is not None and os.path.exists(cand):
             try:
-                age_h = max(0.0, (now_ts - os.path.getmtime(cand)) / 3600.0)
+                mtime = normalize_epoch_sec(os.path.getmtime(cand), default=None)
+                if mtime is not None and mtime <= eff_now + 60.0:
+                    age_h = max(0.0, (eff_now - mtime) / 3600.0)
             except OSError:
                 age_h = None
         payload = (

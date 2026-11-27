@@ -2208,3 +2208,147 @@ def test_ci_regression_and_bot_restart_never_email_and_xstock_supervisor_retired
     assert st_ipo["bot_pid"] == 50001
     assert len(sent_notifs) == 1
     assert sent_notifs[0]["email"] is False
+
+
+def test_ntfy_retry_after_daily_limit_and_alerts_queue_no_amplification_invariant(tmp_path, monkeypatch):
+    """Pure invariant: post-Retry-After 429 daily limit marks provider blocked without queueing, and flush_queue_loop alerts retries never amplify queue entries or mirror duplicate emails."""
+    from notify_engine import ntfydispatcher as ns
+
+    queue_file = str(tmp_path / "notify_queue.jsonl")
+    state_file = str(tmp_path / "delivery_state.json")
+    monkeypatch.setenv("DISABLE_EXTERNAL_NOTIFICATIONS", "0")
+    monkeypatch.setenv("BACKTEST_MODE", "0")
+    monkeypatch.setenv("REPLAY_MODE", "0")
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", state_file)
+    monkeypatch.setenv("NOTIFICATION_DEDUP_SECONDS", "0")
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "0")
+    monkeypatch.setenv("NOTIFICATION_TOPIC_BULK_SECONDS", "0")
+    monkeypatch.setenv("NTFY_TOPIC_ERROR", "ntfy-error-test")
+    monkeypatch.setenv("NTFY_TOPIC_TRADES", "ntfy-trades-test")
+
+    # 1. First 429 is burst rate limit with Retry-After, second 429 is daily limit -> mark blocked, do NOT enqueue
+    srv = ns.NtfyDispatcher()
+    srv.queue_file = queue_file
+    marked = []
+    monkeypatch.setattr(ns, "_mark_provider_daily_limit", lambda provider: marked.append(provider))
+    monkeypatch.setattr(ns.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(srv, "_send_email", lambda *a, **k: True)
+
+    class _Resp429:
+        def __init__(self, text: str, headers: dict):
+            self.status_code = 429
+            self.text = text
+            self.headers = headers
+
+        def raise_for_status(self):
+            raise RuntimeError("HTTP 429")
+
+    responses = iter([
+        _Resp429("too many requests", {"Retry-After": "1"}),
+        _Resp429("daily message quota limit exceeded", {}),
+    ])
+    monkeypatch.setattr(ns, "http_requests_post", lambda *a, **k: next(responses))
+    assert srv._send_ntfy("Burst Then Daily", "body", "high", "ntfy-trades-test", is_retry=False, skip_email=True) is False
+    assert marked == ["ntfy"]
+    assert not os.path.exists(queue_file)
+
+    # 2. flush_queue_loop retrying an 'alerts' payload during an outage must keep exact queue size 1 and send 0 emails
+    queued_item = {
+        "__orchestrator_intent__": "ntfy_webhook",
+        "alerts": [
+            {
+                "type": "bot_event",
+                "name": "ORDER FAILED: BUY BTCUSDC",
+                "body": "Temporary upstream outage",
+                "source": "rtrade",
+                "symbol": "BTCUSDC",
+            }
+        ],
+    }
+    with open(queue_file, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(queued_item) + "\n")
+
+    emails_sent = []
+    monkeypatch.setattr(srv, "_send_email", lambda subj, body, *a, **k: emails_sent.append((subj, body)) or True)
+    monkeypatch.setattr(ns, "http_requests_post", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("offline")))
+
+    ticks = 0
+
+    async def _one_tick(_sec):
+        nonlocal ticks
+        ticks += 1
+        if ticks > 1:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, "sleep", _one_tick)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(srv.flush_queue_loop())
+
+    with open(queue_file, "r", encoding="utf-8") as fh:
+        lines_after = [ln.strip() for ln in fh.readlines() if ln.strip()]
+    assert len(lines_after) == 1
+    assert json.loads(lines_after[0])["retry_count"] == 1
+    assert emails_sent == []
+
+
+def test_watchdog_state_inspect_workspace_and_scheduled_pilot_rate_limit_crosscheck(tmp_path, monkeypatch):
+    """Invariant & dependent cross-check: OsResourcesWatchdogStateStore rejects corrupt future mtime in inspect_workspace/harvest_heartbeats_and_state_files, and scheduled_pilot ignores corrupt future audit ts while honoring out-of-order recent changes."""
+    from datetime import datetime, timedelta, timezone
+    from offline.research.monitortrades_backtest import scheduled_pilot as sp
+    from orchestratorOS.lib import technical_repair_ssot as trs
+    from state_stores.os_resources_watchdog_state import OsResourcesWatchdogStateStore
+
+    now_ts = 1_795_000_000.0
+    rw_path = OsResourcesWatchdogStateStore.default_state_path(str(tmp_path))
+    assert OsResourcesWatchdogStateStore.save_state(rw_path, {"last_run": now_ts - 600.0}) is True
+
+    # Corrupt far-future mtime must return age_h=None (not 0.0h) and be omitted from technical_repair_ssot state_files
+    os.utime(rw_path, (now_ts + 7200.0, now_ts + 7200.0))
+    found_p, payload, age_h = OsResourcesWatchdogStateStore.inspect_workspace(str(tmp_path), now_ts=now_ts)
+    assert found_p == rw_path
+    assert isinstance(payload, dict)
+    assert age_h is None
+    _hbs, state_files_future = trs.harvest_heartbeats_and_state_files(
+        str(tmp_path / "cachedb"), str(tmp_path), now_ts
+    )
+    assert OsResourcesWatchdogStateStore.FILENAME not in state_files_future
+
+    # Valid past mtime (1800s ago -> 0.5h) works with both epoch-sec and epoch-ms now_ts and populates state_files
+    os.utime(rw_path, (now_ts - 1800.0, now_ts - 1800.0))
+    _, _, age_h_sec = OsResourcesWatchdogStateStore.inspect_workspace(str(tmp_path), now_ts=now_ts)
+    _, _, age_h_ms = OsResourcesWatchdogStateStore.inspect_workspace(str(tmp_path), now_ts=now_ts * 1000.0)
+    assert age_h_sec == pytest.approx(0.5, abs=1e-4)
+    assert age_h_ms == pytest.approx(0.5, abs=1e-4)
+    _hbs, state_files_ok = trs.harvest_heartbeats_and_state_files(
+        str(tmp_path / "cachedb"), str(tmp_path), now_ts
+    )
+    assert state_files_ok[OsResourcesWatchdogStateStore.FILENAME]["age_hours"] == pytest.approx(0.5, abs=1e-3)
+
+    # Scheduled pilot rate-limit: corrupt future applied timestamp does not lock out forever, while out-of-order recent entry still rate-limits
+    audit_path = tmp_path / "pilot_audit.jsonl"
+    monkeypatch.setattr(sp, "AUDIT_LOG", str(audit_path))
+    monkeypatch.setattr(sp, "MIN_DAYS_BETWEEN_CHANGES", 7.0)
+    ref_now = datetime(2026, 11, 27, 5, 0, 0, tzinfo=timezone.utc)
+    old_ok_ts = (ref_now - timedelta(days=15)).isoformat(timespec="seconds")
+    recent_ok_ts = (ref_now - timedelta(days=2)).isoformat(timespec="seconds")
+    corrupt_future_ts = (ref_now + timedelta(days=3650)).isoformat(timespec="seconds")
+
+    # 1. Only an old applied entry + corrupt future applied entry -> NOT rate-limited
+    audit_path.write_text(
+        json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": old_ok_ts}) + "\n"
+        + json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": corrupt_future_ts}) + "\n",
+        encoding="utf-8",
+    )
+    limited, last_ts = sp.is_rate_limited("BINANCE_BTC.mt.gain", now_utc=ref_now)
+    assert limited is False and last_ts is None
+
+    # 2. Out-of-order audit log (recent valid applied followed by older valid applied + corrupt future) -> STILL rate-limited by newest valid timestamp
+    audit_path.write_text(
+        json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": recent_ok_ts}) + "\n"
+        + json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": old_ok_ts}) + "\n"
+        + json.dumps({"full_key": "BINANCE_BTC.mt.gain", "action": "applied", "ts": corrupt_future_ts}) + "\n",
+        encoding="utf-8",
+    )
+    limited_oo, last_ts_oo = sp.is_rate_limited("BINANCE_BTC.mt.gain", now_utc=ref_now)
+    assert limited_oo is True and last_ts_oo == recent_ok_ts
+
