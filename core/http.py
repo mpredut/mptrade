@@ -8,7 +8,7 @@ import importlib
 import re
 import sys
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +20,53 @@ import state_io as _state_io
 
 HTTP_TIMEOUT = 25
 ACCOUNT_REST_HARD_TIMEOUT_SEC: float = round(HTTP_TIMEOUT * 2.0, 3)
+
+_RATE_LIMIT_ERROR_TOKENS: tuple[str, ...] = (
+    "429",
+    "-1003",
+    "rate limit",
+    "too many requests",
+    "too much request weight",
+    "temporary lockout",
+)
+
+
+def is_rate_limit_error(exc_or_msg: object) -> bool:
+    """Return True when ``exc_or_msg`` indicates an exchange/HTTP rate-limit or lockout error."""
+    txt = str(exc_or_msg or "").lower()
+    return any(tok in txt for tok in _RATE_LIMIT_ERROR_TOKENS)
+
+
+def compute_rest_error_backoff_sec(
+    exc_or_msg: object,
+    streak: int,
+    *,
+    base_sec: float,
+    max_sec: float,
+    rate_limit_base_sec: float = 15.0,
+    rate_limit_max_sec: float = 120.0,
+    factor: float = 2.0,
+    rate_limit_factor: float = 2.0,
+    max_exp: int = 5,
+    rate_limit_max_exp: int = 3,
+) -> float:
+    """Compute bounded exponential backoff (seconds) for a failed REST sync attempt."""
+    eff_streak = max(1, exact_int(streak, default=1) or 1)
+    if is_rate_limit_error(exc_or_msg):
+        return min(rate_limit_max_sec, rate_limit_base_sec * (rate_limit_factor ** min(eff_streak - 1, rate_limit_max_exp)))
+    return min(max_sec, base_sec * (factor ** min(eff_streak - 1, max_exp)))
+
+
+def shutdown_daemon_executor(pool: Optional[_futures.ThreadPoolExecutor]) -> None:
+    """Shut down a daemon ``ThreadPoolExecutor`` without blocking interpreter exit."""
+    if pool is None:
+        return
+    pool.shutdown(wait=False, cancel_futures=True)
+    try:
+        for th in list(getattr(pool, "_threads", ())):
+            _futures.thread._threads_queues.pop(th, None)
+    except Exception:
+        pass
 
 
 @dataclass(slots=True)
@@ -44,10 +91,70 @@ class NonBlockingRestSlotTracker:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._slots: dict[str, InFlightRestSlot] = {}
+        self._pool_lock = threading.Lock()
+        self._pool: Optional[_futures.ThreadPoolExecutor] = None
 
     @property
     def slots(self) -> dict[str, InFlightRestSlot]:
         return self._slots
+
+    @property
+    def pool(self) -> Optional[_futures.ThreadPoolExecutor]:
+        return self._pool
+
+    def ensure_pool(
+        self, *, max_workers: int, thread_name_prefix: str
+    ) -> _futures.ThreadPoolExecutor:
+        """Lazily create and return an owned daemon ``ThreadPoolExecutor``."""
+        with self._pool_lock:
+            if self._pool is None:
+                self._pool = _futures.ThreadPoolExecutor(
+                    max_workers=max(1, max_workers),
+                    thread_name_prefix=thread_name_prefix,
+                )
+            return self._pool
+
+    def shutdown_pool(self) -> None:
+        """Clear active slots and tear down the owned daemon pool without blocking exit."""
+        self.clear()
+        with self._pool_lock:
+            pool = self._pool
+            self._pool = None
+        shutdown_daemon_executor(pool)
+
+    def submit_batch_and_wait(
+        self,
+        items: Sequence[tuple[str, Callable[[], Any], Any]],
+        *,
+        pool: _futures.ThreadPoolExecutor,
+        now_mono: float,
+        now_wall_ts: float,
+        micro_wait_sec: float,
+        on_done: Optional[Callable[[_futures.Future], None]] = None,
+        return_when: str = _futures.ALL_COMPLETED,
+    ) -> list[str]:
+        """Submit ``(key, fn, meta)`` entries to ``pool``, wait up to ``micro_wait_sec``, and return completed keys."""
+        submitted_futs: dict[_futures.Future, str] = {}
+        for key, fn, meta in items:
+            slot = self.submit(
+                key,
+                pool,
+                fn,
+                now_mono=now_mono,
+                now_wall_ts=now_wall_ts,
+                meta=meta,
+                on_done=on_done,
+            )
+            if slot is not None:
+                submitted_futs[slot.future] = key
+        if not submitted_futs:
+            return []
+        done_now, _ = _futures.wait(
+            submitted_futs.keys(),
+            timeout=max(0.0, micro_wait_sec),
+            return_when=return_when,
+        )
+        return [submitted_futs[f] for f in done_now]
 
     def active_symbols(self) -> tuple[str, ...]:
         with self._lock:

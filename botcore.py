@@ -239,6 +239,7 @@ from core.http import (  # noqa: E402
     _urlopen_json,
     _validate_http_url,
     _validate_url_and_timeout,
+    compute_rest_error_backoff_sec,
     fetch_json_post,
     fetch_public_bytes,
     fetch_public_json,
@@ -252,6 +253,8 @@ from core.http import (  # noqa: E402
     http_request,
     http_requests_get,
     http_requests_post,
+    is_rate_limit_error,
+    shutdown_daemon_executor,
 )
 from core.time_market import (  # noqa: E402
     CM_CURRENT_PRICE_POLL_SEC,

@@ -15,7 +15,14 @@ import json
 import os
 import time
 from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
-from botcore import NonBlockingRestSlotTracker, clamp_price_to_bbo_mid
+from botcore import (
+    NonBlockingRestSlotTracker,
+    clamp_price_to_bbo_mid,
+    compute_rest_error_backoff_sec,
+    is_rate_limit_error,
+    shutdown_daemon_executor,
+)
+import cacheaccount
 from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
 from providers.execution_audit import find_duplicate_ai_open_limit_order
@@ -1078,6 +1085,167 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             release_wedged.set()
             tracker.clear()
+
+    def test_shared_http_rate_limit_backoff_pool_and_fills_bundle_ssot(self):
+        """Shared core/http primitives (rate-limit detection, exponential backoff, tracker pool/batch wait)
+        and CacheAccountManagerBase multi-venue fills bundle helpers behave deterministically."""
+        from unittest.mock import patch
+
+        # 1. is_rate_limit_error + compute_rest_error_backoff_sec
+        for msg in (
+            RuntimeError("HTTP 429 Too Many Requests"),
+            "APIError(code=-1003): Too much request weight used",
+            "EGeneral:Temporary lockout",
+            "rate limit exceeded",
+        ):
+            self.assertTrue(is_rate_limit_error(msg), f"expected rate-limit match for {msg!r}")
+        for msg in (None, "", RuntimeError("read timed out"), "DNS failure"):
+            self.assertFalse(is_rate_limit_error(msg), f"unexpected rate-limit match for {msg!r}")
+
+        self.assertEqual(
+            compute_rest_error_backoff_sec("timeout", 1, base_sec=2.0, max_sec=30.0), 2.0
+        )
+        self.assertEqual(
+            compute_rest_error_backoff_sec("timeout", 3, base_sec=2.0, max_sec=30.0), 8.0
+        )
+        self.assertEqual(
+            compute_rest_error_backoff_sec("timeout", 10, base_sec=2.0, max_sec=30.0), 30.0
+        )
+        self.assertEqual(
+            compute_rest_error_backoff_sec("HTTP 429", 1, base_sec=2.0, max_sec=30.0, rate_limit_base_sec=15.0, rate_limit_max_sec=120.0),
+            15.0,
+        )
+        self.assertEqual(
+            compute_rest_error_backoff_sec("HTTP 429", 4, base_sec=2.0, max_sec=30.0, rate_limit_base_sec=15.0, rate_limit_max_sec=120.0),
+            120.0,
+        )
+
+        # 2. NonBlockingRestSlotTracker.ensure_pool / submit_batch_and_wait / shutdown_pool
+        shutdown_daemon_executor(None)
+        tracker = NonBlockingRestSlotTracker()
+        pool = tracker.ensure_pool(max_workers=2, thread_name_prefix="SharedTestPool")
+        self.assertIs(tracker.pool, pool)
+        self.assertIs(tracker.ensure_pool(max_workers=2, thread_name_prefix="SharedTestPool"), pool)
+        try:
+            done_keys = tracker.submit_batch_and_wait(
+                [("BTCUSDC", lambda: 111.0, "m1"), ("ETHUSDC", lambda: 222.0, "m2")],
+                pool=pool,
+                now_mono=time.monotonic(),
+                now_wall_ts=time.time(),
+                micro_wait_sec=1.0,
+            )
+            self.assertEqual(set(done_keys), {"BTCUSDC", "ETHUSDC"})
+            st_btc, val_btc, slot_btc = tracker.inspect_and_harvest("BTCUSDC", now_mono=time.monotonic(), hard_timeout_sec=5.0)
+            self.assertEqual((st_btc, val_btc, slot_btc.meta), ("DONE_OK", 111.0, "m1"))
+        finally:
+            tracker.shutdown_pool()
+            self.assertIsNone(tracker.pool)
+            self.assertFalse(tracker.has_active())
+
+        # 3. CacheAccountManagerBase.publish_venue_fills_bundle & touch_venue_fills_bundle
+        tr_path = os.path.join(self.tmp, "cache_trade_kraken.json")
+        fo_path = os.path.join(self.tmp, "cache_order_filled_kraken.json")
+        t0_ms = 1_795_770_000_000
+        fill_1 = {
+            "id": "F1",
+            "orderId": "ORD-1",
+            "symbol": "HYPEUSD",
+            "side": "BUY",
+            "price": 65.0,
+            "qty": 2.0,
+            "time": t0_ms - 1000,
+            "isBuyer": True,
+        }
+        fill_2 = {
+            "id": "F2",
+            "orderId": "ORD-1",
+            "symbol": "HYPEUSD",
+            "side": "BUY",
+            "price": 66.0,
+            "qty": 3.0,
+            "time": t0_ms - 500,
+            "isBuyer": True,
+        }
+        health_calls = []
+        refresh_calls = []
+        with (
+            patch.object(
+                cacheaccount,
+                "_record_venue_health_sync",
+                side_effect=lambda v, s, *, now_ms=None: health_calls.append((v, s, now_ms)) or True,
+            ),
+            patch.object(
+                cacheaccount,
+                "request_venue_account_refresh",
+                side_effect=lambda v, *, include_open_orders=False, blocking=False: refresh_calls.append((v, include_open_orders)) or True,
+            ),
+        ):
+            sig_holder = [None]
+            merged_tr, merged_fo, tr_miss, fo_miss = cacheaccount.CacheAccountManagerBase.publish_venue_fills_bundle(
+                "kraken",
+                tr_path,
+                {"HYPEUSD": [fill_1]},
+                now_ms=t0_ms,
+                touch_symbols=("HYPEUSD",),
+                touch_create_missing=True,
+                sanitize_venue="kraken",
+                indent=1,
+                force_save=True,
+                refresh_mode="on_change",
+                prev_sig_holder=sig_holder,
+            )
+            self.assertEqual((tr_miss, fo_miss), ([], []))
+            self.assertEqual(len(merged_tr["items"]["HYPEUSD"]), 1)
+            self.assertEqual(len(merged_fo["items"]["HYPEUSD"]), 1)
+            self.assertEqual(refresh_calls, [])
+            self.assertIn(("kraken", "trades", t0_ms), health_calls)
+            self.assertIn(("kraken", "filled_orders", t0_ms), health_calls)
+
+            # Same fills repeated -> no refresh; adding fill_2 partial upgrade -> triggers refresh
+            cacheaccount.CacheAccountManagerBase.publish_venue_fills_bundle(
+                "kraken",
+                tr_path,
+                {"HYPEUSD": [fill_1]},
+                now_ms=t0_ms + 5_000,
+                touch_symbols=("HYPEUSD",),
+                touch_create_missing=True,
+                sanitize_venue="kraken",
+                indent=1,
+                refresh_mode="on_change",
+                prev_sig_holder=sig_holder,
+            )
+            self.assertEqual(refresh_calls, [])
+
+            cacheaccount.CacheAccountManagerBase.publish_venue_fills_bundle(
+                "kraken",
+                tr_path,
+                {"HYPEUSD": [fill_1, fill_2]},
+                now_ms=t0_ms + 10_000,
+                touch_symbols=("HYPEUSD",),
+                touch_create_missing=True,
+                sanitize_venue="kraken",
+                indent=1,
+                refresh_mode="on_change",
+                prev_sig_holder=sig_holder,
+            )
+            self.assertEqual(refresh_calls, [("kraken", True)])
+
+            # Keepalive dual-touch updates both trade and filled_orders fetchtime & health
+            health_calls.clear()
+            tr_t, fo_t, tr_m, fo_m = cacheaccount.CacheAccountManagerBase.touch_venue_fills_bundle(
+                "kraken",
+                tr_path,
+                now_ms=t0_ms + 25_000,
+                symbols=("HYPEUSD",),
+                create_missing=False,
+                indent=1,
+            )
+            self.assertEqual((tr_t, fo_t, tr_m, fo_m), (True, True, [], []))
+            self.assertEqual(
+                health_calls,
+                [("kraken", "trades", t0_ms + 25_000), ("kraken", "filled_orders", t0_ms + 25_000)],
+            )
+            self.assertTrue(os.path.exists(fo_path))
 
 
 

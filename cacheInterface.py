@@ -12,6 +12,7 @@ import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Sequence
+import concurrent.futures as _futures
 import math
 import os
 import sys
@@ -21,8 +22,10 @@ from typing import Any, Optional
 import weakref
 
 from botcore import (
+    NonBlockingRestSlotTracker,
     _parse_bool_flag,
     check_cooldown_gate,
+    compute_rest_error_backoff_sec,
     extract_timestamp_ms,
     extract_timestamp_s,
     is_worker_thread_alive,
@@ -1772,3 +1775,109 @@ class CacheManagerInterface(ABC):
             for manager in instances
         ]
         return all(results) if results else True
+
+
+class NonBlockingRestSyncMixin:
+    """Shared Level-1 mixin for cache managers running per-symbol non-blocking REST slots."""
+
+    def _init_nonblocking_rest_sync(
+        self,
+        *,
+        hard_timeout_sec: float,
+        pool_max_workers: int,
+        pool_min_workers: int = 1,
+        pool_prefix: Optional[str] = None,
+    ) -> None:
+        self._rest_slot_tracker = NonBlockingRestSlotTracker()
+        self._rest_hard_timeout_sec: float = hard_timeout_sec
+        self._sync_wake_event = threading.Event()
+        self._rest_err_streaks: dict[str, int] = {}
+        self._rest_pool_min_workers: int = max(1, pool_min_workers)
+        self._rest_pool_max_workers: int = max(self._rest_pool_min_workers, pool_max_workers)
+        self._rest_pool_prefix: Optional[str] = pool_prefix
+
+    def _ensure_rest_sync_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
+        eff_hint = max(1, worker_hint, len(getattr(self, "symbols", ()) or ()))
+        max_w = max(self._rest_pool_min_workers, min(self._rest_pool_max_workers, eff_hint))
+        prefix = self._rest_pool_prefix or f"{getattr(self, 'cls_name', type(self).__name__)}RestSync"
+        return self._rest_slot_tracker.ensure_pool(max_workers=max_w, thread_name_prefix=prefix)
+
+    def _shutdown_rest_sync_pool(self) -> None:
+        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
+            tracker.shutdown_pool()
+
+    def _effective_rest_hard_timeout_sec(self, default_sec: float) -> float:
+        return (
+            safe_pos_float(getattr(self, "_rest_hard_timeout_sec", None), default=default_sec)
+            or default_sec
+        )
+
+    def _record_rest_sync_error_backoff(
+        self,
+        key: str,
+        exc: object,
+        *,
+        base_sec: float,
+        max_sec: float,
+        rate_limit_base_sec: float = 15.0,
+        rate_limit_max_sec: float = 120.0,
+        max_exp: int = 5,
+        rate_limit_max_exp: int = 3,
+    ) -> float:
+        streaks = getattr(self, "_rest_err_streaks", None)
+        if not isinstance(streaks, dict):
+            streaks = {}
+            self._rest_err_streaks = streaks
+        streak = streaks.get(key, 0) + 1
+        streaks[key] = streak
+        return compute_rest_error_backoff_sec(
+            exc,
+            streak,
+            base_sec=base_sec,
+            max_sec=max_sec,
+            rate_limit_base_sec=rate_limit_base_sec,
+            rate_limit_max_sec=rate_limit_max_sec,
+            max_exp=max_exp,
+            rate_limit_max_exp=rate_limit_max_exp,
+        )
+
+    def _clear_rest_sync_error_backoff(self, key: str) -> None:
+        if isinstance(streaks := getattr(self, "_rest_err_streaks", None), dict):
+            streaks.pop(key, None)
+
+    def _wait_for_nonblocking_sync(self, wait_sec: float, *, enabled: bool = True) -> bool:
+        if self._stop_event.is_set():
+            return True
+        if not enabled:
+            return bool(self._stop_event.wait(wait_sec))
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_done():
+            return False
+        wake_ev = getattr(self, "_sync_wake_event", None)
+        if wake_ev is None:
+            return bool(self._stop_event.wait(wait_sec))
+        wake_ev.wait(timeout=wait_sec)
+        return self._stop_event.is_set()
+
+    def _clamp_wait_for_active_rest_slots(
+        self,
+        wait_sec: float,
+        *,
+        now_mono: float,
+        default_hard_timeout_sec: float,
+        min_wait_sec: float = 0.01,
+    ) -> float:
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is None or not tracker.has_active():
+            return wait_sec
+        ht_sec = self._effective_rest_hard_timeout_sec(default_hard_timeout_sec)
+        next_ht = tracker.next_hard_timeout_remaining(now_mono=now_mono, hard_timeout_sec=ht_sec)
+        if next_ht is not None:
+            return min(wait_sec, max(min_wait_sec, next_ht))
+        return wait_sec
+
+    def _request_stop_nonblocking_rest_sync(self) -> None:
+        if (wake_ev := getattr(self, "_sync_wake_event", None)) is not None:
+            wake_ev.set()
+        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
+            tracker.clear()

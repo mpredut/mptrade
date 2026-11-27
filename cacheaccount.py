@@ -46,6 +46,7 @@ from botcore import (
     first_pos_float,
     is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
+    is_rate_limit_error,
     log,
     normalize_epoch_sec,
     normalize_side,
@@ -61,6 +62,7 @@ from botcore import (
 )
 from cacheInterface import (
     CacheManagerInterface,
+    NonBlockingRestSyncMixin,
     _CACHE_META_SCHEMA_VERSION,
     _cm_override,
     _monotonic_time,
@@ -167,7 +169,7 @@ _bapi_ws_bridge = (
 # =============================================================================
 
 
-class CacheAccountManagerBase(CacheManagerInterface, ABC):
+class CacheAccountManagerBase(NonBlockingRestSyncMixin, CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for account-domain caches (``OrderFilled``, ``OrderOpen``, ``Trade``, ``AssetValue``)."""
 
     _default_api_client = api
@@ -243,16 +245,16 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         self._account_cache_dirty = False
         self._last_complete_sync_at_ms = 0
         self._persisted_ts_stat_cache: Optional[tuple[tuple[int, int, int, int], int]] = None
-        self._rest_slot_tracker = NonBlockingRestSlotTracker()
-        self._rest_hard_timeout_sec: float = ACCOUNT_REST_HARD_TIMEOUT_SEC
-        self._rest_sync_wake_event = threading.Event()
-        self._rest_sync_pool_lock = threading.Lock()
-        self._rest_sync_pool: Optional[_futures.ThreadPoolExecutor] = None
+        self._init_nonblocking_rest_sync(
+            hard_timeout_sec=ACCOUNT_REST_HARD_TIMEOUT_SEC,
+            pool_max_workers=6,
+            pool_min_workers=1,
+        )
+        self._rest_sync_wake_event = self._sync_wake_event
         self._nonblocking_rest_sync_enabled: Optional[bool] = None
         self._sym_next_due_mono: dict[str, float] = {}
         self._sym_last_ok_hw_ms: dict[str, int] = {}
         self._sym_cycle_synced: set[str] = set()
-        self._rest_err_streaks: dict[str, int] = {}
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -324,46 +326,27 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
             return False
         return bool(self.save_state and self.is_running())
 
-    def _get_or_create_rest_sync_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
-        with self._rest_sync_pool_lock:
-            if self._rest_sync_pool is None:
-                eff_hint = max(1, worker_hint, len(getattr(self, "symbols", ()) or ()))
-                self._rest_sync_pool = _futures.ThreadPoolExecutor(
-                    max_workers=max(1, min(6, eff_hint)),
-                    thread_name_prefix=f"{self.cls_name}RestSync",
-                )
-            return self._rest_sync_pool
+    @property
+    def _rest_sync_pool(self) -> Optional[_futures.ThreadPoolExecutor]:
+        return self._rest_slot_tracker.pool
 
-    def _shutdown_rest_sync_pool(self) -> None:
-        with self._rest_sync_pool_lock:
-            pool = self._rest_sync_pool
-            self._rest_sync_pool = None
-        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
-            tracker.clear()
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
-            try:
-                for th in list(getattr(pool, "_threads", ())):
-                    _futures.thread._threads_queues.pop(th, None)
-            except Exception:
-                pass
+    def _get_or_create_rest_sync_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
+        return self._ensure_rest_sync_pool(worker_hint)
 
     def _record_rest_error_backoff(self, symbol: str, exc: object, *, eff_sync_ts: float) -> float:
-        streaks = getattr(self, "_rest_err_streaks", None)
-        if not isinstance(streaks, dict):
-            streaks = {}
-            self._rest_err_streaks = streaks
-        streak = streaks.get(symbol, 0) + 1
-        streaks[symbol] = streak
-        err_l = str(exc or "").lower()
-        if any(tok in err_l for tok in ("429", "-1003", "rate limit", "too many requests", "too much request weight")):
-            return min(120.0, max(15.0, eff_sync_ts) * (2.0 ** min(streak - 1, 3)))
-        base_err = max(0.02, min(eff_sync_ts, 5.0))
-        return min(max(eff_sync_ts, 30.0), base_err * (2.0 ** min(streak - 1, 4)))
+        return self._record_rest_sync_error_backoff(
+            symbol,
+            exc,
+            base_sec=max(0.02, min(eff_sync_ts, 5.0)),
+            max_sec=max(eff_sync_ts, 30.0),
+            rate_limit_base_sec=max(15.0, eff_sync_ts),
+            rate_limit_max_sec=120.0,
+            max_exp=4,
+            rate_limit_max_exp=3,
+        )
 
     def _clear_rest_error_backoff(self, symbol: str) -> None:
-        if isinstance(streaks := getattr(self, "_rest_err_streaks", None), dict):
-            streaks.pop(symbol, None)
+        self._clear_rest_sync_error_backoff(symbol)
 
     def _should_discard_completed_remote_snapshot(self, symbol: str, slot: Any) -> bool:
         """Override in replace-all caches when a newer real-time WS update supersedes an in-flight REST snapshot."""
@@ -394,12 +377,8 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
         tracker = self._rest_slot_tracker
         eff_sync_ts = safe_pos_float(getattr(self, "sync_ts", None), default=15.0) or 15.0
-        hard_timeout_sec = (
-            safe_pos_float(
-                getattr(self, "_rest_hard_timeout_sec", None),
-                default=ACCOUNT_REST_HARD_TIMEOUT_SEC,
-            )
-            or ACCOUNT_REST_HARD_TIMEOUT_SEC
+        hard_timeout_sec = self._effective_rest_hard_timeout_sec(
+            ACCOUNT_REST_HARD_TIMEOUT_SEC
         )
 
         def _harvest_slots(target_syms: Sequence[str], *, cur_mono: float) -> set[str]:
@@ -479,34 +458,24 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
         if pending_syms:
             pool = self._get_or_create_rest_sync_pool(len(pending_syms))
-            submit_mono = _monotonic_time()
-            submit_wall = _now_time()
-            submitted_futs: dict[_futures.Future, str] = {}
             on_done_cb = (lambda _f: wake_ev.set()) if wake_ev is not None else None
-            for sym_item, st_item, hw_item in pending_syms:
-                slot = tracker.submit(
-                    sym_item,
-                    pool,
-                    lambda _s=sym_item, _st=st_item: self.get_remote_items(symbol=_s, startTime=_st),
-                    now_mono=submit_mono,
-                    now_wall_ts=submit_wall,
-                    meta=(st_item, hw_item),
-                    on_done=on_done_cb,
-                )
-                if slot is not None:
-                    submitted_futs[slot.future] = sym_item
-            if submitted_futs:
-                micro_wait = min(0.25, hard_timeout_sec * 0.5, max(0.02, eff_sync_ts * 0.1))
-                done_now, _ = _futures.wait(
-                    submitted_futs.keys(),
-                    timeout=micro_wait,
-                    return_when=_futures.ALL_COMPLETED,
-                )
-                if done_now:
-                    _harvest_slots(
-                        [submitted_futs[f] for f in done_now],
-                        cur_mono=_monotonic_time(),
+            done_syms = tracker.submit_batch_and_wait(
+                [
+                    (
+                        sym_item,
+                        lambda _s=sym_item, _st=st_item: self.get_remote_items(symbol=_s, startTime=_st),
+                        (st_item, hw_item),
                     )
+                    for sym_item, st_item, hw_item in pending_syms
+                ],
+                pool=pool,
+                now_mono=_monotonic_time(),
+                now_wall_ts=_now_time(),
+                micro_wait_sec=min(0.25, hard_timeout_sec * 0.5, max(0.02, eff_sync_ts * 0.1)),
+                on_done=on_done_cb,
+            )
+            if done_syms:
+                _harvest_slots(done_syms, cur_mono=_monotonic_time())
 
         if all(s in self._sym_cycle_synced for s in active_syms):
             min_hw_ms = min((self._sym_last_ok_hw_ms.get(s, 0) for s in active_syms), default=0)
@@ -517,18 +486,9 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         return False
 
     def _wait_for_next_sync(self, wait_sec: float) -> bool:
-        if self._stop_event.is_set():
-            return True
-        if not self._is_nonblocking_account_sync_mode():
-            return super()._wait_for_next_sync(wait_sec)
-        tracker = getattr(self, "_rest_slot_tracker", None)
-        if tracker is not None and tracker.has_done():
-            return False
-        wake_ev = getattr(self, "_rest_sync_wake_event", None)
-        if wake_ev is None:
-            return super()._wait_for_next_sync(wait_sec)
-        wake_ev.wait(timeout=wait_sec)
-        return self._stop_event.is_set()
+        return self._wait_for_nonblocking_sync(
+            wait_sec, enabled=self._is_nonblocking_account_sync_mode()
+        )
 
     def _next_sync_wait_sec(self) -> float:
         base_wait = safe_nonneg_float(getattr(self, "sync_ts", None), default=15.0)
@@ -545,20 +505,12 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         if not has_active and not self._sym_next_due_mono:
             return base_wait
         now_mono = _monotonic_time()
-        wait_sec = base_wait
-        hard_timeout_sec = (
-            safe_pos_float(
-                getattr(self, "_rest_hard_timeout_sec", None),
-                default=ACCOUNT_REST_HARD_TIMEOUT_SEC,
-            )
-            or ACCOUNT_REST_HARD_TIMEOUT_SEC
+        wait_sec = self._clamp_wait_for_active_rest_slots(
+            base_wait,
+            now_mono=now_mono,
+            default_hard_timeout_sec=ACCOUNT_REST_HARD_TIMEOUT_SEC,
+            min_wait_sec=0.01,
         )
-        if has_active:
-            next_ht = tracker.next_hard_timeout_remaining(
-                now_mono=now_mono, hard_timeout_sec=hard_timeout_sec
-            )
-            if next_ht is not None:
-                wait_sec = min(wait_sec, max(0.01, next_ht))
         active_slots = set(tracker.active_symbols()) if has_active else set()
         for sym_item in list(self.symbols):
             if not sym_item or sym_item in active_slots:
@@ -573,10 +525,7 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
 
     def request_stop(self):
         super().request_stop()
-        if (wake_ev := getattr(self, "_rest_sync_wake_event", None)) is not None:
-            wake_ev.set()
-        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
-            tracker.clear()
+        self._request_stop_nonblocking_rest_sync()
 
     set_stop_event = request_stop
 
@@ -5041,6 +4990,155 @@ def _fills_content_signature(
     return {k: (round(v[0], 10), v[1], v[2]) for k, v in acc.items()}
 
 
+def publish_venue_fills_bundle(
+    venue: str,
+    trade_cache_file: str,
+    fills_by_symbol: dict,
+    *,
+    now_ms: Optional[int] = None,
+    touch_symbols=None,
+    touch_create_missing: bool = False,
+    filled_is_snapshot: bool = False,
+    sanitize_venue: Optional[str] = None,
+    indent: Optional[int] = None,
+    force_save: bool = False,
+    strict_trade_merge: bool = True,
+    publish_health: bool = True,
+    refresh_mode: str = "none",
+    prev_sig_holder: Optional[list] = None,
+) -> tuple[Optional[dict], Optional[dict], list[str], list[str]]:
+    """Canonical multi-venue dual-write of ``cache_trade_<venue>`` + ``cache_order_filled_<venue>`` + health + refresh."""
+    eff_ms = resolve_now_ms(now_ms)
+    fo_path = _sibling_order_filled_path(trade_cache_file, venue)
+    before_sig: Optional[dict[tuple[str, str], tuple[float, int, str]]] = None
+    if refresh_mode == "on_change" and prev_sig_holder is None:
+        before_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
+            fo_path,
+            venue=venue,
+            allow_legacy=False,
+            allow_trade_fallback=False,
+        )
+        before_sig = _fills_content_signature(before_items)
+
+    tr_missing: list[str] = []
+    fo_missing: list[str] = []
+    merged_tr: Optional[dict] = None
+    if strict_trade_merge:
+        merged_tr = CacheTradeManager._merge_venue_fills_snapshot_locked(
+            trade_cache_file,
+            fills_by_symbol,
+            now_ms=eff_ms,
+            is_snapshot=False,
+            touch_symbols=touch_symbols,
+            touch_create_missing=touch_create_missing,
+            sanitize_venue=sanitize_venue,
+            indent=indent,
+            force_save=force_save,
+            missing_out=tr_missing,
+        )
+        tr_ok = True
+    else:
+        tr_ok = CacheTradeManager.merge_venue_fills_snapshot(
+            trade_cache_file,
+            fills_by_symbol,
+            now_ms=eff_ms,
+            is_snapshot=False,
+            touch_symbols=touch_symbols,
+            touch_create_missing=touch_create_missing,
+            sanitize_venue=sanitize_venue,
+            indent=indent,
+            missing_out=tr_missing,
+        )
+
+    merged_fo: Optional[dict] = None
+    fo_ok = False
+    try:
+        merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
+            fo_path,
+            fills_by_symbol,
+            venue=venue,
+            now_ms=eff_ms,
+            is_snapshot=filled_is_snapshot,
+            touch_symbols=touch_symbols,
+            touch_create_missing=touch_create_missing,
+            indent=1 if indent is None else indent,
+            force_save=force_save,
+            missing_out=fo_missing,
+        )
+        fo_ok = True
+    except Exception:
+        pass
+
+    if publish_health:
+        if fo_ok and not fo_missing:
+            _record_venue_health_sync(venue, "filled_orders", now_ms=eff_ms)
+        if tr_ok and not tr_missing:
+            _record_venue_health_sync(venue, "trades", now_ms=eff_ms)
+
+    if refresh_mode == "always":
+        request_venue_account_refresh(venue, include_open_orders=True)
+    elif refresh_mode == "on_change":
+        if prev_sig_holder is not None:
+            sig_src, sig_items = (
+                ("fo", merged_fo.get("items") or {})
+                if isinstance(merged_fo, dict)
+                else ("tr", (merged_tr.get("items") or {}) if isinstance(merged_tr, dict) else {})
+            )
+            cur_sig = (sig_src, _fills_content_signature(sig_items))
+            if (
+                prev_sig_holder[0] is not None
+                and prev_sig_holder[0][0] == sig_src
+                and cur_sig[1] != prev_sig_holder[0][1]
+            ):
+                request_venue_account_refresh(venue, include_open_orders=True)
+            prev_sig_holder[0] = cur_sig
+        elif before_sig is not None and isinstance(merged_fo, dict):
+            if _fills_content_signature(merged_fo.get("items") or {}) != before_sig:
+                request_venue_account_refresh(venue, include_open_orders=True)
+
+    return merged_tr, merged_fo, tr_missing, fo_missing
+
+
+def touch_venue_fills_bundle(
+    venue: str,
+    trade_cache_file: str,
+    *,
+    now_ms: Optional[int] = None,
+    symbols=None,
+    create_missing: bool = False,
+    indent: Optional[int] = None,
+) -> tuple[bool, bool, list[str], list[str]]:
+    """Canonical multi-venue keepalive touch of ``cache_trade_<venue>`` + ``cache_order_filled_<venue>`` + health."""
+    eff_ms = resolve_now_ms(now_ms)
+    tr_missing: list[str] = []
+    fo_missing: list[str] = []
+    tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
+        trade_cache_file,
+        now_ms=eff_ms,
+        symbols=symbols,
+        create_missing=create_missing,
+        indent=indent,
+        missing_out=tr_missing,
+    )
+    fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
+        _sibling_order_filled_path(trade_cache_file, venue),
+        now_ms=eff_ms,
+        symbols=symbols,
+        create_missing=create_missing,
+        indent=1 if indent is None else indent,
+        missing_out=fo_missing,
+    )
+    if tr_touched and not tr_missing:
+        _record_venue_health_sync(venue, "trades", now_ms=eff_ms)
+    if fo_touched and not fo_missing:
+        _record_venue_health_sync(venue, "filled_orders", now_ms=eff_ms)
+    return tr_touched, fo_touched, tr_missing, fo_missing
+
+
+CacheAccountManagerBase.publish_venue_fills_bundle = staticmethod(publish_venue_fills_bundle)
+CacheAccountManagerBase.touch_venue_fills_bundle = staticmethod(touch_venue_fills_bundle)
+
+
 class _HyperliquidAccountTradeBridge:
     """Channel bridge attaching ``userFills`` persistence onto a shared Hyperliquid WebSocket stream."""
 
@@ -5098,45 +5196,24 @@ class _HyperliquidAccountTradeBridge:
             # so they neither fabricate spot health nor starve invalidated-symbol recovery.
             return
         fills_file = self.resolve_fills_cache_file()
-        tr_missing: list[str] = []
-        fo_missing: list[str] = []
         # Hyperliquid WS ``userFills`` snapshots only carry a bounded recent fill window;
         # always union-merge into ``CacheTradeManager`` (matching ``CacheOrderFilledManager``)
         # so reconnect snapshots never wipe older fills from ``cache_trade_hyperliquid.json``.
-        tr_ok = CacheTradeManager.merge_venue_fills_snapshot(
+        _, _, tr_missing, fo_missing = publish_venue_fills_bundle(
+            "hyperliquid",
             fills_file,
             fills_by_symbol,
             now_ms=ts_ms,
-            is_snapshot=False,
             touch_symbols=symbols,
             touch_create_missing=is_snapshot,
-            missing_out=tr_missing,
+            filled_is_snapshot=is_snapshot,
+            strict_trade_merge=False,
+            refresh_mode="always" if (not is_snapshot and has_spot_fills) else "none",
         )
-        fo_ok = False
-        try:
-            CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                _sibling_order_filled_path(fills_file, "hyperliquid"),
-                fills_by_symbol,
-                venue="hyperliquid",
-                now_ms=ts_ms,
-                is_snapshot=is_snapshot,
-                touch_symbols=symbols,
-                touch_create_missing=is_snapshot,
-                missing_out=fo_missing,
-            )
-            fo_ok = True
-        except Exception:
-            pass
-        if fo_ok and not fo_missing:
-            _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
-        if tr_ok and not tr_missing:
-            _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
         if is_snapshot:
             ws_stream._fills_ws_seeded = True
             ws_stream._last_fills_touch_ms = ts_ms
         else:
-            if has_spot_fills:
-                request_venue_account_refresh("hyperliquid", include_open_orders=True)
             missing_syms = tuple(dict.fromkeys((*tr_missing, *fo_missing)))
             if missing_syms:
                 self._schedule_invalidated_fills_resync(missing_syms, fills_file, ts_ms)
@@ -5197,38 +5274,17 @@ class _HyperliquidAccountTradeBridge:
                         log(f"[hyperliquid_cache][ws] invalidated fills REST resync {sym_s} failed: {exc}")
                 if ok_syms:
                     sync_ms = ts_ms if blocking else max(ts_ms, resolve_now_ms())
-                    fo_path = _sibling_order_filled_path(fills_file, "hyperliquid")
-                    before_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
-                        fo_path,
-                        venue="hyperliquid",
-                        allow_legacy=False,
-                        allow_trade_fallback=False,
-                    )
-
-                    before_sig = _fills_content_signature(before_items)
-                    CacheTradeManager.merge_venue_fills_snapshot(
+                    publish_venue_fills_bundle(
+                        "hyperliquid",
                         fills_file,
                         fills_by_sym,
                         now_ms=sync_ms,
-                        is_snapshot=False,
                         touch_symbols=ok_syms,
                         touch_create_missing=True,
+                        strict_trade_merge=False,
+                        publish_health=(len(ok_syms) == len(symbols)),
+                        refresh_mode="on_change",
                     )
-                    merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                        fo_path,
-                        fills_by_sym,
-                        venue="hyperliquid",
-                        now_ms=sync_ms,
-                        is_snapshot=False,
-                        touch_symbols=ok_syms,
-                        touch_create_missing=True,
-                    )
-                    after_items = merged_fo.get("items") if isinstance(merged_fo, dict) else {}
-                    if _fills_content_signature(after_items or {}) != before_sig:
-                        request_venue_account_refresh("hyperliquid", include_open_orders=True)
-                    if len(ok_syms) == len(symbols):
-                        _record_venue_health_sync("hyperliquid", "trades", now_ms=sync_ms)
-                        _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=sync_ms)
             finally:
                 with self._rest_resync_lock:
                     if my_gen == self._rest_resync_gen:
@@ -5236,8 +5292,7 @@ class _HyperliquidAccountTradeBridge:
                             self._rest_backoff_sec = 0.0
                             self._next_rest_resync_ms = 0
                         else:
-                            err_l = last_err.lower()
-                            if "429" in err_l or "rate limit" in err_l:
+                            if is_rate_limit_error(last_err):
                                 self._rest_backoff_sec = min(300.0, max(30.0, self._rest_backoff_sec * 2.0))
                             else:
                                 self._rest_backoff_sec = min(120.0, max(15.0, self._rest_backoff_sec * 2.0))
@@ -5273,26 +5328,13 @@ class _HyperliquidAccountTradeBridge:
             with ws_stream._lock:
                 symbols = tuple(ws_stream._symbols or ())
             fills_file = self.resolve_fills_cache_file()
-            tr_missing: list[str] = []
-            fo_missing: list[str] = []
-            tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
+            tr_touched, fo_touched, tr_missing, fo_missing = touch_venue_fills_bundle(
+                "hyperliquid",
                 fills_file,
-                ts_ms,
+                now_ms=ts_ms,
                 symbols=symbols,
                 create_missing=False,
-                missing_out=tr_missing,
             )
-            fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
-                _sibling_order_filled_path(fills_file, "hyperliquid"),
-                ts_ms,
-                symbols=symbols,
-                create_missing=False,
-                missing_out=fo_missing,
-            )
-            if tr_touched and not tr_missing:
-                _record_venue_health_sync("hyperliquid", "trades", now_ms=ts_ms)
-            if fo_touched and not fo_missing:
-                _record_venue_health_sync("hyperliquid", "filled_orders", now_ms=ts_ms)
             resync_syms = (
                 symbols
                 if (not tr_touched or not fo_touched)
@@ -5361,51 +5403,23 @@ def run_kraken_trade_poll_loop(
         by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
             client, pairs=pairs, lookback_sec=lookback_sec
         )
-        eff_ms = resolve_now_ms()
         # Windowed ``lookback_sec`` REST Ledgers fetches must union-merge (same as WS loop)
         # so fills older than ``lookback_sec`` are never wiped from ``cache_trade_kraken.json``.
-        merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
+        merged, _, _, _ = publish_venue_fills_bundle(
+            "kraken",
             cache_file,
             by_sym,
-            now_ms=eff_ms,
-            is_snapshot=False,
+            now_ms=resolve_now_ms(),
             touch_symbols=pairs,
             touch_create_missing=True,
             sanitize_venue="kraken",
             indent=1,
             force_save=True,
+            strict_trade_merge=True,
+            refresh_mode="on_change",
+            prev_sig_holder=prev_fills_sig,
         )
-        merged_fo = None
-        try:
-            merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                _sibling_order_filled_path(cache_file, "kraken"),
-                by_sym,
-                venue="kraken",
-                now_ms=eff_ms,
-                is_snapshot=False,
-                touch_symbols=pairs,
-                touch_create_missing=True,
-                indent=1,
-                force_save=True,
-            )
-            _record_venue_health_sync("kraken", "filled_orders", now_ms=eff_ms)
-        except Exception:
-            pass
-        _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
-        sig_src, sig_items = (
-            ("fo", merged_fo.get("items") or {})
-            if isinstance(merged_fo, dict)
-            else ("tr", merged.get("items") or {})
-        )
-        cur_sig = (sig_src, _fills_content_signature(sig_items))
-        if (
-            prev_fills_sig[0] is not None
-            and prev_fills_sig[0][0] == sig_src
-            and cur_sig[1] != prev_fills_sig[0][1]
-        ):
-            request_venue_account_refresh("kraken", include_open_orders=True)
-        prev_fills_sig[0] = cur_sig
-        return merged
+        return merged or {"items": {}, "fetchtime": {}}
 
     _run_account_trade_poll_loop(
         sync_once_fn=_sync_once,
@@ -5484,13 +5498,9 @@ def run_kraken_trade_ws_loop(
         or ACCOUNT_REST_HARD_TIMEOUT_SEC
     )
 
-    def _is_rate_limit_err(err_msg: object) -> bool:
-        txt = str(err_msg or "").lower()
-        return ("rate limit" in txt) or ("temporary lockout" in txt)
-
     def _bump_backoff(err_msg: object = "") -> None:
         txt = str(err_msg or "").lower()
-        if _is_rate_limit_err(txt):
+        if is_rate_limit_error(txt):
             # Escalate quickly (30 -> 90 -> 270 -> 960s) to clear Kraken's 15-min penalty without extending it.
             backoff_cur[0] = min(rate_limit_cap, max(30.0, backoff_cur[0] * 3.0))
         elif "invalid nonce" in txt:
@@ -5499,7 +5509,7 @@ def run_kraken_trade_ws_loop(
             backoff_cur[0] = min(backoff_cap, max(5.0, backoff_cur[0] * 1.5))
 
     def _bump_rest_sync_backoff(err_msg: object = "") -> float:
-        if _is_rate_limit_err(err_msg):
+        if is_rate_limit_error(err_msg):
             rest_backoff_sec[0] = min(rate_limit_cap, max(30.0, rest_backoff_sec[0] * 3.0))
         else:
             rest_backoff_sec[0] = min(60.0, max(15.0, rest_backoff_sec[0] * 2.0))
@@ -5517,50 +5527,19 @@ def run_kraken_trade_ws_loop(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
             eff_ms = resolve_now_ms(now_ms)
-            fo_path = _sibling_order_filled_path(cache_file, "kraken")
-            before_sig: Optional[dict[tuple[str, str], tuple[float, int, str]]] = None
-            if trigger_refresh:
-                before_fo_items, _ = CacheOrderFilledManager.read_venue_filled_orders_snapshot(
-                    fo_path,
-                    venue="kraken",
-                    allow_legacy=False,
-                    allow_trade_fallback=False,
-                )
-                before_sig = _fills_content_signature(before_fo_items)
-            merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
+            merged, _, _, _ = publish_venue_fills_bundle(
+                "kraken",
                 cache_file,
                 by_sym,
                 now_ms=eff_ms,
-                is_snapshot=False,
                 touch_symbols=pairs,
                 touch_create_missing=True,
                 sanitize_venue="kraken",
                 indent=1,
                 force_save=True,
+                strict_trade_merge=True,
+                refresh_mode="on_change" if trigger_refresh else "none",
             )
-            merged_fo = None
-            try:
-                merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                    fo_path,
-                    by_sym,
-                    venue="kraken",
-                    now_ms=eff_ms,
-                    is_snapshot=False,
-                    touch_symbols=pairs,
-                    touch_create_missing=True,
-                    indent=1,
-                    force_save=True,
-                )
-                _record_venue_health_sync("kraken", "filled_orders", now_ms=eff_ms)
-            except Exception:
-                pass
-            _record_venue_health_sync("kraken", "trades", now_ms=eff_ms)
-            if (
-                before_sig is not None
-                and isinstance(merged_fo, dict)
-                and _fills_content_signature(merged_fo.get("items") or {}) != before_sig
-            ):
-                request_venue_account_refresh("kraken", include_open_orders=True)
             last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
             rest_backoff_sec[0] = 0.0
             next_rest_sync_ms[0] = 0
@@ -5574,7 +5553,7 @@ def run_kraken_trade_ws_loop(
 
     # Initial REST seed: if rate-limited, defer WS token call until backoff clears instead of double-hitting Kraken.
     seed_ok = _merge_rest("REST seed failed", trigger_refresh=False) is not None
-    if not seed_ok and _is_rate_limit_err(last_err_text[0]):
+    if not seed_ok and is_rate_limit_error(last_err_text[0]):
         _bump_backoff(last_err_text[0])
         log(f"[kraken_cache][ws] rate-limited on seed; cooling down {backoff_cur[0]:g}s before WS connect")
         if _wait_or_sleep(stop_event, backoff_cur[0]):
@@ -5671,28 +5650,14 @@ def run_kraken_trade_ws_loop(
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms and now_ms >= next_rest_sync_ms[0]:
                     launched_async = _launch_bg_rest_sync(now_ms)
                 if not launched_async and last_rest_sync_ms[0] > 0:
-                    tr_missing: list[str] = []
-                    fo_missing: list[str] = []
-                    tr_touched = CacheTradeManager.touch_venue_fills_snapshot(
+                    tr_touched, fo_touched, tr_missing, fo_missing = touch_venue_fills_bundle(
+                        "kraken",
                         cache_file,
                         now_ms=now_ms,
                         symbols=pairs,
                         create_missing=False,
                         indent=1,
-                        missing_out=tr_missing,
                     )
-                    fo_touched = CacheOrderFilledManager.touch_venue_filled_orders_snapshot(
-                        _sibling_order_filled_path(cache_file, "kraken"),
-                        now_ms=now_ms,
-                        symbols=pairs,
-                        create_missing=False,
-                        indent=1,
-                        missing_out=fo_missing,
-                    )
-                    if tr_touched and not tr_missing:
-                        _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
-                    if fo_touched and not fo_missing:
-                        _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
                     if (not tr_touched or not fo_touched or tr_missing or fo_missing) and now_ms >= next_rest_sync_ms[0]:
                         _launch_bg_rest_sync(now_ms)
                 last_flush_ms[0] = now_ms
@@ -5700,40 +5665,18 @@ def run_kraken_trade_ws_loop(
         else:
             if not any(fills_by_sym.values()):
                 return
-            tr_missing: list[str] = []
-            fo_missing: list[str] = []
-            CacheTradeManager._merge_venue_fills_snapshot_locked(
+            _, _, tr_missing, fo_missing = publish_venue_fills_bundle(
+                "kraken",
                 cache_file,
                 fills_by_sym,
                 now_ms=now_ms,
-                is_snapshot=False,
                 touch_symbols=pairs,
                 touch_create_missing=False,
                 sanitize_venue="kraken",
                 indent=1,
-                missing_out=tr_missing,
+                strict_trade_merge=True,
+                refresh_mode="always",
             )
-            fo_ok = False
-            try:
-                CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                    _sibling_order_filled_path(cache_file, "kraken"),
-                    fills_by_sym,
-                    venue="kraken",
-                    now_ms=now_ms,
-                    is_snapshot=False,
-                    touch_symbols=pairs,
-                    touch_create_missing=False,
-                    indent=1,
-                    missing_out=fo_missing,
-                )
-                fo_ok = True
-            except Exception:
-                pass
-            if fo_ok and not fo_missing:
-                _record_venue_health_sync("kraken", "filled_orders", now_ms=now_ms)
-            if not tr_missing:
-                _record_venue_health_sync("kraken", "trades", now_ms=now_ms)
-            request_venue_account_refresh("kraken", include_open_orders=True)
             if not tr_missing and not fo_missing:
                 last_flush_ms[0] = now_ms
             should_hb = True
@@ -5854,49 +5797,21 @@ def run_t212_trade_poll_loop(
         by_sym = t212_prov_cls.fetch_history_fills_by_symbol(
             client, symbols=symbols, publish_shared_cache=True
         )
-        eff_ms = resolve_now_ms()
-        merged = CacheTradeManager._merge_venue_fills_snapshot_locked(
+        merged, _, _, _ = publish_venue_fills_bundle(
+            "t212",
             cache_file,
             by_sym,
-            now_ms=eff_ms,
-            is_snapshot=False,
+            now_ms=resolve_now_ms(),
             touch_symbols=symbols,
             touch_create_missing=True,
             sanitize_venue="t212",
             indent=1,
             force_save=True,
+            strict_trade_merge=True,
+            refresh_mode="on_change",
+            prev_sig_holder=prev_fills_sig,
         )
-        merged_fo = None
-        try:
-            merged_fo = CacheOrderFilledManager.merge_venue_filled_orders_snapshot(
-                _sibling_order_filled_path(cache_file, "t212"),
-                by_sym,
-                venue="t212",
-                now_ms=eff_ms,
-                is_snapshot=False,
-                touch_symbols=symbols,
-                touch_create_missing=True,
-                indent=1,
-                force_save=True,
-            )
-            _record_venue_health_sync("t212", "filled_orders", now_ms=eff_ms)
-        except Exception:
-            pass
-        _record_venue_health_sync("t212", "trades", now_ms=eff_ms)
-        sig_src, sig_items = (
-            ("fo", merged_fo.get("items") or {})
-            if isinstance(merged_fo, dict)
-            else ("tr", merged.get("items") or {})
-        )
-        cur_sig = (sig_src, _fills_content_signature(sig_items))
-        if (
-            prev_fills_sig[0] is not None
-            and prev_fills_sig[0][0] == sig_src
-            and cur_sig[1] != prev_fills_sig[0][1]
-        ):
-            request_venue_account_refresh("t212", include_open_orders=True)
-        prev_fills_sig[0] = cur_sig
-        return merged
+        return merged or {"items": {}, "fetchtime": {}}
 
     _run_account_trade_poll_loop(
         sync_once_fn=_sync_once,
@@ -5960,8 +5875,6 @@ class _MultiVenueNonBlockingBridgeBase(_AccountTradeBridgeBase, ABC):
         super().__init__()
         self._slot_tracker = NonBlockingRestSlotTracker()
         self._wake_event = threading.Event()
-        self._pool_lock = threading.Lock()
-        self._pool: Optional[_futures.ThreadPoolExecutor] = None
         self._hard_timeout_sec: float = (
             safe_pos_float(hard_timeout_sec, default=ACCOUNT_REST_HARD_TIMEOUT_SEC)
             or ACCOUNT_REST_HARD_TIMEOUT_SEC
@@ -5969,16 +5882,7 @@ class _MultiVenueNonBlockingBridgeBase(_AccountTradeBridgeBase, ABC):
         self._poll_interval_sec: Optional[float] = safe_pos_float(poll_interval_sec, default=None)
 
     def _shutdown_pool(self) -> None:
-        with self._pool_lock:
-            pool = self._pool
-            self._pool = None
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
-            try:
-                for th in list(getattr(pool, "_threads", ())):
-                    _futures.thread._threads_queues.pop(th, None)
-            except Exception:
-                pass
+        self._slot_tracker.shutdown_pool()
 
     def request_stop(self) -> None:
         super().request_stop()
@@ -6011,12 +5915,10 @@ class _MultiVenueNonBlockingBridgeBase(_AccountTradeBridgeBase, ABC):
             safe_pos_float(self._hard_timeout_sec, default=ACCOUNT_REST_HARD_TIMEOUT_SEC)
             or ACCOUNT_REST_HARD_TIMEOUT_SEC
         )
-        pool = _futures.ThreadPoolExecutor(
+        pool = self._slot_tracker.ensure_pool(
             max_workers=max(2, len(venue_tuple) + 1),
             thread_name_prefix=pool_prefix,
         )
-        with self._pool_lock:
-            self._pool = pool
         next_due_mono: dict[str, float] = {}
         try:
             while not self._stop_event.is_set():

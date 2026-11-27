@@ -28,7 +28,6 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
-    NonBlockingRestSlotTracker,
     PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
@@ -63,6 +62,7 @@ from botcore import (
 )
 from cacheInterface import (
     CacheManagerInterface,
+    NonBlockingRestSyncMixin,
     _cm_override,
     _coerce_symbol_list,
     _monotonic_time,
@@ -2195,7 +2195,7 @@ class Cache365PriceManager(CacheBoundedJsonlArchiveMixin, Cache24PriceManager):
 # =============================================================================
 
 
-class CacheCurrentPriceManager(CachePriceManagerBase):
+class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
     """Maintain the latest timestamped price per symbol (Level 3, WebSocket-first with HTTP fallback)."""
 
     WS_TIMEOUT_SEC = PRICE_WS_TIMEOUT_SEC
@@ -2242,16 +2242,18 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._empty_http_backoff_ts: dict[str, float] = {}
         self._empty_http_streaks: dict[str, int] = {}
         self._err_backoff_until_mono: dict[str, float] = {}
-        self._err_streaks: dict[str, int] = {}
         self._last_http_poll_ts_per_symbol: dict[str, float] = {}
         self._last_equity_poll_mono: dict[str, float] = {}
         self._pending_price_outliers: dict[str, tuple[int, float]] = {}
         self._price_anchor_confirmations: dict[str, int] = {}
-        self._fallback_pool_lock = threading.Lock()
-        self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
-        self._rest_slot_tracker = NonBlockingRestSlotTracker()
+        self._init_nonblocking_rest_sync(
+            hard_timeout_sec=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
+            pool_max_workers=12,
+            pool_min_workers=2,
+            pool_prefix="CPFallbackFetch",
+        )
+        self._err_streaks = self._rest_err_streaks
         self._in_flight_http_futs = self._rest_slot_tracker.slots
-        self._sync_wake_event = threading.Event()
         self._first_sleep = True
         self._tick_ipc_lock = threading.Lock()
         self._tick_ipc_stop = threading.Event()
@@ -2593,32 +2595,15 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             self._last_disk_sync_max_ts = committed_ts
         return self._log_cache_saved_ok()
 
+    @property
+    def _fallback_pool(self) -> Optional[_futures.ThreadPoolExecutor]:
+        return self._rest_slot_tracker.pool
+
     def _get_or_create_fallback_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
-        with self._fallback_pool_lock:
-            if self._fallback_pool is None:
-                eff_hint = max(worker_hint, len(getattr(self, "symbols", ()) or ()))
-                self._fallback_pool = _futures.ThreadPoolExecutor(
-                    max_workers=max(2, min(12, eff_hint)),
-                    thread_name_prefix="CPFallbackFetch",
-                )
-            return self._fallback_pool
+        return self._ensure_rest_sync_pool(worker_hint)
 
     def _shutdown_fallback_pool(self) -> None:
-        with self._fallback_pool_lock:
-            pool = self._fallback_pool
-            self._fallback_pool = None
-            tracker = getattr(self, "_rest_slot_tracker", None)
-            if tracker is not None:
-                tracker.clear()
-            else:
-                self._in_flight_http_futs.clear()
-        if pool is not None:
-            pool.shutdown(wait=False, cancel_futures=True)
-            try:
-                for th in list(getattr(pool, "_threads", ())):
-                    _futures.thread._threads_queues.pop(th, None)
-            except Exception:
-                pass
+        self._shutdown_rest_sync_pool()
 
     def _is_live_network_mode(self) -> bool:
         stop_ev = getattr(self, "_stop_event", None)
@@ -2676,29 +2661,27 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self, symbol: str, exc: object, *, now_mono: Optional[float] = None
     ) -> float:
         """Record monotonic exponential error backoff (aggressive on HTTP 429/rate-limit)."""
-        streaks = getattr(self, "_err_streaks", None)
-        if not isinstance(streaks, dict):
-            streaks = {}
-            self._err_streaks = streaks
         until_map = getattr(self, "_err_backoff_until_mono", None)
         if not isinstance(until_map, dict):
             until_map = {}
             self._err_backoff_until_mono = until_map
-        streak = streaks.get(symbol, 0) + 1
-        streaks[symbol] = streak
         eff_interval = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
-        err_l = str(exc or "").lower()
-        if "429" in err_l or "rate limit" in err_l or "too many requests" in err_l:
-            delay_s = min(120.0, max(15.0, eff_interval * 4.0) * (2.0 ** min(streak - 1, 3)))
-        else:
-            delay_s = min(30.0, max(eff_interval * 2.0, 0.5) * (2.0 ** min(streak - 1, 5)))
+        delay_s = self._record_rest_sync_error_backoff(
+            symbol,
+            exc,
+            base_sec=max(eff_interval * 2.0, 0.5),
+            max_sec=30.0,
+            rate_limit_base_sec=max(15.0, eff_interval * 4.0),
+            rate_limit_max_sec=120.0,
+            max_exp=5,
+            rate_limit_max_exp=3,
+        )
         ref_mono = _monotonic_time() if now_mono is None else now_mono
         until_map[symbol] = ref_mono + delay_s
         return delay_s
 
     def _clear_poll_error_backoff(self, symbol: str) -> None:
-        if isinstance(streaks := getattr(self, "_err_streaks", None), dict):
-            streaks.pop(symbol, None)
+        self._clear_rest_sync_error_backoff(symbol)
         if isinstance(until_map := getattr(self, "_err_backoff_until_mono", None), dict):
             until_map.pop(symbol, None)
 
@@ -2830,12 +2813,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
         )
         tracker = getattr(self, "_rest_slot_tracker", None)
-        hard_timeout_sec = (
-            safe_pos_float(
-                getattr(self, "_rest_hard_timeout_sec", None),
-                default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
-            )
-            or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
+        hard_timeout_sec = self._effective_rest_hard_timeout_sec(
+            PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
         )
 
         def _apply_remote_items(sym_done: str, new_items: Any, is_rth_done: bool) -> None:
@@ -2971,31 +2950,24 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return True
 
         pool = self._get_or_create_fallback_pool(len(pending_polls))
-        submit_mono = _monotonic_time()
-        submit_wall = _now_time()
-        submitted_futs: dict[_futures.Future, str] = {}
         on_done_cb = (lambda _f: wake_ev.set()) if wake_ev is not None else None
-        for sym_item, st_item, is_rth_sym in pending_polls:
-            slot = tracker.submit(
-                sym_item,
-                pool,
-                lambda _s=sym_item, _st=st_item: self.get_remote_items(_s, _st),
-                now_mono=submit_mono,
-                now_wall_ts=submit_wall,
-                meta=is_rth_sym,
-                on_done=on_done_cb,
-            )
-            if slot is not None:
-                submitted_futs[slot.future] = sym_item
-        if submitted_futs:
-            micro_wait = min(0.05, max(0.01, PRICE_STREAM_POLL_INTERVAL_SEC * 0.1))
-            done_now, _ = _futures.wait(submitted_futs.keys(), timeout=micro_wait)
-            if done_now:
-                _harvest_slots(
-                    [submitted_futs[f] for f in done_now],
-                    cur_mono=_monotonic_time(),
-                    cur_wall=_now_time(),
+        done_syms = tracker.submit_batch_and_wait(
+            [
+                (
+                    sym_item,
+                    lambda _s=sym_item, _st=st_item: self.get_remote_items(_s, _st),
+                    is_rth_sym,
                 )
+                for sym_item, st_item, is_rth_sym in pending_polls
+            ],
+            pool=pool,
+            now_mono=_monotonic_time(),
+            now_wall_ts=_now_time(),
+            micro_wait_sec=min(0.05, max(0.01, PRICE_STREAM_POLL_INTERVAL_SEC * 0.1)),
+            on_done=on_done_cb,
+        )
+        if done_syms:
+            _harvest_slots(done_syms, cur_mono=_monotonic_time(), cur_wall=_now_time())
         return True
 
     def get_remote_items(self, symbol, startTime):
@@ -3088,16 +3060,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         return False
 
     def _wait_for_next_sync(self, wait_sec: float) -> bool:
-        if self._stop_event.is_set():
-            return True
-        tracker = getattr(self, "_rest_slot_tracker", None)
-        if tracker is not None and tracker.has_done():
-            return False
-        wake_ev = getattr(self, "_sync_wake_event", None)
-        if wake_ev is None:
-            return bool(self._stop_event.wait(wait_sec))
-        wake_ev.wait(timeout=wait_sec)
-        return self._stop_event.is_set()
+        return self._wait_for_nonblocking_sync(wait_sec)
 
     def _next_sync_wait_sec(self) -> float:
         base_wait = safe_nonneg_float(self.sync_ts, default=0.8)
@@ -3113,20 +3076,12 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ) or 0
         if persisted_snap_ts > 0 and (self._mem_max_ts() - persisted_snap_ts) >= 800:
             return min(base_wait, 0.03)
-        wait_sec = min(base_wait, 0.35)
-        if tracker is not None and tracker.has_active():
-            ht_sec = (
-                safe_pos_float(
-                    getattr(self, "_rest_hard_timeout_sec", None),
-                    default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
-                )
-                or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
-            )
-            next_ht = tracker.next_hard_timeout_remaining(
-                now_mono=_monotonic_time(), hard_timeout_sec=ht_sec
-            )
-            if next_ht is not None:
-                wait_sec = min(wait_sec, max(0.02, next_ht))
+        wait_sec = self._clamp_wait_for_active_rest_slots(
+            min(base_wait, 0.35),
+            now_mono=_monotonic_time(),
+            default_hard_timeout_sec=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
+            min_wait_sec=0.02,
+        )
         now = _now_time()
         is_live_daemon = self._is_live_daemon_poll_mode()
         for sym_item in list(self.symbols):
@@ -3606,8 +3561,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def request_stop(self) -> None:
         super().request_stop()
-        if (wake_ev := getattr(self, "_sync_wake_event", None)) is not None:
-            wake_ev.set()
+        self._request_stop_nonblocking_rest_sync()
         self._request_stop_owned_ws_streams()
         self._tick_ipc_stop.set()
         with self._tick_ipc_lock:
