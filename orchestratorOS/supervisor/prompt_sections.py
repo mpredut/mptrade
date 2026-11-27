@@ -19,12 +19,13 @@ import re
 from typing import Any, Dict, List, Optional
 
 from botcore import (
+    MAX_FUTURE_TIMESTAMP_SKEW_MS,
     _parse_bool_flag,
     first_epoch_sec,
-    normalize_timestamp_ms,
     fmt_signed,
     is_us_rth_open,
     normalize_epoch_sec,
+    normalize_timestamp_ms,
     parse_symbol_list,
     resolve_now_ts,
     safe_float,
@@ -2452,7 +2453,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         if raw_ms is None:
             ts_s = first_epoch_sec(entry_obj.get("ts_ms"), entry_obj.get("ts"), default=None, allow_iso=True)
             raw_ms = (ts_s * 1000.0) if ts_s is not None else None
-        return round(raw_ms) if (raw_ms is not None and raw_ms <= now_ms + 60_000.0) else 0
+        return round(raw_ms) if (raw_ms is not None and 0 < raw_ms <= now_ms + MAX_FUTURE_TIMESTAMP_SKEW_MS) else 0
 
     def _side_summary(key: str) -> str:
         entry = oinfo.get(key) if isinstance(oinfo.get(key), dict) else {}

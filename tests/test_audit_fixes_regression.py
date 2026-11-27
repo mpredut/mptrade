@@ -8698,6 +8698,7 @@ def test_cycle17_rth_open_inflight_quote_skew_whale_long_pp_and_opening_rvol_1h(
     from orchestratorOS.supervisor.prompt_sections import _format_microstructure_section
 
     # 1. d_whale_long renders percentage points (*100), never 100x-understated fraction with '%'
+    # (equity d_whale_long is gated on live Cboe options OI > 0)
     sec3b = "\n".join(
         _format_microstructure_section(
             {
@@ -8705,6 +8706,7 @@ def test_cycle17_rth_open_inflight_quote_skew_whale_long_pp_and_opening_rvol_1h(
                     "ob_imbalance": 0.278,
                     "bid_depth_usd": 250_000.0,
                     "ask_depth_usd": 647_956.0,
+                    "oi_usd": 1_000_000.0,
                     "whale_long_pct": 0.1563,
                     "taker_ratio": 0.1853,
                     "taker_buy_vol_usd": 219_382_129.0,

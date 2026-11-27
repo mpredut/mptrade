@@ -24,7 +24,7 @@ from botcore import (  # noqa: E402
     extract_current_price_timestamp_sec,
     first_epoch_sec,
     first_pos_float,
-    optional_env,
+    is_live_network_backfill_enabled,
     summarize_current_price_cache_freshness,
 )
 from orchestratorOS.lib.technical_repair_ssot import (  # noqa: E402
@@ -298,8 +298,7 @@ def main() -> int:
             print("   all venue reflections (open/filled/trade/balance/ledger/health) -> OK")
 
     # 5. OS & venue clock sync (live runs probe Binance/Kraken UTC and auto-repair via trading-admin)
-    in_pytest = bool(optional_env("PYTEST_CURRENT_TEST"))
-    if is_default_cache and not in_pytest:
+    if is_default_cache and is_live_network_backfill_enabled():
         _, clock_problems = check_clock_sync_coherence(auto_repair=True, include_venue_probes=True)
         problems.extend(clock_problems)
 
