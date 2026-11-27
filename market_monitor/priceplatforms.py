@@ -79,10 +79,12 @@ class PricePlatformInterface(ABC):
     IS_EQUITY_PLATFORM: bool = False
     REQUIRES_CMC_KEY: bool = False
     PRIORITY_ORDER: int = 100
+    DEFAULT_REFRESH_FAILURE_BACKOFF_SEC: float = 60.0
 
     _supported_symbols: Set[str]
     _last_refresh: float = 0.0
     _refresh_interval: float = 0.0
+    _last_refresh_failed: bool = False
 
     @abstractmethod
     def get_price(self, symbol: str) -> Optional[float]:
@@ -96,20 +98,31 @@ class PricePlatformInterface(ABC):
     def _init_platform_refresh(self, refresh_interval: float, *, load_now: bool = True) -> None:
         self._supported_symbols = set()
         self._last_refresh = 0.0
+        self._last_refresh_failed = False
         self._refresh_interval = safe_nonneg_float(refresh_interval, default=0.0)
         if _parse_bool_flag(load_now, True):
             self._load_symbols()
+
+    def _record_refresh_result(self, ok: bool) -> None:
+        self._last_refresh = time.time()
+        self._last_refresh_failed = not bool(ok)
 
     def _load_symbols(self):
         pass
 
     def refresh_symbols(self):
         now_s = time.time()
-        last_ref = safe_nonneg_float(getattr(self, "_last_refresh", 0.0), default=0.0)
+        refresh_interval = safe_nonneg_float(getattr(self, "_refresh_interval", 0.0), default=0.0) or 0.0
+        last_ref = safe_nonneg_float(getattr(self, "_last_refresh", 0.0), default=0.0) or 0.0
+        eff_interval = (
+            min(refresh_interval, self.DEFAULT_REFRESH_FAILURE_BACKOFF_SEC)
+            if _parse_bool_flag(getattr(self, "_last_refresh_failed", False), False)
+            else refresh_interval
+        )
         if (
-            self._refresh_interval > 0
+            refresh_interval > 0
             and bool(getattr(self, "api_key", True))
-            and (last_ref <= 0.0 or not (0.0 <= (now_s - last_ref) <= self._refresh_interval))
+            and (last_ref <= 0.0 or not (0.0 <= (now_s - last_ref) <= eff_interval))
         ):
             self._load_symbols()
 
@@ -287,6 +300,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
         self._init_platform_refresh(3600)
 
     def _load_symbols(self):
+        loaded_ok = False
         try:
             data = self._fetch_json_get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
             supported_symbols, usdc_pairs, pair_to_base = extract_trading_quote_pairs(
@@ -303,6 +317,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
                 self._usdc_pairs = usdc_pairs
                 self._supported_symbols = supported_symbols
                 self._symbol_mapping = symbol_mapping
+                loaded_ok = True
                 print(f"[BinancePlatform] USDC: {len(self._usdc_pairs)} pairs")
         except Exception as e:
             print(f"[BinancePlatform] Warning loading symbols: {e}")
@@ -319,7 +334,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
                     **{pair: pair for pair in self._usdc_pairs},
                 }
         finally:
-            self._last_refresh = time.time()
+            self._record_refresh_result(loaded_ok)
 
     def _resolve_trading_pair(self, symbol: str) -> Optional[str]:
         if not isinstance(symbol, str) or not symbol.strip():
@@ -343,6 +358,7 @@ class BinancePricePlatform(CryptoPricePlatformBase):
     def supports_symbol(self, symbol: str) -> bool:
         if not isinstance(symbol, str) or not symbol.strip():
             return False
+        self.refresh_symbols()
         return self._resolve_trading_pair(symbol) is not None
 
     def get_price(self, symbol: str) -> Optional[float]:
@@ -377,6 +393,7 @@ class HyperliquidPricePlatform(CryptoPricePlatformBase):
         self._init_platform_refresh(refresh_interval)
 
     def _load_symbols(self):
+        loaded_ok = False
         try:
             mids = self._fetch_json_post(
                 self._url,
@@ -388,13 +405,14 @@ class HyperliquidPricePlatform(CryptoPricePlatformBase):
                 raise ValueError("Hyperliquid allMids response must be a non-empty dict")
             self._all_mids = mids
             self._supported_symbols = set(self._all_mids.keys())
+            loaded_ok = True
             print(f"[HyperliquidPlatform] Loaded {len(self._supported_symbols)} symbols")
         except Exception as e:
             print(f"[HyperliquidPlatform] Warning loading symbols: {e}")
             if not self._supported_symbols:
                 self._supported_symbols = {"HYPE", "PURR", "BTC", "ETH", "SOL", "USDC", "TAO", "ARB", "DOGE"}
         finally:
-            self._last_refresh = time.time()
+            self._record_refresh_result(loaded_ok)
 
     def get_price(self, symbol: str) -> Optional[float]:
         try:
@@ -441,28 +459,37 @@ class CoinMarketCapPricePlatform(CryptoPricePlatformBase):
 
     def _load_symbols_from_disk_cache(self, max_age_s: Optional[float] = None) -> bool:
         try:
-            prev_file = f"{self._cache_file}.previous"
-            if not os.path.exists(self._cache_file) and not os.path.exists(prev_file):
-                return False
-            stat_path = self._cache_file if os.path.exists(self._cache_file) else prev_file
-            mtime = os.path.getmtime(stat_path)
-            if max_age_s is not None and (time.time() - mtime) > max_age_s:
-                return False
-
-            cached = read_json_dict(self._cache_file, default=None, recover_previous=True)
-            if not isinstance(cached, dict) or not cached:
-                return False
-            cleaned = {
-                k.strip().upper(): v
-                for k, v in cached.items()
-                if isinstance(k, str) and k.strip() and isinstance(v, dict)
-            }
-            if not cleaned:
-                return False
-            self._all_listings = cleaned
-            self._supported_symbols = set(cleaned.keys())
-            self._last_refresh = mtime
-            return True
+            now_s = time.time()
+            for cand_path in (self._cache_file, f"{self._cache_file}.previous"):
+                if not os.path.exists(cand_path):
+                    continue
+                try:
+                    mtime = safe_nonneg_float(os.path.getmtime(cand_path), default=None)
+                except OSError:
+                    continue
+                if mtime is None or mtime <= 0.0:
+                    continue
+                age_s = now_s - mtime
+                if age_s < -60.0:
+                    continue
+                if max_age_s is not None and age_s > max_age_s:
+                    continue
+                cached = read_json_dict(cand_path, default=None, recover_previous=False)
+                if not isinstance(cached, dict) or not cached:
+                    continue
+                cleaned = {
+                    k.strip().upper(): v
+                    for k, v in cached.items()
+                    if isinstance(k, str) and k.strip() and isinstance(v, dict)
+                }
+                if not cleaned:
+                    continue
+                self._all_listings = cleaned
+                self._supported_symbols = set(cleaned.keys())
+                self._last_refresh = min(mtime, now_s)
+                self._last_refresh_failed = False
+                return True
+            return False
         except Exception:
             return False
 
@@ -471,6 +498,7 @@ class CoinMarketCapPricePlatform(CryptoPricePlatformBase):
             return
         if self._load_symbols_from_disk_cache(max_age_s=self._refresh_interval):
             return
+        loaded_ok = False
         try:
             headers = {"X-CMC_PRO_API_KEY": self.api_key, "Accept": "application/json"}
             params = {"limit": 5000, "convert": "USD"}
@@ -482,19 +510,25 @@ class CoinMarketCapPricePlatform(CryptoPricePlatformBase):
             )
             if not isinstance(data, dict) or not isinstance(data.get("data"), list):
                 raise ValueError("CoinMarketCap listings response must contain a data list")
-            self._supported_symbols.clear()
+            new_supported: Set[str] = set()
+            new_listings: Dict[str, Dict] = {}
             for crypto in data["data"]:
                 if not isinstance(crypto, dict):
                     continue
                 raw_symbol = crypto.get("symbol")
                 symbol = raw_symbol.strip().upper() if isinstance(raw_symbol, str) else ""
                 if symbol:
-                    self._supported_symbols.add(symbol)
-                    self._all_listings[symbol] = {
+                    new_supported.add(symbol)
+                    new_listings[symbol] = {
                         "id": crypto.get("id"),
                         "name": crypto.get("name"),
                         "slug": crypto.get("slug"),
                     }
+            if not new_supported:
+                raise ValueError("CoinMarketCap listings response contained no valid symbols")
+            self._supported_symbols = new_supported
+            self._all_listings = new_listings
+            loaded_ok = True
             print(f"[CMCPlatform] Loaded {len(self._supported_symbols)} symbols")
             try:
                 os.makedirs(os.path.dirname(self._cache_file), exist_ok=True)
@@ -506,7 +540,7 @@ class CoinMarketCapPricePlatform(CryptoPricePlatformBase):
                 self._load_symbols_from_disk_cache(max_age_s=None)
             print(f"[CMCPlatform] Warning loading symbols: {e}")
         finally:
-            self._last_refresh = time.time()
+            self._record_refresh_result(loaded_ok)
 
     def _extract_usd_price(self, symbol: str, data: Dict) -> Optional[float]:
         if not isinstance(data, dict):

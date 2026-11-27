@@ -1665,3 +1665,104 @@ def test_base_spot_mixin_loop_survives_price_fn_exception_and_reports_honest_hea
     assert loop_hbs[3]["force"] is True
 
 
+def test_pass11_spot_ledger_reconcile_open_orders_none_and_exit_manager_epoch0_invariants(tmp_path):
+    """[PASS11] Invariants & cross-checks for SpotEngine fail-closed open_orders=None, avgPrice fallback, PositionExitManager epoch-0 clamping, and gateway cache_dir."""
+    from types import SimpleNamespace
+    from orchestratorTrade.autonomous_intent_gateway import AutonomousIntentGateway
+    from strategies.position_exit_manager import PositionExitConfig, PositionExitManager, PositionSnapshot, _clamp_state_ts
+
+    # 1. Dependent cross-check: _reconcile_venue_ledger fails closed when open_orders() returns None
+    #    while free_balance < held (locked coins in resting SELL), preventing bogus cycle wipe!
+    engine, executor = positioned()
+    engine.s.update(qty=1.0, cost=100.0, spent=100.0, ledger_reconcile_required=True)
+    oo_state = {"rows": None}
+    executor._executor = SimpleNamespace(open_orders=lambda _pair: oo_state["rows"])
+    executor.free_balance = lambda _base: 0.0
+
+    assert engine._reconcile_venue_ledger(105.0, 1_700_000_100.0, True) is True
+    assert engine.s["qty"] == pytest.approx(1.0)
+    assert engine.s["cost"] == pytest.approx(100.0)
+    assert engine.s["ledger_reconcile_required"] is True
+
+    # Once open_orders recovers with the locked SELL order, reconciliation completes cleanly without wiping state
+    oo_state["rows"] = [{"side": "SELL", "origQty": 1.0, "executedQty": 0.0}]
+    assert engine._reconcile_venue_ledger(105.0, 1_700_000_110.0, True) is False
+    assert engine.s["qty"] == pytest.approx(1.0)
+    assert engine.s["ledger_reconcile_required"] is False
+
+    # 2. Pure invariant: external BUY ledger reconciliation extracts avgPrice when market order reports price=0.0
+    eng_buy, exec_buy = positioned()
+    eng_buy.s.update(qty=0.0, cost=0.0, spent=0.0, entry_price=None, ledger_reconcile_required=True)
+    exec_buy.free_balance = lambda _base: 1.0
+    exec_buy._executor = SimpleNamespace(
+        open_orders=lambda _pair: [],
+        get_orders=lambda _p, _s, _lb: [{"price": "0.00000000", "avgPrice": "123.45", "timestamp": 1_700_000_200_000}],
+    )
+    assert eng_buy._reconcile_venue_ledger(130.0, 1_700_000_250.0, True) is True
+    assert eng_buy.s["entry_price"] == pytest.approx(123.45)
+    assert eng_buy.s["cost"] == pytest.approx(123.45)
+
+    # 3. Pure invariants + end-to-end cross-check: _clamp_state_ts rejects corrupt epoch-0 under wall-clock now >= 1e8,
+    #    normalizes epoch-ms, and still preserves t=0.0 under relative simulation clock (now < 1e8).
+    now_wall = 1_700_000_500.0
+    d_zero = {"started_at": 0}
+    assert _clamp_state_ts(d_zero, "started_at", now_wall) == pytest.approx(now_wall)
+    assert d_zero["started_at"] == pytest.approx(now_wall)
+
+    d_ms = {"started_at": (now_wall - 30.0) * 1000.0}
+    assert _clamp_state_ts(d_ms, "started_at", now_wall) == pytest.approx(now_wall - 30.0)
+
+    d_sim = {"started_at": 0.0}
+    assert _clamp_state_ts(d_sim, "started_at", 50.0) == pytest.approx(0.0)
+
+    # End-to-end PositionExitManager: corrupt started_at=0 in sl_episode_state must NOT trigger immediate SL bounce timeout!
+    mgr = PositionExitManager(
+        config=PositionExitConfig(
+            lost_threshold=0.05,
+            sl_trend_defer_max_sec=220.0,
+            tp_stagnation_max_sec=1080.0,
+            allow_external_cache=False,
+        )
+    )
+    mgr.sl_episode_state["BTCUSDC"] = {"started_at": 0, "buy_price": 100.0, "disaster_floor": 0.10}
+    sl_dec = mgr.evaluate_stop_loss(
+        PositionSnapshot(symbol="BTCUSDC", current_price=94.0, avg_buy_price=100.0, current_time_s=now_wall, trend_up=True)
+    )
+    assert sl_dec.should_exit is False
+    assert "mhdsl_bounce_watch_initiated" in sl_dec.reason
+    assert mgr.sl_episode_state["BTCUSDC"]["started_at"] == pytest.approx(now_wall)
+
+    # Corrupt last_peak_time="0" in tp_ride_state must NOT trigger immediate stagnation timeout!
+    mgr.tp_ride_state["ETHUSDC"] = {
+        "started_at": now_wall - 10.0,
+        "entry_gain": 0.08,
+        "peak_price": 108.0,
+        "peak_gain": 0.08,
+        "last_peak_time": "0",
+        "buy_price": 100.0,
+    }
+    tp_dec = mgr.evaluate_take_profit(
+        PositionSnapshot(symbol="ETHUSDC", current_price=107.8, avg_buy_price=100.0, current_time_s=now_wall, trend_up=True)
+    )
+    assert tp_dec.should_exit is False
+    assert "mdhtp_trend_riding" in tp_dec.reason
+    assert mgr.tp_ride_state["ETHUSDC"]["last_peak_time"] == pytest.approx(now_wall)
+
+    # 4. Pure invariant: AutonomousIntentGateway.reconcile_intents passes self.cache_dir (not hardcoded cachedb)
+    seen_cachedb = {}
+    gw = object.__new__(AutonomousIntentGateway)
+    gw.workspace_dir = str(tmp_path)
+    gw.cache_dir = str(tmp_path / "custom_cachedb")
+    import orchestratorTrade.autonomous_intent_gateway as aig_mod
+    orig_rec = aig_mod.reconcile_intents_from_execution_audit
+    try:
+        aig_mod.reconcile_intents_from_execution_audit = lambda intents, audit_dir, cachedb_dir=None: (
+            seen_cachedb.setdefault("dir", cachedb_dir) and False
+        )
+        gw.reconcile_intents([])
+    finally:
+        aig_mod.reconcile_intents_from_execution_audit = orig_rec
+    assert seen_cachedb["dir"] == str(tmp_path / "custom_cachedb")
+
+
+

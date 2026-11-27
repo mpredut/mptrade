@@ -46,6 +46,7 @@ logger = logging.getLogger("intelligence.sentiment.high_stake_guard")
 
 DEFAULT_MIN_NOTIONAL_USD = 700.0
 DEFAULT_LLM_GUARD_CACHE_TTL_SEC = 600.0
+DEFAULT_LLM_TIMEOUT_FALLBACK_CACHE_TTL_SEC = 60.0
 HIGH_STAKE_NOTIONAL_JUMP_RATIO = 1.0
 _HIGH_STAKE_DECISION_CACHE: Dict[tuple[str, ...], tuple[float, GuardDecision]] = {}
 
@@ -244,7 +245,6 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                 isinstance(cached, (tuple, list))
                 and len(cached) >= 2
                 and isinstance(cached[1], GuardDecision)
-                and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=self.cache_ttl_sec)
             ):
                 cached_dec: GuardDecision = cached[1]
                 base_dec = (
@@ -254,33 +254,46 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                 )
                 base_meta = getattr(base_dec, "metadata", None)
                 base_meta = base_meta if isinstance(base_meta, dict) else {}
-                eval_notional = first_pos_float(
-                    base_meta.get("evaluated_notional_eur"),
-                    base_meta.get("notional_eur"),
+                is_timeout_fb = bool(
+                    _parse_bool_flag(base_meta.get("llm_timeout_fallback"), False)
+                    or str(getattr(base_dec, "reason", "") or "").startswith("llm_query_timeout_")
                 )
-                notional_jumped = (
-                    max_notional_jump_ratio is not None
-                    and eval_notional is not None
-                    and (notional - eval_notional) / max(eval_notional, 1.0) > max_notional_jump_ratio
+                eff_cache_ttl = (
+                    min(self.cache_ttl_sec, DEFAULT_LLM_TIMEOUT_FALLBACK_CACHE_TTL_SEC)
+                    if is_timeout_fb
+                    else self.cache_ttl_sec
                 )
-                if not notional_jumped:
-                    baseline_notional = eval_notional if eval_notional is not None else notional
-                    if self.mode == "shadow":
-                        return self._wrap_shadow_decision(
-                            base_dec,
-                            notional,
-                            evaluated_notional_eur=baseline_notional,
-                            cache_hit=True,
-                        )
-                    return _dc_replace(
-                        base_dec,
-                        metadata={
-                            **base_meta,
-                            "notional_eur": notional,
-                            "evaluated_notional_eur": baseline_notional,
-                            "cache_hit": True,
-                        },
+                cached_fb = str(base_meta.get("fallback_action") or "").strip().lower()
+                cur_fb = str(self.fallback_action or "allow").strip().lower()
+                fb_compatible = (not is_timeout_fb) or (not cached_fb) or (cached_fb == cur_fb)
+                if fb_compatible and is_cache_fresh(cached[0], now_ts=now_ts, ttl_sec=eff_cache_ttl):
+                    eval_notional = first_pos_float(
+                        base_meta.get("evaluated_notional_eur"),
+                        base_meta.get("notional_eur"),
                     )
+                    notional_jumped = (
+                        max_notional_jump_ratio is not None
+                        and eval_notional is not None
+                        and (notional - eval_notional) / max(eval_notional, 1.0) > max_notional_jump_ratio
+                    )
+                    if not notional_jumped:
+                        baseline_notional = eval_notional if eval_notional is not None else notional
+                        if self.mode == "shadow":
+                            return self._wrap_shadow_decision(
+                                base_dec,
+                                notional,
+                                evaluated_notional_eur=baseline_notional,
+                                cache_hit=True,
+                            )
+                        return _dc_replace(
+                            base_dec,
+                            metadata={
+                                **base_meta,
+                                "notional_eur": notional,
+                                "evaluated_notional_eur": baseline_notional,
+                                "cache_hit": True,
+                            },
+                        )
 
         eff_max_age = (
             safe_pos_float(max_telemetry_age_sec, default=None)
@@ -471,13 +484,22 @@ class PreTradeLLMGuardBase(OrderGuardEvaluatorBase, ABC):
                 self.fallback_action,
             )
 
+        eval_meta = (
+            {
+                **snap_meta,
+                "llm_timeout_fallback": True,
+                "fallback_action": str(self.fallback_action or "allow").strip().lower(),
+            }
+            if valid_resp is None
+            else snap_meta
+        )
         dec = evaluate_llm_guard_response(
             self.GUARD_NAME,
             action_label,
             valid_resp,
             fallback_action=self.fallback_action,
             notional_eur=notional,
-            extra_metadata=snap_meta,
+            extra_metadata=eval_meta,
         )
         if on_decision is not None:
             on_decision(dec)

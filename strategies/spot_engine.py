@@ -18,8 +18,8 @@ from typing import Callable
 
 from notify_engine.ntfyapi import bind_notify, emit_trade_notification
 from botcore import (
-    _parse_bool_flag, clean_order_id, defined_env, extract_order_id, extract_order_side, extract_timestamp_s,
-    format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,
+    _parse_bool_flag, clean_order_id, defined_env, extract_order_id, extract_order_price, extract_order_side, extract_timestamp_s,
+    first_pos_float, format_price_log, is_market_order, log, normalize_epoch_sec, normalize_side,
     require_finite_float, require_int,
     required_float_env, required_int_env, required_bool_env,
     safe_float, safe_int, safe_nonneg_float, safe_nonneg_int, safe_pos_float, safe_pos_int,
@@ -1443,7 +1443,7 @@ class Strategy(BaseSpotMixin):
         free_ledger_qty = ledger_qty
         open_sell_qty = 0.0
         raw_cli = getattr(self.client, "_executor", getattr(self.client, "_inner", self.client))
-        if hasattr(raw_cli, "open_orders"):
+        if callable(getattr(raw_cli, "open_orders", None)):
             try:
                 open_rows = raw_cli.open_orders(self.pair)
             except Exception as exc:
@@ -1459,6 +1459,9 @@ class Strategy(BaseSpotMixin):
                 )
                 if open_sell_qty > 0.0:
                     ledger_qty += open_sell_qty
+            elif ledger_qty + tolerance < held:
+                log("  ! [STRAT] ledger reconciliation deferred (open_orders query returned unavailable/non-list)")
+                return True
         is_untradable_dust = (
             self.ordermin > 0
             and ledger_qty < self.ordermin
@@ -1564,7 +1567,11 @@ class Strategy(BaseSpotMixin):
                             dict_rows,
                             key=lambda item: (extract_timestamp_s(item[1], default=0.0) or 0.0, item[0]),
                         )
-                        cand_px = safe_pos_float(latest_buy.get("price"), None)
+                        cand_px = first_pos_float(
+                            latest_buy.get("price"),
+                            extract_order_price(latest_buy, default=None),
+                            default=None,
+                        )
                         if cand_px is not None:
                             fill_px = cand_px
                         cand_ts_sec = extract_timestamp_s(latest_buy, default=0.0) or 0.0

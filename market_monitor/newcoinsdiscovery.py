@@ -359,13 +359,13 @@ class CoinGeckoSource(InformationalNewCoinsSource):
             data = self._fetch_endpoint_json("coins/list")
             if not isinstance(data, list):
                 return
-            self._cache = []
+            new_cache: List[Dict] = []
             for coin in data:
                 if not isinstance(coin, dict):
                     continue
                 symbol = str(coin.get('symbol') or '').upper()
                 if symbol and symbol not in EXCLUDED_SYMBOLS:
-                    self._cache.append({
+                    new_cache.append({
                         "symbol": symbol,
                         "name": coin.get('name') or symbol,
                         "added_at": None,
@@ -374,6 +374,7 @@ class CoinGeckoSource(InformationalNewCoinsSource):
                         "change_24h": None, "change_7d": None,
                         "url": f"https://www.coingecko.com/en/coins/{coin.get('id', '')}"
                     })
+            self._cache = new_cache
             self._record_refresh_complete("CoinGecko", f"Loaded {len(self._cache)} coins")
         except Exception as e:
             print(f"[CoinGecko Source] Error: {e}")
@@ -404,6 +405,9 @@ class BinanceNewListingsSource(InformationalNewCoinsSource):
             data = self._fetch_endpoint_json("exchangeInfo")
             _, _, pair_to_base = extract_trading_quote_pairs(data, quote="USDC")
             current_symbols = set(pair_to_base)
+            if not current_symbols:
+                print("[Binance Source] Empty or unavailable exchangeInfo; preserving historical baseline")
+                return
             symbol_details = {
                 sym: {"symbol": base, "full_symbol": sym, "quote": "USDC"}
                 for sym, base in pair_to_base.items()
@@ -477,14 +481,14 @@ class DexScreenerSource(InformationalNewCoinsSource):
                             "change_24h": None, "change_7d": None,
                             "url": f"https://dexscreener.com/{chain}/{token_address}" if token_address else None
                         })
-                self._cache = new_cache
-                print(f"[DexScreener Source] Found {len(self._cache)} tokens")
+                if isinstance(data, (dict, list)):
+                    self._cache = new_cache
+                    self._last_refresh = time.time()
+                    print(f"[DexScreener Source] Found {len(self._cache)} tokens")
             else:
-                self._cache = []
-            self._last_refresh = time.time()
+                print(f"[DexScreener Source] HTTP {getattr(response, 'status_code', 'unknown')}; preserving cached tokens")
         except Exception as e:
             print(f"[DexScreener Source] Error: {e}")
-            self._cache = []
 
     def get_new_coins(self, days_back: int = NEW_COINS_AGE_DAYS) -> List[Dict]:
         return _filter_recent_coins(self._cache, days_back, utc=False)[:50]
@@ -756,8 +760,8 @@ class NewCoinsMonitor:
         if not isinstance(added_map, dict):
             return True
         added_time = casefold_get(added_map, symbol)
-        ts_val = safe_float(added_time, 0.0)
-        if ts_val <= 0.0:
+        ts_val = normalize_epoch_sec(added_time, default=None)
+        if ts_val is None or ts_val <= 0.0:
             return True
         age_days = (time.time() - ts_val) / (24 * 3600)
         return age_days <= NEW_COIN_CLEANUP_MAX_AGE_DAYS
@@ -766,11 +770,14 @@ class NewCoinsMonitor:
         if not self.price_monitor:
             return
         removed = []
-        for symbol in list(self.all_symbols):
+        with self._lock:
+            candidates = list(self.all_symbols)
+        for symbol in candidates:
             if not self.should_keep_monitoring(symbol):
                 if hasattr(self.price_monitor, 'remove_symbol'):
                     self.price_monitor.remove_symbol(symbol, reason="old new coin")
-                self.all_symbols.discard(symbol)
+                with self._lock:
+                    self.all_symbols.discard(symbol)
                 removed.append(symbol)
         if removed:
             print(f"[NewCoinsMonitor] Cleaned up {len(removed)} old coins from the watchlist")

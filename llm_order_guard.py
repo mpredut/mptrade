@@ -173,7 +173,14 @@ def evaluate_high_stake_order_guard(
         g_meta = g_meta if isinstance(g_meta, dict) else {}
         eval_notional = safe_pos_float(g_meta.get("evaluated_notional_eur"), computed_notional)
         is_cache_hit = bool(_parse_bool_flag(g_meta.get("cache_hit"), False))
-        if valid_context:
+        is_transient_fallback = bool(
+            _parse_bool_flag(g_meta.get("llm_timeout_fallback"), False)
+            or g_meta.get("telemetry_unavailable_reason")
+            or str(g_reason_str or "").startswith(
+                ("llm_query_timeout_", "telemetry_unavailable", "telemetry_stale")
+            )
+        )
+        if valid_context and not is_transient_fallback:
             try:
                 g_tuple = (g_allowed_bool, g_reason_str, g_scale)
                 if not isinstance(decisions_map, dict):

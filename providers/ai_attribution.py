@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 from botcore import (
     BUCHAREST,
+    _parse_bool_flag,
     clean_order_id,
     clean_scalar_str,
     clean_upper_scalar,
@@ -283,13 +284,29 @@ def _merge_audit_order_entry(dst: dict[str, Any], src: dict[str, Any]) -> None:
     if src.get("ts", 0.0) > dst.get("ts", 0.0):
         dst["ts"] = src["ts"]
     dst_was_fill = bool(dst.get("is_fill"))
+    prev_dst_fq = safe_nonneg_float(dst.get("filled_qty"), default=0.0) or 0.0
+    prev_dst_cost = safe_nonneg_float(dst.get("cost_usd"), default=0.0) or 0.0
+    src_fq = safe_nonneg_float(src.get("filled_qty"), default=0.0) or 0.0
+    src_cost = safe_nonneg_float(src.get("cost_usd"), default=0.0) or 0.0
+    src_px = safe_pos_float(src.get("price"), default=0.0) or 0.0
+    dst_px = safe_pos_float(dst.get("price"), default=0.0) or 0.0
     if src.get("is_fill"):
         dst["is_fill"] = True
     for num_k in ("filled_qty", "cost_usd", "fee_usd"):
         if src.get(num_k, 0.0) > dst.get(num_k, 0.0):
             dst[num_k] = src[num_k]
-    if src.get("price", 0.0) > 0.0 and (dst.get("price", 0.0) <= 0.0 or (src.get("is_fill") and not dst_was_fill)):
-        dst["price"] = src["price"]
+    fill_upgraded = bool(
+        src.get("is_fill")
+        and (
+            not dst_was_fill
+            or src_fq > prev_dst_fq + 1e-12
+            or (abs(src_fq - prev_dst_fq) <= 1e-12 and src_cost > prev_dst_cost + 1e-12)
+        )
+    )
+    if src_px > 0.0 and (dst_px <= 0.0 or fill_upgraded):
+        dst["price"] = src_px
+    elif fill_upgraded and dst.get("filled_qty", 0.0) > 0.0 and dst.get("cost_usd", 0.0) > 0.0:
+        dst["price"] = dst["cost_usd"] / dst["filled_qty"]
 
 
 def _evaluate_execution_audit_actors(
@@ -362,7 +379,7 @@ def _evaluate_execution_audit_actors(
             entry["client_order_id"] = cid
         if sd := normalize_side(rec.get("side")):
             entry["side"] = sd
-        if rec.get("market") is True:
+        if _parse_bool_flag(rec.get("market"), False):
             entry["order_type"] = "MARKET"
         if ts_s > entry["ts"]:
             entry["ts"] = ts_s

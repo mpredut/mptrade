@@ -525,17 +525,19 @@ _AUDIT_RECONCILE_EVENTS = frozenset({
     "order_terminal",
     "order_terminal_retry",
 })
-_AUDIT_FILE_RECORDS_CACHE: OrderedDict[str, tuple[tuple[float, int], list[dict[str, Any]]]] = OrderedDict()
+_AUDIT_FILE_RECORDS_CACHE: OrderedDict[str, tuple[tuple[int, int, int], list[dict[str, Any]]]] = OrderedDict()
 _AUDIT_CACHE_LOCK = threading.Lock()
 _AUDIT_FILE_CACHE_MAX = 64
 
 
 def _read_audit_intent_records(audit_path: str) -> list[dict[str, Any]]:
-    """Return reconciliation-relevant audit records of one file, cached by ``(mtime, size)`` (append-only files)."""
+    """Return reconciliation-relevant audit records of one file, cached by ``(mtime_ns, size, ino)``."""
     try:
         st = os.stat(audit_path)
-        sig = (st.st_mtime, st.st_size)
+        sig = (st.st_mtime_ns, st.st_size, st.st_ino)
     except OSError:
+        with _AUDIT_CACHE_LOCK:
+            _AUDIT_FILE_RECORDS_CACHE.pop(audit_path, None)
         return []
     with _AUDIT_CACHE_LOCK:
         cached = _AUDIT_FILE_RECORDS_CACHE.get(audit_path)

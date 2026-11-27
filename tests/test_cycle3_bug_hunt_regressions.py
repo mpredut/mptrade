@@ -886,3 +886,193 @@ def test_portfolio_collector_formulaic_l3_freshness_avoids_spurious_rest():
     assert oo_max == pytest.approx(FRESH_OPEN_ORDERS_CACHE_SYNC_MULTIPLIER * OPEN_ORDER_SYNC_INTERVAL_SEC)
     assert bal_max >= 120.0
     assert oo_max >= 45.0
+
+
+def test_pass11_platforms_newcoins_attribution_and_audit_invariants_and_crosschecks(tmp_path, monkeypatch):
+    """[PASS11] Invariants & cross-checks for price platform failure backoff/cache mtime, newcoins preservation, attribution partial-fill merge, and execution_audit inode cache."""
+    import os
+    from types import SimpleNamespace
+    import market_monitor.newcoinsdiscovery as ncd
+    import market_monitor.priceplatforms as pp
+    from providers.ai_attribution import _evaluate_execution_audit_actors, _merge_audit_order_entry
+    import providers.execution_audit as ea
+
+    # 1. Pure invariant + cross-check: BinancePricePlatform retries after 60s failure backoff (not 3600s) via supports_symbol()
+    clock = {"now": 1_700_000_000.0}
+    monkeypatch.setattr(pp.time, "time", lambda: clock["now"])
+    bn_calls = {"n": 0}
+
+    def _bn_fetch(*_a, **_kw):
+        bn_calls["n"] += 1
+        if bn_calls["n"] == 1:
+            raise RuntimeError("transient 502")
+        return {
+            "symbols": [
+                {"symbol": "NEWAIUSDC", "baseAsset": "NEWAI", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "BTCUSDC", "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
+            ]
+        }
+
+    monkeypatch.setattr(pp.BinancePricePlatform, "_fetch_json_get", staticmethod(_bn_fetch))
+    bp = pp.BinancePricePlatform()
+    assert bp._last_refresh_failed is True
+    assert bp.supports_symbol("NEWAIUSDC") is False
+    assert bn_calls["n"] == 1
+
+    # 30s later -> still within 60s failure backoff (no retry storm)
+    clock["now"] += 30.0
+    assert bp.supports_symbol("NEWAIUSDC") is False
+    assert bn_calls["n"] == 1
+
+    # 65s after initial failure -> retries (well before 3600s!) and discovers NEWAIUSDC
+    clock["now"] += 35.0
+    assert bp.supports_symbol("NEWAIUSDC") is True
+    assert bn_calls["n"] == 2
+    assert bp._last_refresh_failed is False
+
+    # 120s after SUCCESS -> stays within 3600s normal interval (no premature refresh)
+    clock["now"] += 120.0
+    assert bp.supports_symbol("NEWAIUSDC") is True
+    assert bn_calls["n"] == 2
+
+    # 2. Pure invariant: CoinMarketCapPricePlatform disk cache rejects stale .previous masked by corrupt fresh primary & future mtime,
+    #    and empty API payload preserves prior _supported_symbols / _all_listings with failure backoff.
+    cmc = pp.CoinMarketCapPricePlatform(api_key=None)
+    cmc.api_key = "test-key"
+    cmc_file = tmp_path / "cmc_listings_cache.json"
+    cmc_prev = tmp_path / "cmc_listings_cache.json.previous"
+    cmc._cache_file = str(cmc_file)
+    cmc_file.write_text("{corrupt", encoding="utf-8")
+    cmc_prev.write_text(json.dumps({"TAO": {"id": 1, "name": "Bittensor", "slug": "bittensor"}}), encoding="utf-8")
+    os.utime(cmc_file, (clock["now"] - 5.0, clock["now"] - 5.0))
+    os.utime(cmc_prev, (clock["now"] - 200_000.0, clock["now"] - 200_000.0))
+    assert cmc._load_symbols_from_disk_cache(max_age_s=86400.0) is False
+
+    # Far-future mtime on primary is rejected
+    cmc_file.write_text(json.dumps({"SOL": {"id": 2, "name": "Solana", "slug": "solana"}}), encoding="utf-8")
+    os.utime(cmc_file, (clock["now"] + 600.0, clock["now"] + 600.0))
+    assert cmc._load_symbols_from_disk_cache(max_age_s=86400.0) is False
+
+    # Fresh .previous is loaded when primary is corrupt
+    cmc_file.write_text("{corrupt", encoding="utf-8")
+    os.utime(cmc_prev, (clock["now"] - 100.0, clock["now"] - 100.0))
+    assert cmc._load_symbols_from_disk_cache(max_age_s=86400.0) is True
+    assert "TAO" in cmc._supported_symbols
+    assert cmc._last_refresh == pytest.approx(clock["now"] - 100.0)
+
+    # Empty remote payload preserves existing symbols/listings and sets failure backoff
+    cmc._cache_file = str(tmp_path / "cmc_empty_test.json")
+    monkeypatch.setattr(pp.CoinMarketCapPricePlatform, "_fetch_json_get", staticmethod(lambda *_a, **_kw: {"data": []}))
+    cmc._load_symbols()
+    assert "TAO" in cmc._supported_symbols
+    assert "TAO" in cmc._all_listings
+    assert cmc._last_refresh_failed is True
+
+    # 3. Pure invariants + cross-check: BinanceNewListingsSource & DexScreenerSource preserve baseline/cache on outage;
+    #    NewCoinsMonitor normalizes ms symbol_added_time during cleanup.
+    b_src = object.__new__(ncd.BinanceNewListingsSource)
+    b_src.base_url = "https://api.binance.com/api/v3"
+    b_src._new_listings = []
+    b_src._historical_symbols = {"BTCUSDC", "ETHUSDC"}
+    b_src._last_refresh = 1000.0
+    monkeypatch.setattr(b_src, "_fetch_endpoint_json", lambda *_a, **_kw: None)
+    b_src.refresh()
+    assert b_src._historical_symbols == {"BTCUSDC", "ETHUSDC"}
+    assert b_src._last_refresh == 1000.0
+    monkeypatch.setattr(
+        b_src,
+        "_fetch_endpoint_json",
+        lambda *_a, **_kw: {
+            "symbols": [
+                {"symbol": "BTCUSDC", "baseAsset": "BTC", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "ETHUSDC", "baseAsset": "ETH", "quoteAsset": "USDC", "status": "TRADING"},
+                {"symbol": "ZETAUSDC", "baseAsset": "ZETA", "quoteAsset": "USDC", "status": "TRADING"},
+            ]
+        },
+    )
+    b_src.refresh()
+    assert any(c["symbol"] == "ZETA" for c in b_src._new_listings)
+
+    d_src = object.__new__(ncd.DexScreenerSource)
+    d_src.base_url = "https://api.dexscreener.com/latest/dex"
+    d_src._cache = [{"symbol": "KEEP", "added_at": time.time()}]
+    d_src._last_refresh = 2000.0
+    monkeypatch.setattr(d_src, "_http_get", lambda *_a, **_kw: SimpleNamespace(status_code=503))
+    d_src.refresh()
+    assert len(d_src._cache) == 1 and d_src._cache[0]["symbol"] == "KEEP"
+    assert d_src._last_refresh == 2000.0
+    monkeypatch.setattr(d_src, "_http_get", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("timeout")))
+    d_src.refresh()
+    assert len(d_src._cache) == 1 and d_src._cache[0]["symbol"] == "KEEP"
+
+    removed_syms = []
+    pm_stub = SimpleNamespace(
+        symbol_added_time={"OLDMS": (time.time() - 45 * 86400.0) * 1000.0, "FRESHMS": (time.time() - 2 * 86400.0) * 1000.0},
+        remove_symbol=lambda sym, reason="": removed_syms.append(sym),
+    )
+    ncm = object.__new__(ncd.NewCoinsMonitor)
+    ncm.price_monitor = pm_stub
+    ncm.all_symbols = {"OLDMS", "FRESHMS"}
+    ncm._lock = ncd.threading.RLock()
+    ncm.cleanup_old_new_coins()
+    assert removed_syms == ["OLDMS"]
+    assert ncm.all_symbols == {"FRESHMS"}
+
+    # 4. Pure invariant + cross-check: _merge_audit_order_entry upgrades partial-fill price on larger cumulative fill
+    dst = {"is_fill": True, "price": 100.0, "filled_qty": 1.0, "cost_usd": 100.0, "fee_usd": 0.1, "ts": 100.0}
+    src = {"is_fill": True, "price": 102.0, "filled_qty": 2.0, "cost_usd": 204.0, "fee_usd": 0.2, "ts": 105.0}
+    _merge_audit_order_entry(dst, src)
+    assert dst["filled_qty"] == pytest.approx(2.0)
+    assert dst["cost_usd"] == pytest.approx(204.0)
+    assert dst["price"] == pytest.approx(102.0)
+
+    # Also derives weighted avg price from cost/qty when upgraded cumulative fill omits price
+    dst2 = {"is_fill": True, "price": 100.0, "filled_qty": 1.0, "cost_usd": 100.0, "fee_usd": 0.1, "ts": 100.0}
+    src2 = {"is_fill": True, "price": 0.0, "filled_qty": 4.0, "cost_usd": 420.0, "fee_usd": 0.4, "ts": 106.0}
+    _merge_audit_order_entry(dst2, src2)
+    assert dst2["price"] == pytest.approx(105.0)
+
+    # End-to-end actor evaluation merges intent:<iid> partial fill into venue orderId full fill,
+    # parses string market flag, and uses upgraded fill price (52.0, not stale 50.0) in matched round-trip PnL
+    t_now = 1_700_000_500.0
+    seen_order_types: list[str] = []
+
+    def _fee_spy(ven: str, sym: str, ot: str) -> float:
+        seen_order_types.append(ot)
+        return 0.0
+
+    actor_res = _evaluate_execution_audit_actors(
+        [
+            {"event": "order_status", "ts": t_now - 30.0, "venue": "hyperliquid", "symbol": "HYPEUSDC", "intent_id": "iid-1", "side": "BUY", "market": "true", "status": "PARTIALLY_FILLED", "filled_qty": 1.0, "cost": 50.0, "price": 50.0},
+            {"event": "order_terminal", "ts": t_now - 20.0, "venue": "hyperliquid", "symbol": "HYPEUSDC", "intent_id": "iid-1", "order_id": "oid-9", "side": "BUY", "status": "FILLED", "filled_qty": 2.0, "cost": 104.0, "price": 52.0},
+            {"event": "order_terminal", "ts": t_now - 10.0, "venue": "hyperliquid", "symbol": "HYPEUSDC", "intent_id": "iid-2", "order_id": "oid-10", "side": "SELL", "status": "FILLED", "filled_qty": 2.0, "cost": 120.0, "price": 60.0},
+        ],
+        known_ai_order_ids=set(),
+        cutoff_ts=t_now - 3600.0,
+        eff_now=t_now,
+        scope="crypto",
+        fee_resolver=_fee_spy,
+    )
+    assert "MARKET" in seen_order_types
+    assert actor_res["by_actor"]["OTHER"]["buy_notional_usd"] == pytest.approx(104.0)
+    assert actor_res["by_actor"]["OTHER"]["realized_net_usd"] == pytest.approx(16.0)
+
+    # 5. Pure invariant: _read_audit_intent_records invalidates on atomic inode replacement with identical size+mtime and evicts on delete
+    ea._AUDIT_FILE_RECORDS_CACHE.clear()
+    audit_file = tmp_path / "execution_audit_2026-11-27.jsonl"
+    rec_a = json.dumps({"event": "order_terminal", "intent_id": "intent_AAAA", "order_id": "111"}) + "\n"
+    rec_b = json.dumps({"event": "order_terminal", "intent_id": "intent_BBBB", "order_id": "222"}) + "\n"
+    assert len(rec_a) == len(rec_b)
+    audit_file.write_text(rec_a, encoding="utf-8")
+    st_a = os.stat(audit_file)
+    assert [r["intent_id"] for r in ea._read_audit_intent_records(str(audit_file))] == ["intent_AAAA"]
+
+    alt_file = tmp_path / "execution_audit_alt.jsonl"
+    alt_file.write_text(rec_b, encoding="utf-8")
+    os.utime(alt_file, ns=(st_a.st_atime_ns, st_a.st_mtime_ns))
+    os.replace(alt_file, audit_file)
+    assert [r["intent_id"] for r in ea._read_audit_intent_records(str(audit_file))] == ["intent_BBBB"]
+
+    os.unlink(audit_file)
+    assert ea._read_audit_intent_records(str(audit_file)) == []
+    assert str(audit_file) not in ea._AUDIT_FILE_RECORDS_CACHE

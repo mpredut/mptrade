@@ -409,10 +409,11 @@ def _clear_smart_sl(symbol: str, provider: Optional[str] = None) -> None:
 
 
 def _clamp_state_ts(state_dict: Dict[str, Any], key: str, now: float) -> float:
-    val = safe_nonneg_float(state_dict.get(key), default=None)
+    val = normalize_epoch_sec(state_dict.get(key), default=None, allow_zero=(now < 1e8))
     if val is None or val > now:
         state_dict[key] = now
         return now
+    state_dict[key] = val
     return val
 
 

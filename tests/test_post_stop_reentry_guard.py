@@ -747,3 +747,157 @@ def test_poststopreentryguard_highstakeguard_tolerate_none_bool_cache_timestamps
     _HIGH_STAKE_DECISION_CACHE[("BTCUSDC", "BUY")] = (True, None)
     hs_dec = hs_guard.check("BTCUSDC", "BUY", 1000.0, 1.0, notional_eur=1050.0, telemetry={}, now=1010.0)
     assert hs_dec.allowed is False
+
+
+def test_pass11_llm_guard_timeout_backoff_and_regime_context_crosscheck(monkeypatch):
+    """[PASS11] Invariants & cross-checks for bounded LLM timeout fallback TTL, fallback-policy isolation, and regime_context non-pinning."""
+    from types import SimpleNamespace
+    import intelligence.sentiment.guards.high_stake_guard as hsg_mod
+    import llm_order_guard
+    from intelligence.sentiment.collectors.pretrade_telemetry_collector import PretradeTelemetrySnapshot
+
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    _POST_STOP_DECISION_CACHE.clear()
+    monkeypatch.setattr(hsg_mod, "is_llm_guard_exempt", lambda explicit_client=False: False)
+
+    # 1. Pure invariant: HighStakeGuard timeout fallback caches for <= 60s (not 600s), recovers after 61s,
+    #    while normal LLM responses remain cached across the full 600s TTL.
+    responses = [
+        None,
+        {"decision": "APPROVED", "suggested_scale": 1.0, "reason": "llm recovered"},
+    ]
+    calls = {"n": 0}
+
+    def _seq_query(*_a, **_kw):
+        idx = calls["n"]
+        calls["n"] += 1
+        return responses[idx] if idx < len(responses) else responses[-1]
+
+    hs = HighStakeGuard(
+        gemini_client=SimpleNamespace(query_json=_seq_query),
+        min_notional_usd=700.0,
+        fallback_action="allow",
+        cache_ttl_sec=600.0,
+        notify_enabled=False,
+    )
+    t0 = 1_700_000_000.0
+    d0 = hs.check("BTCUSDC", "BUY", 60000.0, 0.02, notional_eur=1200.0, telemetry={"flow": 1.1}, now=t0)
+    assert d0.allowed is True
+    assert d0.reason == "llm_query_timeout_fallback_allowed"
+    assert d0.metadata.get("llm_timeout_fallback") is True
+    assert calls["n"] == 1
+
+    # 10s later -> short timeout cache hit (prevents retry storm)
+    d1 = hs.check("BTCUSDC", "BUY", 60000.0, 0.02, notional_eur=1200.0, telemetry={"flow": 1.1}, now=t0 + 10.0)
+    assert d1.metadata.get("cache_hit") is True
+    assert calls["n"] == 1
+
+    # 61s later -> timeout cache expired (< 600s!), retries Gemini and recovers
+    d2 = hs.check("BTCUSDC", "BUY", 60000.0, 0.02, notional_eur=1200.0, telemetry={"flow": 1.1}, now=t0 + 61.0)
+    assert calls["n"] == 2
+    assert d2.allowed is True
+    assert "llm recovered" in d2.reason
+    assert not d2.metadata.get("llm_timeout_fallback")
+
+    # 300s after valid LLM response -> still cached under full 600s TTL
+    d3 = hs.check("BTCUSDC", "BUY", 60000.0, 0.02, notional_eur=1200.0, telemetry={"flow": 1.1}, now=t0 + 360.0)
+    assert d3.metadata.get("cache_hit") is True
+    assert calls["n"] == 2
+
+    # 2. Pure invariant: PostStopReentryGuard timeout fallback does not leak across different fallback_action policies
+    ps_calls = {"n": 0}
+    timeout_cli = SimpleNamespace(query_json=lambda *_a, **_kw: (ps_calls.__setitem__("n", ps_calls["n"] + 1) or None))
+    ps_allow = PostStopReentryGuard(
+        gemini_client=timeout_cli, fallback_action="allow", cache_ttl_sec=600.0, notify_enabled=False
+    )
+    ps_veto = PostStopReentryGuard(
+        gemini_client=timeout_cli, fallback_action="veto", cache_ttl_sec=600.0, notify_enabled=False
+    )
+    da = ps_allow.check("TAOUSDC", 264.0, 260.0, 255.0, 0.035, last_sell_time_s=t0 - 120.0, telemetry={"flow": 1.0}, now=t0)
+    assert da.allowed is True
+    dv = ps_veto.check("TAOUSDC", 264.0, 260.0, 255.0, 0.035, last_sell_time_s=t0 - 120.0, telemetry={"flow": 1.0}, now=t0 + 5.0)
+    assert dv.allowed is False
+    assert dv.reason == "llm_query_timeout_fail_closed"
+    assert ps_calls["n"] == 2
+
+    # 3. Dependent cross-check: llm_order_guard.evaluate_high_stake_order_guard never pins transient
+    #    telemetry_unavailable or llm_query_timeout fallbacks onto regime_context for 300s.
+    _HIGH_STAKE_DECISION_CACHE.clear()
+    telem_state = {"available": False}
+    llm_state = {"calls": 0, "resp": None}
+
+    def _fake_read_snap(symbol, **_kw):
+        if not telem_state["available"]:
+            return PretradeTelemetrySnapshot.unavailable(symbol, reason="telemetry_unavailable", now_ts=t0)
+        return PretradeTelemetrySnapshot.from_raw({"Whale Taker Flow": "0.60"}, symbol=symbol, now_ts=t0, source="cachedb")
+
+    def _fake_topic_query(*_a, **_kw):
+        llm_state["calls"] += 1
+        return llm_state["resp"]
+
+    monkeypatch.setattr(hsg_mod, "read_pretrade_telemetry_snapshot", _fake_read_snap)
+    monkeypatch.setattr(hsg_mod, "query_topic_json", _fake_topic_query)
+    monkeypatch.setattr(
+        hsg_mod,
+        "HighStakeGuard",
+        lambda **kw: HighStakeGuard(
+            gemini_client=SimpleNamespace(query_json=_fake_topic_query),
+            min_notional_usd=kw.get("min_notional_usd", 700.0),
+            timeout_sec=kw.get("timeout_sec", 5.0),
+            fallback_action=kw.get("fallback_action", "allow"),
+            cache_ttl_sec=600.0,
+            notify_enabled=False,
+        ),
+    )
+
+    regime_ctx = SimpleNamespace(symbol="SOLUSDC", provider="binance")
+    margins_cfg = {
+        "intelligence_guards_mode": "enforce",
+        "llm_guard_mode": "enforce",
+        "high_stake_min_notional_usd": 700.0,
+        "llm_timeout_sec": 5.0,
+        "llm_fallback": "allow",
+    }
+
+    # Step A: telemetry unavailable -> allowed via fallback, NOT pinned onto regime_context
+    ok_u, _, _ = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="SOLUSDC", side="BUY", price=100.0, qty=10.0, computed_notional=1000.0,
+        regime_context=regime_ctx, valid_context=True, cache_key=("BUY", frozenset()),
+        margins=margins_cfg, bypassed=set(), now=t0, notify_on_eval=False,
+    )
+    assert ok_u is True
+    assert not getattr(regime_ctx, "_intelligence_decisions_by_key", None)
+
+    # Step B: telemetry recovers 2s later, LLM times out -> NOT pinned onto regime_context,
+    #         cached only in HighStakeGuard's 60s timeout cache
+    telem_state["available"] = True
+    ok_t1, _, _ = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="SOLUSDC", side="BUY", price=100.0, qty=10.0, computed_notional=1000.0,
+        regime_context=regime_ctx, valid_context=True, cache_key=("BUY", frozenset()),
+        margins=margins_cfg, bypassed=set(), now=t0 + 2.0, notify_on_eval=False,
+    )
+    assert ok_t1 is True
+    assert llm_state["calls"] == 1
+    assert not getattr(regime_ctx, "_intelligence_decisions_by_key", None)
+
+    # Step C: 10s after timeout -> still hits HighStakeGuard 60s timeout cache (no storm)
+    ok_t2, _, _ = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="SOLUSDC", side="BUY", price=100.0, qty=10.0, computed_notional=1000.0,
+        regime_context=regime_ctx, valid_context=True, cache_key=("BUY", frozenset()),
+        margins=margins_cfg, bypassed=set(), now=t0 + 12.0, notify_on_eval=False,
+    )
+    assert ok_t2 is True
+    assert llm_state["calls"] == 1
+
+    # Step D: 65s after timeout on SAME regime_context -> LLM recovers and VETOES; now pinned onto regime_context
+    llm_state["resp"] = {"decision": "REJECTED", "suggested_scale": 0.0, "reason": "whale dump"}
+    ok_rec, r_rec, sc_rec = llm_order_guard.evaluate_high_stake_order_guard(
+        symbol="SOLUSDC", side="BUY", price=100.0, qty=10.0, computed_notional=1000.0,
+        regime_context=regime_ctx, valid_context=True, cache_key=("BUY", frozenset()),
+        margins=margins_cfg, bypassed=set(), now=t0 + 67.0, notify_on_eval=False,
+    )
+    assert ok_rec is False
+    assert sc_rec == 0.0
+    assert "whale dump" in r_rec
+    assert llm_state["calls"] == 2
+    assert getattr(regime_ctx, "_intelligence_decisions_by_key", {}).get(("BUY", frozenset())) is not None
