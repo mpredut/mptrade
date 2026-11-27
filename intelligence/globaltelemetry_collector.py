@@ -27,6 +27,7 @@ from botcore import (
     _parse_bool_flag,
     are_close,
     bool_env,
+    is_cache_fresh,
     is_trade_enabled,
     load_dotenv,
     normalize_epoch_sec,
@@ -734,7 +735,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 now_ts=eff_now,
                 skip_if_fresh_sec=fresh_guard,
             ),
-            is_valid_fn=lambda snap: bool(snap.get("events_ok") or snap.get("earnings_ok")),
+            is_valid_fn=lambda snap: bool(snap.get("events_ok") and snap.get("earnings_ok")),
             on_success_log=lambda snap: logger.debug(
                 "Macro calendar updated: %d events, %d earnings",
                 len(snap.get("events") or ()),
@@ -759,7 +760,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 now_ts=eff_now,
                 skip_if_fresh_sec=fresh_guard,
             ),
-            is_valid_fn=lambda snap: bool(snap.get("assets")),
+            is_valid_fn=lambda snap: bool(snap.get("assets"))
+            and all(_parse_bool_flag(v, False) for k, v in snap.items() if isinstance(k, str) and k.endswith("_ok")),
             on_success_log=lambda snap: logger.debug("Spot ETF flows updated: %s", snap.get("summary_line", "")),
         )
 
@@ -771,6 +773,7 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
             default_interval_sec=21600.0,
         )
         ws_dir = resolve_workspace_dir_from_cachedb(self.cache_dir) or "."
+        eff_now_ref = resolve_now_ts(self._resolve_step_now(now))
         return self._run_macro_snapshot_update(
             label="long-horizon structure",
             now=now,
@@ -782,7 +785,8 @@ class GlobalTelemetryCollector(ExternalTelemetryMixin):
                 skip_if_fresh_sec=fresh_guard,
                 workspace_dir=ws_dir,
             ),
-            is_valid_fn=lambda snap: bool(snap.get("items")),
+            is_valid_fn=lambda snap: bool(snap.get("items"))
+            and is_cache_fresh(snap.get("ts"), eff_now_ref, ttl_sec=max(fresh_guard, 60.0)),
             on_success_log=lambda snap: logger.debug(
                 "Long-horizon structure updated (%s): %d symbols",
                 snap.get("horizon_label", "?"),

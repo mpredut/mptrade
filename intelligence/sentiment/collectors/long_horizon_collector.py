@@ -442,7 +442,7 @@ def _resolve_default_long_horizon_symbols(
     return syms
 
 
-def sync_symbol_ohlc_archive(
+def _sync_symbol_ohlc_archive_with_status(
     cachedb_dir: str,
     symbol: str,
     *,
@@ -454,11 +454,11 @@ def sync_symbol_ohlc_archive(
     fetch_fn: Optional[Callable[..., Any]] = None,
     post_fn: Optional[Callable[..., Any]] = None,
     allow_sparse_fallback: bool = False,
-) -> Optional[Dict[str, Any]]:
-    """Incrementally backfill/update ``cache_ohlc_bars_<TF>_<SYM>.json`` for one ``(symbol, timeframe)``."""
+) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Incrementally backfill/update ``cache_ohlc_bars_<TF>_<SYM>.json`` and report whether new bars were fetched."""
     sym_s = str(symbol or "").strip()
     if not sym_s:
-        return None
+        return None, False
     policy = resolve_archive_policy(timeframe)
     eff_now = resolve_now_ts(now_ts)
     eff_now_ms = safe_int(eff_now * 1000.0, default=1)
@@ -559,7 +559,7 @@ def sync_symbol_ohlc_archive(
             incoming_is_fallback = True
 
     if fetched_bars:
-        return upsert_ohlc_bar_archive(
+        doc = upsert_ohlc_bar_archive(
             cachedb_dir,
             sym_s,
             fetched_bars,
@@ -571,7 +571,37 @@ def sync_symbol_ohlc_archive(
             max_retention_days=policy.max_retention_days,
             persist=persist,
         )
-    return existing_doc
+        return doc, bool(doc is not None and not incoming_is_fallback)
+    return existing_doc, False
+
+
+def sync_symbol_ohlc_archive(
+    cachedb_dir: str,
+    symbol: str,
+    *,
+    timeframe: str = "1d",
+    lookback_days: Optional[int] = None,
+    now_ts: Optional[float] = None,
+    timeout_sec: float = 5.0,
+    persist: bool = True,
+    fetch_fn: Optional[Callable[..., Any]] = None,
+    post_fn: Optional[Callable[..., Any]] = None,
+    allow_sparse_fallback: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Incrementally backfill/update ``cache_ohlc_bars_<TF>_<SYM>.json`` for one ``(symbol, timeframe)``."""
+    doc, _ = _sync_symbol_ohlc_archive_with_status(
+        cachedb_dir,
+        symbol,
+        timeframe=timeframe,
+        lookback_days=lookback_days,
+        now_ts=now_ts,
+        timeout_sec=timeout_sec,
+        persist=persist,
+        fetch_fn=fetch_fn,
+        post_fn=post_fn,
+        allow_sparse_fallback=allow_sparse_fallback,
+    )
+    return doc
 
 
 class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
@@ -621,7 +651,7 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
             and safe_int(prev_snap.get("months"), default=0) == eff_months
             and isinstance(prev_snap.get("items"), dict)
             and bool(prev_snap["items"])
-            and (not symbols or all(s in prev_snap["items"] for s in prompt_syms))
+            and all(s in prev_snap["items"] for s in prompt_syms)
             and is_cache_fresh(prev_snap.get("ts"), eff_now, ttl_sec=skip_if_fresh_sec)
             and (
                 not persist
@@ -651,8 +681,8 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
 
         needed_days = round(eff_months * _DAYS_PER_MONTH) + _MA200_WARMUP_DAYS
 
-        def _sync_one(sym_s: str) -> Tuple[str, Optional[Dict[str, Any]]]:
-            doc = sync_symbol_ohlc_archive(
+        def _sync_one(sym_s: str) -> Tuple[str, Optional[Dict[str, Any]], bool]:
+            doc, refreshed = _sync_symbol_ohlc_archive_with_status(
                 cachedb_dir,
                 sym_s,
                 timeframe=_ARCHIVE_TIMEFRAME_DAILY,
@@ -664,17 +694,18 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
                 post_fn=post_fn,
                 allow_sparse_fallback=True,
             )
-            return sym_s, doc
+            return sym_s, doc, refreshed
 
-        synced: List[Tuple[str, Optional[Dict[str, Any]]]]
+        synced: List[Tuple[str, Optional[Dict[str, Any]], bool]]
         if len(archive_syms) > 1 and fetch_fn is None and post_fn is None:
             with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(archive_syms))) as pool:
                 synced = list(pool.map(_sync_one, archive_syms))
         else:
             synced = [_sync_one(s) for s in archive_syms]
 
+        refreshed_any = any(refreshed for _, _, refreshed in synced)
         items_out: Dict[str, Dict[str, Any]] = {}
-        for sym_s, archive_doc in synced:
+        for sym_s, archive_doc, _ in synced:
             if sym_s not in prompt_sym_set:
                 continue
             merged_bars = archive_doc.get("bars") if isinstance(archive_doc, dict) else []
@@ -698,6 +729,14 @@ class LongHorizonStructureCollector(TelemetryCacheCollectorInterface):
                 items_out[sym_s] = evaluated
 
         if not items_out:
+            return prev_snap
+        if (
+            not refreshed_any
+            and isinstance(prev_snap, dict)
+            and isinstance(prev_snap.get("items"), dict)
+            and safe_int(prev_snap.get("months"), default=0) == eff_months
+            and set(items_out.keys()).issubset(set(prev_snap["items"].keys()))
+        ):
             return prev_snap
 
         payload: Dict[str, Any] = {
@@ -768,12 +807,14 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
             if all_fresh:
                 return {"ts": round(eff_now, 3), "skipped_fresh": True, "symbols": len(target_syms), "timeframes": list(target_tfs)}
 
-        def _sync_symbol_tfs(sym_s: str) -> Tuple[str, Dict[str, int]]:
+        def _sync_symbol_tfs(sym_s: str) -> Tuple[str, Dict[str, int], bool]:
             counts: Dict[str, int] = {}
+            sym_refreshed = False
             is_yahoo_native = sym_s.upper() in _BENCHMARK_SYMBOLS or is_equity_symbol(sym_s)
             doc_1h: Optional[Dict[str, Any]] = None
+            doc_1h_refreshed = False
             if "1h" in target_tfs:
-                doc_1h = sync_symbol_ohlc_archive(
+                doc_1h, doc_1h_refreshed = _sync_symbol_ohlc_archive_with_status(
                     cachedb_dir,
                     sym_s,
                     timeframe="1h",
@@ -784,6 +825,8 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
                     post_fn=post_fn,
                     allow_sparse_fallback=False,
                 )
+                if doc_1h_refreshed:
+                    sym_refreshed = True
                 if isinstance(doc_1h, dict):
                     counts["1h"] = safe_int(doc_1h.get("bar_count"), default=0)
             for tf in target_tfs:
@@ -797,6 +840,10 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
                     and doc_1h.get("bars")
                     and (is_yahoo_native or doc_1h_src.startswith("yahoo:"))
                 ):
+                    existing_4h = load_ohlc_bar_archive(cachedb_dir, sym_s, timeframe="4h")
+                    if not doc_1h_refreshed and isinstance(existing_4h, dict) and existing_4h.get("bars"):
+                        counts["4h"] = safe_int(existing_4h.get("bar_count"), default=0)
+                        continue
                     pol_4h = resolve_archive_policy("4h")
                     bars_4h = aggregate_ohlc_bars(doc_1h["bars"], target_interval_min=pol_4h.interval_min)
                     doc_4h = upsert_ohlc_bar_archive(
@@ -812,8 +859,9 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
                     )
                     if isinstance(doc_4h, dict):
                         counts["4h"] = safe_int(doc_4h.get("bar_count"), default=0)
+                        sym_refreshed = True
                     continue
-                doc_tf = sync_symbol_ohlc_archive(
+                doc_tf, tf_refreshed = _sync_symbol_ohlc_archive_with_status(
                     cachedb_dir,
                     sym_s,
                     timeframe=tf,
@@ -824,18 +872,22 @@ class IntradayOhlcArchiveCollector(TelemetryCacheCollectorInterface):
                     post_fn=post_fn,
                     allow_sparse_fallback=False,
                 )
+                if tf_refreshed:
+                    sym_refreshed = True
                 if isinstance(doc_tf, dict):
                     counts[tf] = safe_int(doc_tf.get("bar_count"), default=0)
-            return sym_s, counts
+            return sym_s, counts, sym_refreshed
 
-        results: List[Tuple[str, Dict[str, int]]]
+        results: List[Tuple[str, Dict[str, int], bool]]
         if len(target_syms) > 1 and fetch_fn is None and post_fn is None:
             with ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(target_syms))) as pool:
                 results = list(pool.map(_sync_symbol_tfs, target_syms))
         else:
             results = [_sync_symbol_tfs(s) for s in target_syms]
 
-        updated_map = {sym_s: cnts for sym_s, cnts in results if cnts}
+        if not any(refreshed for _, _, refreshed in results):
+            return None
+        updated_map = {sym_s: cnts for sym_s, cnts, _ in results if cnts}
         if not updated_map:
             return None
         return {

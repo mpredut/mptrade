@@ -1272,3 +1272,89 @@ def test_chart_view_auto_tf_wick_bucket_extremes_and_1h_archive_high_since(tmp_p
     ]
     upsert_ohlc_bar_archive(cache_dir, "TAOUSDC", bars_1h, timeframe="1h", source="binance:TAOUSDC")
     assert abs(scan_cached_price_archive_high_since(cache_dir, ("TAOUSDC",), entry_ts_ms) - 194.5) < 1e-6
+
+
+def test_pass6_long_horizon_and_intraday_collectors_never_stamp_fresh_on_outage(tmp_path: Path, monkeypatch) -> None:
+    """Pass 6 invariants: 100% network outage preserves honest stale ts (triggering GlobalTelemetryCollector retry),
+    skip_if_fresh_sec heals missing default symbols, and 4h Yahoo archive is not re-stamped from stale 1h bars."""
+    import pytest
+    import intelligence.globaltelemetry_collector as gtc_mod
+    from intelligence.globaltelemetry_collector import GlobalTelemetryCollector
+    from intelligence.sentiment.collectors import long_horizon_collector as lh_mod
+    from intelligence.sentiment.collectors.long_horizon_collector import collect_intraday_ohlc_archives
+
+    cache_dir = str(tmp_path / "cachedb")
+    t0 = datetime(2026, 11, 26, 16, 0, 0, tzinfo=timezone.utc).timestamp()
+    start_1d = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    bn_1d = [
+        [int((start_1d + timedelta(days=i)).timestamp() * 1000), "60000", "61000", "59000", "60500", "1000"]
+        for i in range(400)
+    ]
+
+    def _ok_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = timeout
+        if "binance.com" in url:
+            return bn_1d
+        if "finance.yahoo.com" in url:
+            ts_list = [int(t0 - (48 - i) * 3600) for i in range(48)]
+            closes = [150.0 + i * 0.1 for i in range(48)]
+            return {
+                "chart": {
+                    "result": [{
+                        "meta": {"symbol": "NVDA"},
+                        "timestamp": ts_list,
+                        "indicators": {"quote": [{"open": closes, "high": closes, "low": closes, "close": closes, "volume": [100.0] * 48}]},
+                    }]
+                }
+            }
+        return {}
+
+    def _fail_fetch(url: str, timeout: float = 5.0) -> Any:
+        _ = (url, timeout)
+        raise RuntimeError("upstream outage")
+
+    # 1. Seed valid long-horizon snapshot at t0
+    snap0 = collect_long_horizon_snapshot(
+        cache_dir, months=18, symbols=["BTCUSDC"], now_ts=t0, persist=True, fetch_fn=_ok_fetch, workspace_dir=str(tmp_path)
+    )
+    assert snap0 is not None and snap0["ts"] == pytest.approx(t0)
+
+    # 2. Outage 7h later MUST NOT bump ts to t0 + 25200 -> preserves original t0 and GlobalTelemetryCollector retries (returns False)
+    t_outage = t0 + 25200.0
+    snap_fail = collect_long_horizon_snapshot(
+        cache_dir, months=18, symbols=["BTCUSDC"], now_ts=t_outage, persist=True, fetch_fn=_fail_fetch, workspace_dir=str(tmp_path)
+    )
+    assert snap_fail is not None and snap_fail["ts"] == pytest.approx(t0)
+
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=cache_dir, skip_external=True, skip_news=True)
+    monkeypatch.setattr(gtc_mod, "collect_long_horizon_snapshot", lambda *_a, **_kw: snap_fail)
+    assert gtc.update_long_horizon(force=True, now=t_outage) is False
+
+    # 3. Default symbols=None with a newly-configured missing symbol MUST NOT skip under skip_if_fresh_sec
+    called_urls: list[str] = []
+
+    def _track_fetch(url: str, timeout: float = 5.0) -> Any:
+        called_urls.append(url)
+        return _ok_fetch(url, timeout=timeout)
+
+    monkeypatch.setattr(lh_mod, "_resolve_default_long_horizon_symbols", lambda *_a, **_kw: ["BTCUSDC", "ETHUSDC"])
+    snap_healed = collect_long_horizon_snapshot(
+        cache_dir, months=18, symbols=None, now_ts=t0 + 60.0, persist=True, skip_if_fresh_sec=21600.0, fetch_fn=_track_fetch, workspace_dir=str(tmp_path)
+    )
+    assert called_urls and snap_healed is not None and "ETHUSDC" in snap_healed["items"]
+
+    # 4. IntradayOhlcArchiveCollector: Yahoo 4h archive is NOT re-stamped on 1h outage, and 100% outage returns None
+    res_ok = collect_intraday_ohlc_archives(
+        cache_dir, symbols=["NVDA_US_EQ"], now_ts=t0, persist=True, fetch_fn=_ok_fetch, workspace_dir=str(tmp_path)
+    )
+    assert res_ok is not None
+    nvda_4h_before = load_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", "4h")
+    assert nvda_4h_before is not None and nvda_4h_before["updated_ts"] == pytest.approx(t0)
+
+    res_fail = collect_intraday_ohlc_archives(
+        cache_dir, symbols=["NVDA_US_EQ"], now_ts=t0 + 7200.0, persist=True, fetch_fn=_fail_fetch, workspace_dir=str(tmp_path)
+    )
+    assert res_fail is None
+    nvda_4h_after = load_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", "4h")
+    assert nvda_4h_after is not None and nvda_4h_after["updated_ts"] == pytest.approx(t0)
+

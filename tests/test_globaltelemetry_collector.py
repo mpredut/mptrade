@@ -3316,6 +3316,187 @@ def test_kinematic_impulse_vol_scaling_and_tokenized_equity_exclusion():
     assert atr_map["ARBUSDC"] == pytest.approx(0.70)
 
 
+def test_pass6_carryover_per_sibling_expiry_partial_retry_and_short_trends_min(tmp_path, monkeypatch):
+    """Pass 6 invariants: fresh siblings never rejuvenate stale carried-over Deribit/calendar/ETF legs,
+    partial calendar/ETF updates return False so GlobalTelemetryCollector retries, and short_trends uses min."""
+    import json
+    import intelligence.globaltelemetry_collector as gtc_mod
+    import intelligence.sentiment.collectors.macro_telemetry_collector as mtc_mod
+    from state_io import save_json_state
+
+    t0 = 1_795_900_000.0
+    cdir = tmp_path / "cachedb"
+    macro_dir = cdir / "macro"
+    macro_dir.mkdir(parents=True)
+
+    # 1. Deribit per-currency carryover: fresh BTC MUST NOT rejuvenate failing ETH past 3600s
+    (macro_dir / "macro_benchmarks_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": t0,
+                "deribit_ts": t0,
+                "btc_deribit_ts": t0,
+                "eth_deribit_ts": t0,
+                "items": {"SPY": {"symbol": "SPY", "price": 690.0, "chg_24h_pct": 0.1}},
+                "btc_dvol": 55.0,
+                "eth_dvol": 65.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _btc_only_deribit_fetch(url, timeout=3.0, headers=None):
+        if "yahoo" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {"regularMarketPrice": 691.0, "previousClose": 690.0, "marketState": "REGULAR"},
+                            "timestamp": [int(t0), int(t0 + 1800)],
+                            "indicators": {"quote": [{"close": [690.0, 691.0]}]},
+                        }
+                    ]
+                }
+            }
+        if "currency=BTC" in url and "volatility_index" in url:
+            return {"result": {"data": [[int((t0 + 1800) * 1000), 56.0, 57.0, 55.0, 56.5]]}}
+        raise RuntimeError("ETH unavailable")
+
+    monkeypatch.setattr(mtc_mod, "fetch_public_json", _btc_only_deribit_fetch)
+    snap_mid = mtc_mod.MacroBenchmarksSnapshotCollector().collect(str(cdir), now_ts=t0 + 1800.0, persist=True)
+    assert snap_mid is not None
+    assert snap_mid["btc_dvol"] == 56.5 and snap_mid["eth_dvol"] == 65.0
+    assert snap_mid["btc_deribit_ts"] == pytest.approx(t0 + 1800.0)
+    assert snap_mid["eth_deribit_ts"] == pytest.approx(t0)
+    assert snap_mid["deribit_ts"] == pytest.approx(t0)
+
+    # At t0 + 4000s (>3600s since ETH's true t0, <3600s since BTC's t0+1800s), ETH MUST expire even though BTC succeeded!
+    snap_late = mtc_mod.MacroBenchmarksSnapshotCollector().collect(str(cdir), now_ts=t0 + 4000.0, persist=True)
+    assert snap_late is not None
+    assert snap_late["btc_dvol"] == 56.5
+    assert "eth_dvol" not in snap_late
+    assert snap_late["deribit_ts"] == pytest.approx(t0 + 4000.0)
+
+    # 2. MacroEconomicCalendarCollector + GlobalTelemetryCollector partial failure retry & 24h expiry
+    (macro_dir / "macro_calendar_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": t0,
+                "events_ok": True,
+                "earnings_ok": True,
+                "events_ts": t0,
+                "earnings_ts": t0,
+                "events": [{"title": "CPI", "ts": t0 + 3600.0}],
+                "earnings": [{"symbol": "NVDA", "date_iso": "2026-11-27", "timing": "AMC"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _events_only_cal_fetch(url, **_kw):
+        if "nfs.faireconomy" in url or "forexfactory" in url or "ff_calendar" in url:
+            return []
+        raise RuntimeError("nasdaq timeout")
+
+    cal_mid = mtc_mod.MacroEconomicCalendarCollector().collect(
+        str(cdir), now_ts=t0 + 43200.0, persist=True, fetch_fn=_events_only_cal_fetch, tracked_equity_tickers=["NVDA"]
+    )
+    assert cal_mid is not None and cal_mid["events_ok"] is True and cal_mid["earnings_ok"] is False
+    assert cal_mid["earnings"] and cal_mid["earnings_ts"] == pytest.approx(t0)
+
+    # At t0 + 90000s (>24h since original earnings_ts=t0), stale earnings MUST expire even though events refreshed at +12h!
+    cal_exp = mtc_mod.MacroEconomicCalendarCollector().collect(
+        str(cdir), now_ts=t0 + 90000.0, persist=True, fetch_fn=_events_only_cal_fetch, tracked_equity_tickers=["NVDA"]
+    )
+    assert cal_exp is not None and cal_exp["earnings"] == []
+    assert "earnings_ts" not in cal_exp
+
+    # Dependent cross-check: GlobalTelemetryCollector returns False on partial calendar or partial ETF snapshot
+    gtc = GlobalTelemetryCollector(symbols=["BTCUSDC"], cache_dir=str(cdir), skip_external=True, skip_news=True)
+    monkeypatch.setattr(gtc_mod, "collect_macro_calendar_snapshot", lambda *_a, **_kw: cal_mid)
+    assert gtc.update_macro_calendar(force=True, now=t0 + 43200.0) is False
+
+    # 3. SpotEtfFlowsCollector per-asset carryover expiry + partial retry
+    (macro_dir / "etf_flows_collect.json").write_text(
+        json.dumps(
+            {
+                "ts": t0,
+                "btc_ok": True,
+                "eth_ok": True,
+                "btc_ts": t0,
+                "eth_ts": t0,
+                "assets": {
+                    "BTC": {"asset": "BTC", "latest_date": "2026-11-26", "latest_net_m": 100.0},
+                    "ETH": {"asset": "ETH", "latest_date": "2026-11-26", "latest_net_m": 25.0},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        mtc_mod,
+        "parse_farside_etf_flows_html",
+        lambda _html, asset, max_days=10: {"asset": asset, "latest_date": "2026-11-27", "latest_net_m": 110.0},
+    )
+
+    def _btc_only_etf_text(url, **_kw):
+        if "btc" in url.lower() or "bitcoin" in url.lower():
+            return "<table>ok</table>"
+        raise RuntimeError("eth farside 503")
+
+    etf_mid = mtc_mod.SpotEtfFlowsCollector().collect(
+        str(cdir), now_ts=t0 + 43200.0, persist=True, fetch_text_fn=_btc_only_etf_text
+    )
+    assert etf_mid is not None and etf_mid["btc_ok"] is True and etf_mid["eth_ok"] is False
+    assert "ETH" in etf_mid["assets"] and etf_mid["eth_ts"] == pytest.approx(t0)
+
+    monkeypatch.setattr(gtc_mod, "collect_spot_etf_flows_snapshot", lambda *_a, **_kw: etf_mid)
+    assert gtc.update_etf_flows(force=True, now=t0 + 43200.0) is False
+
+    etf_exp = mtc_mod.SpotEtfFlowsCollector().collect(
+        str(cdir), now_ts=t0 + 90000.0, persist=True, fetch_text_fn=_btc_only_etf_text
+    )
+    assert etf_exp is not None and "BTC" in etf_exp["assets"] and "ETH" not in etf_exp["assets"]
+
+    # 4. short_trends domain timestamp uses min across in-scope symbols (and fetchtime fallback), not max
+    ws_st = tmp_path / "st_ws"
+    c_st = ws_st / "cachedb"
+    c_st.mkdir(parents=True)
+    save_json_state(
+        str(c_st / "cache_current_price.json"),
+        {
+            "ts": t0,
+            "items": {
+                "BTCUSDC": [[round((t0 - 1.0) * 1000.0), 60000.0]],
+                "TAOUSDC": [[round((t0 - 2.0) * 1000.0), 180.0]],
+                "NVDA_US_EQ": [[round((t0 - 50000.0) * 1000.0), 150.0]],
+            },
+        },
+    )
+    save_json_state(
+        str(c_st / "cache_short_trend.json"),
+        {
+            "items": {
+                "BTCUSDC": {"growth_coefficient": 0.01, "price": 60000.0},
+                "TAOUSDC": {"growth_coefficient": -0.01, "price": 180.0},
+                "NVDA_US_EQ": {"growth_coefficient": 0.0, "price": 150.0},
+            },
+            "fetchtime": {
+                "BTCUSDC": int((t0 - 3.0) * 1000),
+                "TAOUSDC": int((t0 - 95.0) * 1000),
+                "NVDA_US_EQ": int((t0 - 50000.0) * 1000),
+            },
+        },
+    )
+    orch = MarketAndPortfolioSnapshotOrchestrator(start_sync=False)
+    monkeypatch.setattr(mtc_mod, "is_us_rth_open", lambda _ts=None: False)
+    snap_crypto = orch.read_snapshot(str(c_st), scope="crypto", now_ts=t0)
+    assert snap_crypto.source_ages_sec["short_trends"] == pytest.approx(95.0)
+    snap_all_off = orch.read_snapshot(str(c_st), scope="all", now_ts=t0)
+    assert snap_all_off.source_ages_sec["short_trends"] == pytest.approx(95.0)
+
+
+
 
 
 

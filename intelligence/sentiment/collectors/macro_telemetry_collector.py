@@ -531,7 +531,7 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     extra_macro["coinbase_premium_ts"] = prev_cb_ts
             # 2. Deribit BTC / ETH Implied Volatility Index (DVOL) & Institutional Options Surface
             deribit_currencies = tuple(get_deribit_options_currencies())
-            fresh_deribit_any = False
+            deribit_ccy_ts: Dict[str, float] = {}
             if resolve_remaining_timeout_sec(deadline_mono, 2.0, min_timeout=1.2) is not None:
                 try:
                     end_ms = math.trunc(eff_now * 1000)
@@ -544,13 +544,14 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                         if dvol_to is None:
                             break
                         d_key = f"{ccy.lower()}_dvol"
+                        ccy_fresh = False
                         try:
                             d_raw = _fetch(dvol_tpl.format(currency=ccy, start_ms=start_ms, end_ms=end_ms), timeout=dvol_to, headers={"User-Agent": "Mozilla/5.0"})
                             d_data = ((d_raw or {}).get("result") or {}).get("data") if isinstance(d_raw, dict) else None
                             if isinstance(d_data, list) and d_data and isinstance(d_data[-1], list) and len(d_data[-1]) >= 5:
                                 if (dv := safe_pos_float(d_data[-1][4], default=None)) is not None:
                                     extra_macro[d_key] = round(dv, 2)
-                                    fresh_deribit_any = True
+                                    ccy_fresh = True
                         except Exception:
                             pass
                         rv_val: Optional[float] = None
@@ -578,24 +579,37 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                         )
                         if surf:
                             extra_macro.update(surf)
-                            fresh_deribit_any = True
+                            ccy_fresh = True
+                        if ccy_fresh:
+                            deribit_ccy_ts[ccy] = eff_now
                 except Exception:
                     pass
-            carried_deribit_ts = 0.0
             if isinstance(prev_snap, dict):
-                prev_db_ts = normalize_epoch_sec(prev_snap.get("deribit_ts") or prev_snap.get("ts"), default=0.0) or 0.0
-                if prev_db_ts > 0.0 and 0.0 <= (eff_now - prev_db_ts) <= self._DERIBIT_CARRYOVER_MAX_AGE_SEC:
-                    for ccy in deribit_currencies:
-                        ccy_keys = tuple(f"{ccy.lower()}_{sfx}" for sfx in self._DERIBIT_METRIC_SUFFIXES)
-                        if not any(k in extra_macro for k in ccy_keys):
-                            for k in ccy_keys:
-                                if prev_snap.get(k) is not None:
-                                    extra_macro[k] = prev_snap[k]
-                                    carried_deribit_ts = prev_db_ts
-            if fresh_deribit_any:
-                extra_macro["deribit_ts"] = eff_now
-            elif carried_deribit_ts > 0.0:
-                extra_macro["deribit_ts"] = carried_deribit_ts
+                fallback_db_ts = normalize_epoch_sec(prev_snap.get("deribit_ts") or prev_snap.get("ts"), default=0.0) or 0.0
+                for ccy in deribit_currencies:
+                    if ccy in deribit_ccy_ts:
+                        continue
+                    ccy_ts_key = f"{ccy.lower()}_deribit_ts"
+                    prev_ccy_ts = (
+                        normalize_epoch_sec(prev_snap.get(ccy_ts_key), default=0.0) or 0.0
+                        if prev_snap.get(ccy_ts_key) is not None
+                        else fallback_db_ts
+                    )
+                    if not (prev_ccy_ts > 0.0 and 0.0 <= (eff_now - prev_ccy_ts) <= self._DERIBIT_CARRYOVER_MAX_AGE_SEC):
+                        continue
+                    ccy_keys = tuple(f"{ccy.lower()}_{sfx}" for sfx in self._DERIBIT_METRIC_SUFFIXES)
+                    if not any(k in extra_macro for k in ccy_keys):
+                        carried_ccy = False
+                        for k in ccy_keys:
+                            if prev_snap.get(k) is not None:
+                                extra_macro[k] = prev_snap[k]
+                                carried_ccy = True
+                        if carried_ccy:
+                            deribit_ccy_ts[ccy] = prev_ccy_ts
+            for ccy, ccy_ts_val in deribit_ccy_ts.items():
+                extra_macro[f"{ccy.lower()}_deribit_ts"] = ccy_ts_val
+            if deribit_ccy_ts:
+                extra_macro["deribit_ts"] = min(deribit_ccy_ts.values())
             if "btc_dvol" in extra_macro:
                 bv = extra_macro["btc_dvol"]
                 extra_macro["options_vol_regime"] = "HIGH_IV_EVENT_HEDGING" if bv >= 62.0 else ("COMPRESSED_IV" if bv <= 42.0 else "NORMAL_IV")
@@ -813,16 +827,32 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
         if not events_ok and not earnings_ok:
             return None
         done_now = resolve_now_ts(now_ts)
-        if self._is_snapshot_within_age(prev_snap, now_ts=done_now, max_age_sec=86400.0, inclusive=True) and isinstance(
-            prev_snap, dict
-        ):
+        done_now_r = round(done_now, 3)
+        events_ts: Optional[float] = done_now_r if events_ok else None
+        earnings_ts: Optional[float] = done_now_r if earnings_ok else None
+        if isinstance(prev_snap, dict):
+            prev_snap_ts = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
             if not events_ok and isinstance(prev_snap.get("events"), list):
-                events = list(prev_snap["events"])
+                prev_ev_ts = (
+                    normalize_epoch_sec(prev_snap.get("events_ts"), default=0.0) or 0.0
+                    if prev_snap.get("events_ts") is not None
+                    else prev_snap_ts
+                )
+                if prev_ev_ts > 0.0 and 0.0 <= (done_now - prev_ev_ts) <= 86400.0:
+                    events = list(prev_snap["events"])
+                    events_ts = round(prev_ev_ts, 3)
             if not earnings_ok and isinstance(prev_snap.get("earnings"), list):
-                earnings = list(prev_snap["earnings"])
+                prev_er_ts = (
+                    normalize_epoch_sec(prev_snap.get("earnings_ts"), default=0.0) or 0.0
+                    if prev_snap.get("earnings_ts") is not None
+                    else prev_snap_ts
+                )
+                if prev_er_ts > 0.0 and 0.0 <= (done_now - prev_er_ts) <= 86400.0:
+                    earnings = list(prev_snap["earnings"])
+                    earnings_ts = round(prev_er_ts, 3)
 
         payload: Dict[str, Any] = {
-            "ts": round(done_now, 3),
+            "ts": done_now_r,
             "source": "forexfactory+nasdaq",
             "events_ok": events_ok,
             "earnings_ok": earnings_ok,
@@ -830,6 +860,10 @@ class MacroEconomicCalendarCollector(MacroTelemetryCollectorBase):
             "events": events,
             "earnings": earnings,
         }
+        if events_ts is not None:
+            payload["events_ts"] = events_ts
+        if earnings_ts is not None:
+            payload["earnings_ts"] = earnings_ts
         self._persist_snapshot(cachedb_dir, CACHE_MACRO_CALENDAR_FILENAME, payload, persist=persist)
         return payload
 
@@ -915,20 +949,34 @@ class SpotEtfFlowsCollector(MacroTelemetryCollectorBase):
             return None
 
         done_now = resolve_now_ts(now_ts)
-        if self._is_snapshot_within_age(prev_snap, now_ts=done_now, max_age_sec=86400.0, inclusive=True) and isinstance(
-            prev_snap, dict
-        ):
+        done_now_r = round(done_now, 3)
+        asset_ts_out: Dict[str, float] = {
+            f"{asset_u.lower()}_ts": done_now_r
+            for asset_u in expected_assets
+            if asset_u in assets_out
+        }
+        if isinstance(prev_snap, dict):
             prev_assets = prev_snap.get("assets")
+            prev_snap_ts = normalize_epoch_sec(prev_snap.get("ts"), default=0.0) or 0.0
             if isinstance(prev_assets, dict):
                 for asset_u in expected_assets:
                     if asset_u not in assets_out and isinstance(prev_assets.get(asset_u), dict):
-                        assets_out[asset_u] = dict(prev_assets[asset_u])
+                        a_ts_key = f"{asset_u.lower()}_ts"
+                        prev_a_ts = (
+                            normalize_epoch_sec(prev_snap.get(a_ts_key), default=0.0) or 0.0
+                            if prev_snap.get(a_ts_key) is not None
+                            else prev_snap_ts
+                        )
+                        if prev_a_ts > 0.0 and 0.0 <= (done_now - prev_a_ts) <= 86400.0:
+                            assets_out[asset_u] = dict(prev_assets[asset_u])
+                            asset_ts_out[a_ts_key] = round(prev_a_ts, 3)
 
         payload: Dict[str, Any] = {
-            "ts": round(done_now, 3),
+            "ts": done_now_r,
             "source": "farside",
             "assets": assets_out,
             **{f"{asset_u.lower()}_ok": bool(ok_flags.get(asset_u, False)) for asset_u in expected_assets},
+            **asset_ts_out,
         }
         payload["summary_line"] = format_etf_flows_summary_line(payload)
         self._persist_snapshot(cachedb_dir, CACHE_ETF_FLOWS_FILENAME, payload, persist=persist)
@@ -2078,13 +2126,29 @@ class MarketAndPortfolioSnapshotOrchestrator(MacroTelemetryCollectorBase):
                 if whale_ts_vals:
                     domain_ts["whale_oldest"] = min(whale_ts_vals)
         st_items_d = trends_data.get("items") if isinstance(trends_data, dict) and isinstance(trends_data.get("items"), dict) else trends_data
-        st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(
-            st_items_d,
-            trends_data,
-            lambda _tk, tv: extract_timestamp_s(tv) if isinstance(tv, dict) else None,
+        st_ft_map = (
+            trends_data.get("fetchtime")
+            if isinstance(trends_data, dict) and isinstance(trends_data.get("fetchtime"), dict)
+            else {}
         )
-        if st_ts_vals:
-            domain_ts["short_trends"] = max(st_ts_vals)
+
+        def _st_ts(k_st: str, v_st: Any) -> Optional[float]:
+            item_t = extract_timestamp_s(v_st) if isinstance(v_st, dict) else None
+            ft_t = normalize_epoch_sec(st_ft_map.get(k_st), default=None)
+            if item_t is not None and item_t > 0.0 and ft_t is not None and ft_t > 0.0:
+                return max(item_t, ft_t)
+            if item_t is not None and item_t > 0.0:
+                return item_t
+            return ft_t if (ft_t is not None and ft_t > 0.0) else None
+
+        st_ts_vals, st_top_ts = _collect_scoped_map_timestamps(st_items_d, trends_data, _st_ts)
+        st_oldest_pool = (
+            (_collect_scoped_map_timestamps(st_items_d, None, _st_ts, exclude_eq=True)[0] or st_ts_vals)
+            if (scope_norm == "all" and not us_rth_open)
+            else st_ts_vals
+        )
+        if st_oldest_pool:
+            domain_ts["short_trends"] = min(st_oldest_pool)
         elif st_top_ts is not None and st_top_ts > 0.0:
             domain_ts["short_trends"] = st_top_ts
         if vb_doc := load_venue_balances_state(cache_dir, read_json_fn)[1]:
