@@ -1180,6 +1180,7 @@ class TrailingAdapterBase:
             self.log(line)
         hb_name = self._HEARTBEAT_NAME or f"{self._VENUE_LABEL or 'Trailing'}-trailing"
         touch_module_heartbeat(hb_name, interval_sec=30.0, force=True, intervals={"check_seconds": check_seconds})
+        prev_hb_state = "ok"
         while True:
             hb_status: dict[str, Any]
             try:
@@ -1191,9 +1192,13 @@ class TrailingAdapterBase:
             except Exception as e:  # noqa: BLE001
                 hb_status = {"status": "error", "error": f"{e.__class__.__name__}: {e}"}
                 self.log_tick_error(e)
+            cur_state = str(hb_status.get("status") or "ok")
+            force_hb = cur_state != prev_hb_state
+            prev_hb_state = cur_state
             touch_module_heartbeat(
                 hb_name,
                 interval_sec=30.0,
+                force=force_hb,
                 status=hb_status,
                 intervals={"check_seconds": check_seconds},
             )

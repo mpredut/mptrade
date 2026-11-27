@@ -1297,3 +1297,51 @@ def test_trailing_corrupt_balance_preserves_peak_and_loop_reports_non_ok_heartbe
     assert "state_disk_full" in hb_err[-1]["error"]
 
 
+def test_pass24_trailing_loop_forces_heartbeat_on_status_transitions(tmp_path):
+    """[Pass 24] _run_trailing_loop passes force=True whenever tick status transitions and force=False on steady ticks."""
+    import pytest
+    import trailing_core as tc
+    from binance_api.trailing_stop import TrailingStop
+
+    sf = str(tmp_path / "trail_hb.json")
+    api = SimpleNamespace(
+        get_account_assets_balances=lambda: [{"asset": "BTC", "free": "1.0", "locked": "0.0"}],
+        get_current_price=lambda _pair: 100.0,
+    )
+    ts = TrailingStop(api, MagicMock(), SimpleNamespace(symbols=["BTCUSDC"]), log=lambda _m: None, enabled=False, state_file=sf)
+
+    tick_plan = iter([
+        {"status": "ok"},                                         # ok -> ok (force=False)
+        {"status": "skipped", "reason": "balance_unavailable"},   # ok -> skipped (force=True)
+        {"status": "skipped", "reason": "balance_unavailable"},   # skipped -> skipped (force=False)
+        RuntimeError("rpc_down"),                                 # skipped -> error (force=True)
+        {"status": "ok"},                                         # error -> ok (force=True)
+    ])
+
+    def _fake_check_once():
+        step = next(tick_plan)
+        if isinstance(step, BaseException):
+            raise step
+        ts.core._last_tick_status = step
+
+    hb_calls: list[tuple[str | None, bool]] = []
+    sleeps = [0]
+
+    def _fake_sleep(_s):
+        sleeps[0] += 1
+        if sleeps[0] >= 5:
+            raise SystemExit(0)
+
+    with patch.object(ts, "check_once", side_effect=_fake_check_once), \
+         patch.object(tc, "touch_module_heartbeat", side_effect=lambda *a, **kw: hb_calls.append(((kw.get("status") or {}).get("status"), bool(kw.get("force", False))))), \
+         patch.object(tc.time, "sleep", side_effect=_fake_sleep):
+        with pytest.raises(SystemExit):
+            ts._run_trailing_loop(5.0, [])
+
+    # hb_calls[0] is startup force=True; hb_calls[1..5] are the 5 loop ticks
+    assert len(hb_calls) == 6
+    assert [force for _st, force in hb_calls] == [True, False, True, False, True, True]
+    assert [st for st, _force in hb_calls[1:]] == ["ok", "skipped", "skipped", "error", "ok"]
+
+
+

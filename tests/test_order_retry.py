@@ -1939,3 +1939,57 @@ def test_discard_superseded_symbol_records_protects_default_queue_when_mock(monk
     assert oq.discard_superseded_symbol_records("BTCUSDC", "BUY", cancel_fn_is_mock=True) == []
 
 
+def test_pass24_claim_lease_and_clock_rollback_invariants_and_crosscheck(tmp_path, monkeypatch):
+    """[Pass 24] Corrupt far-future claim_until or backward NTP jump never wedges claim(), is_due(), or is_expired()."""
+    q_path = tmp_path / "queue.jsonl"
+    monkeypatch.setattr(oq, "QUEUE_FILE", str(q_path))
+    monkeypatch.setattr(oq, "LOCK_FILE", str(tmp_path / "queue.lock"))
+
+    # 1. Pure invariant: _claim_lease_active accepts plausible active lease and rejects expired or far-future corrupt lease
+    now = 1_750_000_000.0
+    assert oq._claim_lease_active(now + 120.0, now, lease_sec=120.0) is True
+    assert oq._claim_lease_active(now - 1.0, now, lease_sec=120.0) is False
+    assert oq._claim_lease_active(now + 100_000.0, now, lease_sec=120.0) is False
+    assert oq._claim_lease_active(now * 1000.0, now, lease_sec=120.0) is False
+
+    # 2. Dependent cross-check: record with corrupt far-future claim_until and future last_attempt_ts is due, claimable, and expirable
+    rid = oq.enqueue(
+        "BTCUSDC",
+        "BUY",
+        0.01,
+        {"client_order_id": "MT_p24_1"},
+        now=now - 5000.0,
+        created_ts=now - 5000.0,
+        failure_reason="temp_net",
+        ttl_sec=600.0,
+    )
+    assert rid is not None
+    rec = oq.get(rid)
+    rec["claim_until"] = now + 100_000.0
+    rec["last_attempt_ts"] = now + 500.0
+    oq.rewrite([rec])
+
+    corrupted = oq.get(rid)
+    assert oq.is_due(corrupted, now=now) is True
+    assert oq.is_expired(corrupted, now=now) is True
+
+    # claim() re-leases the record and overwrites the poisoned claim_until
+    claimed = oq.claim([rid], now=now, lease_sec=120.0)
+    assert len(claimed) == 1
+    assert claimed[0]["claim_until"] == pytest.approx(now + 120.0)
+
+    # Active plausible lease still protects against double claim and premature expiry
+    assert oq.claim([rid], now=now + 10.0, lease_sec=120.0) == []
+    assert oq.is_due(claimed[0], now=now + 10.0) is False
+    assert oq.is_expired(claimed[0], now=now + 10.0) is False
+
+    # begin_claimed_submit() must not preserve a poisoned far-future claim_until on disk
+    disk_rec = oq.get(rid)
+    disk_rec["claim_until"] = now + 200_000.0
+    oq.rewrite([disk_rec])
+    submitted = oq.begin_claimed_submit(claimed[0], now=now + 5.0, lease_sec=120.0)
+    assert submitted is not None
+    assert submitted["claim_until"] == pytest.approx(now + 125.0)
+
+
+

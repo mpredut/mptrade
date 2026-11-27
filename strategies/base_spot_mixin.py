@@ -1400,7 +1400,8 @@ class BaseSpotMixin:
                         try:
                             if os.path.exists(self.state_file):
                                 mtime_val = safe_nonneg_float(os.path.getmtime(self.state_file), default=0.0) or 0.0
-                                if mtime_val > getattr(self, "_state_file_mtime", 0.0) + 1e-3:
+                                prev_mtime = safe_nonneg_float(getattr(self, "_state_file_mtime", 0.0), default=0.0) or 0.0
+                                if abs(mtime_val - prev_mtime) > 1e-3:
                                     self.s = self._load()
                                     if getattr(self, "exit_manager", None) is not None:
                                         self.exit_manager.bind_state(self.s)

@@ -525,11 +525,28 @@ class Strategy(BaseSpotMixin):
 
     def _placement_backoff_remaining(self, side: str, kind: str) -> float:
         records = self.s.get("placement_backoffs")
-        record = records.get(self._placement_backoff_key(side, kind)) if isinstance(records, dict) else None
+        key = self._placement_backoff_key(side, kind)
+        record = records.get(key) if isinstance(records, dict) else None
         if not isinstance(record, dict):
             return 0.0
         until_f, now_f = safe_float(record.get("until"), default=None), safe_float(self._now(), default=None)
-        return min(_PLACEMENT_BACKOFF_CAP_SEC, max(0.0, until_f - now_f)) if (until_f is not None and now_f is not None) else 0.0
+        if now_f is None:
+            return 0.0
+        if until_f is None:
+            records.pop(key, None)
+            return 0.0
+        max_until = now_f + _PLACEMENT_BACKOFF_CAP_SEC
+        if until_f > max_until:
+            record["until"] = max_until
+            save_fn = getattr(self, "_save", None)
+            if callable(save_fn):
+                save_fn()
+            return _PLACEMENT_BACKOFF_CAP_SEC
+        rem = until_f - now_f
+        if rem <= 0.0:
+            records.pop(key, None)
+            return 0.0
+        return rem
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)

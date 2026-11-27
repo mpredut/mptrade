@@ -512,8 +512,13 @@ class TrackedOrderLifecycle:
 
         self._record_status_and_persist(pending, status, persist, "order_status")
 
+        now_ts = self._now()
         created_at = _lifecycle_finite(pending.get("created_at"), positive=True)
-        age_seconds = max(0.0, self._now() - created_at) if created_at is not None else None
+        if created_at is not None and created_at > now_ts + 60.0:
+            created_at = now_ts
+            pending["created_at"] = now_ts
+            persist(dict(pending))
+        age_seconds = max(0.0, now_ts - created_at) if created_at is not None else None
         cancel_attempted = _lifecycle_finite(pending.get("cancel_attempted_at"), positive=True)
         if (
             self.max_age_seconds is None

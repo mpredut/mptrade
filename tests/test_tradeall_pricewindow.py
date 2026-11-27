@@ -1880,3 +1880,53 @@ def test_unlisted_symbol_missing_price_no_busy_spin_and_live_http_backoff(tmp_pa
     assert cpm.get_price("ANTxUSD") == [int(now_box[0] * 1000), 42.5]
 
 
+def test_pass24_trendstate_clock_rollback_and_coordinator_wait_and_idle_hb(monkeypatch):
+    """[Pass 24] TrendState expires/unfresh on >60s clock rollback; TrendCoordinator resets wait on rollback and forces idle HB transitions."""
+    # 1. Pure invariant: TrendState clock rollback >60s marks trend not fresh and expired
+    clock = [2000.0]
+    ts = ta.TrendState(expiration_trend_time=120.0, fresh_trend_time=180.0, now_fn=lambda: clock[0])
+    ts.start_trend("UP")
+    assert ts.is_trend_fresh() is True
+    assert ts.check_trend_expiration() is False
+
+    clock[0] = 1900.0  # rolled back 100s (> 60s skew tolerance)
+    assert ts.is_trend_fresh() is False
+    assert ts.check_trend_expiration() is True
+    assert ts.state == "HOLD"
+
+    # 2. Dependent cross-check: TrendCoordinator.run() heals backward clock in wait_timeout (0.0 instead of full max_interval)
+    coord = ta.TrendCoordinator(
+        symbols=["BTCUSDC"],
+        instant_mgr=SimpleNamespace(),
+        current_price_mgr=SimpleNamespace(),
+        min_interval=5.0,
+        max_interval=60.0,
+    )
+    coord._dirty["BTCUSDC"] = False
+    # Pretend clock rolled back between _is_due (at t=2000) and wait (at t=1900)
+    coord._last_eval["BTCUSDC"] = 1995.0
+    times = iter([2000.0, 1900.0])
+    monkeypatch.setattr(ta.time, "time", lambda: next(times, 1900.0))
+
+    waits: list[float | None] = []
+    hb_calls: list[tuple[dict, bool]] = []
+
+    def _fake_wait(timeout=None):
+        waits.append(timeout)
+        coord._stop.set()
+        return True
+
+    monkeypatch.setattr(coord._event, "wait", _fake_wait)
+    monkeypatch.setattr(
+        ta,
+        "touch_module_heartbeat",
+        lambda _name, **kw: hb_calls.append((dict(kw.get("status") or {}), bool(kw.get("force", False)))),
+    )
+
+    coord.run()
+    assert waits == [0.0]
+    assert coord._last_eval["BTCUSDC"] == 0.0
+    assert hb_calls[0][1] is True
+
+
+

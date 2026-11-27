@@ -888,6 +888,7 @@ class IncidentDigest:
                 raise ValueError("invalid notification digest schema")
             groups = state["groups"]
             changed = False
+            max_next_at = now + self.interval + 60.0
             for key, group in list(groups.items()):
                 if not isinstance(group, dict):
                     raise ValueError("invalid notification digest group")
@@ -901,6 +902,10 @@ class IncidentDigest:
                     or not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0
                 ):
                     raise ValueError("invalid notification digest group")
+                if next_at > max_next_at:
+                    next_at = now
+                    group["next_at"] = now
+                    changed = True
                 if count == 0 and next_at <= now:
                     del groups[key]
                     changed = True
@@ -1127,6 +1132,7 @@ def main():
 
     print(f"[order_retry] start (poll={WORKER_POLL_SEC:.0f}s, interval={oq.RETRY_INTERVAL_SEC:.0f}s, TTL={oq.RETRY_TTL_SEC:.0f}s)")
     _touch_worker_hb({"retry_enabled": True}, force=True)
+    prev_hb_state = "ok"
     while True:
         last_stats = None
         last_error = None
@@ -1150,7 +1156,9 @@ def main():
             hb_status = {"retry_enabled": True, "status": hb_state, "error": last_error}
         else:
             hb_status = {"retry_enabled": True}
-        _touch_worker_hb(hb_status)
+        force_hb = hb_state != prev_hb_state
+        prev_hb_state = hb_state
+        _touch_worker_hb(hb_status, force=force_hb)
         time.sleep(WORKER_POLL_SEC)
     return 0
 

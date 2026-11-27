@@ -1895,3 +1895,93 @@ def test_order_retry_worker_main_heartbeat_reports_error_and_corruption_status(m
     assert hb_err[-1]["status"] == "error"
     assert "exchange_timeout" in hb_err[-1]["error"]
 
+
+def test_pass24_worker_hb_forces_transitions_and_digest_heals_future_next_at(monkeypatch, tmp_path):
+    """[Pass 24] main() forces heartbeat writes on state transitions and IncidentDigest heals far-future next_at."""
+    import pytest
+    from state_io import save_json_state
+
+    # 1. Pure invariant: main() passes force=True on ok->error->corrupted->ok transitions, force=False on steady ticks
+    monkeypatch.setattr(worker, "single_instance", lambda *_a, **_kw: None)
+    monkeypatch.setattr(oq, "RETRY_ENABLED", True)
+    monkeypatch.setattr(oq, "consolidate_deferred_streams", lambda: [])
+    monkeypatch.setattr(worker, "_alert_queue_corruption", lambda _exc: False)
+    monkeypatch.setattr(worker.sys, "argv", ["order_retry_worker.py"])
+
+    hb_calls: list[tuple[dict, bool]] = []
+    monkeypatch.setattr(
+        worker,
+        "_touch_worker_hb",
+        lambda st, **kw: hb_calls.append((dict(st), bool(kw.get("force", False)))),
+    )
+    outcomes = iter([
+        {"attempted": 0, "expired": 0, "observed": 0},  # ok -> steady (force=False)
+        RuntimeError("net_down"),                       # ok -> error (force=True)
+        RuntimeError("net_still_down"),                 # error -> error (force=False)
+        oq.RetryQueueCorruptionError("q.jsonl", 1, "{", "json"),  # error -> corrupted (force=True)
+        {"attempted": 0, "expired": 0, "observed": 0},  # corrupted -> ok (force=True)
+    ])
+
+    def _fake_process_once(_mkt):
+        nxt = next(outcomes)
+        if isinstance(nxt, BaseException):
+            raise nxt
+        return nxt
+
+    sleeps = [0]
+
+    def _fake_sleep(_sec):
+        sleeps[0] += 1
+        if sleeps[0] >= 5:
+            raise SystemExit(0)
+
+    monkeypatch.setattr(worker, "process_once", _fake_process_once)
+    monkeypatch.setattr(worker.time, "sleep", _fake_sleep)
+    with pytest.raises(SystemExit):
+        worker.main()
+
+    # hb_calls[0] is startup force=True; hb_calls[1..5] correspond to the 5 loop ticks
+    assert len(hb_calls) == 6
+    assert [force for _st, force in hb_calls] == [True, False, True, False, True, True]
+    assert hb_calls[2][0]["status"] == "error"
+    assert hb_calls[4][0]["status"] == "corrupted"
+    assert "status" not in hb_calls[5][0]
+
+    # 2. Dependent cross-check: IncidentDigest heals far-future next_at (both pending alert & empty stale prune)
+    digest_path = tmp_path / "future_digest.json"
+    save_json_state(
+        str(digest_path),
+        {
+            "version": 1,
+            "groups": {
+                '{"symbol":"BTCUSDC"}': {
+                    "labels": {"symbol": "BTCUSDC"},
+                    "next_at": 1000.0 + 60.0 + 3600.0,
+                    "reported": True,
+                    "count": 2,
+                    "quantity": 0.5,
+                    "attempts": 3,
+                    "sample_id": "s-future",
+                },
+                '{"symbol":"ETHUSDC"}': {
+                    "labels": {"symbol": "ETHUSDC"},
+                    "next_at": 1000.0 + 60.0 + 7200.0,
+                    "reported": True,
+                    "count": 0,
+                    "quantity": 0.0,
+                    "attempts": 0,
+                },
+            },
+        },
+        separators=(",", ":"),
+    )
+    digest = worker.IncidentDigest(digest_path, 60.0)
+    due = digest.collect([], now=1000.0)
+    assert len(due) == 1
+    assert due[0]["labels"] == {"symbol": "BTCUSDC"}
+    assert due[0]["count"] == 2
+    # After interval elapses, healed BTCUSDC group expires cleanly and file unlinks
+    assert digest.collect([], now=1061.0) == []
+    assert not digest_path.exists()
+
+

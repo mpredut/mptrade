@@ -1536,3 +1536,52 @@ def test_pass12_provider_for_transient_supports_error_never_poisons_route() -> N
     assert mkt._route.get("UNKNOWNPAIR") is default_prov
 
 
+def test_pass24_tracked_lifecycle_heals_far_future_created_at_for_max_age_cancel():
+    """[Pass 24] Far-future pending created_at is healed to now so max_age_seconds cancels stuck orders cleanly."""
+    from order_lifecycle import TrackedOrderLifecycle
+    from providers.strategy_executor import OrderStatus
+
+    clock = [1_750_000_000.0]
+    cancelled: list[str] = []
+    persisted: list[dict | None] = []
+
+    active_status = OrderStatus("open", 0.0, 0.0, 0.0)
+    cancelled_status = OrderStatus("canceled", 0.0, 0.0, 0.0)
+
+    class _FakeApi:
+        def order_status(self, _sym, oid, provider_name=None):
+            return cancelled_status if oid in cancelled else active_status
+
+        def cancel_order(self, _sym, oid, provider_name=None):
+            cancelled.append(oid)
+
+    lc = TrackedOrderLifecycle(
+        _FakeApi(),
+        max_age_seconds=180.0,
+        clock=lambda: clock[0],
+        provider_name="TestProv",
+    )
+
+    # 1. Pure invariant: far-future created_at (> now + 60s) is healed in-place to now and persisted
+    pending = {
+        "intent_id": "INT-1",
+        "client_order_id": "CID-1",
+        "order_id": "OID-1",
+        "symbol": "BTCUSDC",
+        "side": "BUY",
+        "requested_qty": 0.1,
+        "created_at": clock[0] + 7200.0,
+    }
+    res1 = lc.reconcile(pending, persist=lambda p: persisted.append(dict(p) if isinstance(p, dict) else p))
+    assert res1.outcome == "active"
+    assert res1.intent["created_at"] == pytest.approx(clock[0])
+    assert cancelled == []
+
+    # 2. Dependent cross-check: advancing clock past max_age_seconds cancels the order (instead of waiting 2 hours)
+    clock[0] += 181.0
+    res2 = lc.reconcile(res1.intent, persist=lambda p: persisted.append(dict(p) if isinstance(p, dict) else p))
+    assert cancelled == ["OID-1"]
+    assert res2.outcome == "terminal"
+
+
+

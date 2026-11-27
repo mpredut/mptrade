@@ -516,7 +516,7 @@ class TrendState:
         assert st is not None, "Trend must be started before checking freshness"
 
         elapsed_time = self._now_sec() - st
-        if elapsed_time < fresh_trend_time:
+        if -60.0 <= elapsed_time < fresh_trend_time:
             return True
 
         print(f"No fresh trend! Current trend start {math.trunc(elapsed_time)} sec back > {math.trunc(fresh_trend_time)} sec ")
@@ -557,7 +557,7 @@ class TrendState:
         lct = self._norm_ts(self.last_confirmation_time)
         if lct:
             time_since_last_confirmation = self._now_sec() - lct
-            if time_since_last_confirmation > self.expiration_trend_time:
+            if time_since_last_confirmation > self.expiration_trend_time or time_since_last_confirmation < -60.0:
                 print(f"Trend expired: {self.state}. Time since last confirmation: {time_since_last_confirmation} seconds")
                 self.old_state = self.state
                 self.end_time = self.last_confirmation_time
@@ -1137,17 +1137,24 @@ class TrendCoordinator:
             with self._lock:
                 dirty_state = [(s, self._dirty.get(s, False)) for s in self.symbols]
             for sym, is_dirty in dirty_state:
-                elapsed = max(0.0, now_wait - self._last_eval.get(sym, 0.0))
+                last_ev = self._last_eval.get(sym, 0.0)
+                if last_ev > now_wait:
+                    self._last_eval[sym] = 0.0
+                    wait_timeout = 0.0
+                    break
+                elapsed = now_wait - last_ev
                 wait_timeout = min(wait_timeout, max(0.0, self.max_interval - elapsed))
                 if is_dirty:
                     wait_timeout = min(wait_timeout, max(0.0, self.min_interval - elapsed))
             self._event.wait(timeout=wait_timeout)
             if not self._stop.is_set():
                 hb_status = _hb_status()
+                state_changed = hb_status["status"] != last_hb_state
                 last_hb_state = hb_status["status"]
                 touch_module_heartbeat(
                     "tradeall",
                     interval_sec=30.0,
+                    force=state_changed,
                     symbols=list(self.symbols),
                     status=hb_status,
                     intervals=hb_intervals,

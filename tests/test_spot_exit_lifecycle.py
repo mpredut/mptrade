@@ -1765,4 +1765,87 @@ def test_pass11_spot_ledger_reconcile_open_orders_none_and_exit_manager_epoch0_i
     assert seen_cachedb["dir"] == str(tmp_path / "custom_cachedb")
 
 
+def test_pass24_placement_backoff_heals_far_future_and_reload_detects_backward_mtime(tmp_path):
+    """[Pass 24] Far-future placement_backoffs until clamps & expires cleanly, and reload_external catches backward mtime."""
+    import os
+    from strategies.base_spot_mixin import BaseSpotMixin
+
+    # 1. Pure invariant + dependent cross-check: far-future placement backoff clamps persisted until and expires after CAP_SEC
+    clock = [1_700_000_000.0]
+    saves = [0]
+    strat = SimpleNamespace(
+        s={"placement_backoffs": {"buy:DCA": {"until": clock[0] + 999_999.0, "attempts": 2}}},
+        _now=lambda: clock[0],
+        _save=lambda: saves.__setitem__(0, saves[0] + 1),
+        _placement_backoff_key=Strategy._placement_backoff_key,
+    )
+    rem_first = Strategy._placement_backoff_remaining(strat, "BUY", "DCA")
+    assert rem_first == _PLACEMENT_BACKOFF_CAP_SEC
+    assert strat.s["placement_backoffs"]["buy:DCA"]["until"] == pytest.approx(clock[0] + _PLACEMENT_BACKOFF_CAP_SEC)
+    assert saves[0] == 1
+
+    clock[0] += _PLACEMENT_BACKOFF_CAP_SEC + 1.0
+    rem_after = Strategy._placement_backoff_remaining(strat, "BUY", "DCA")
+    assert rem_after == 0.0
+    assert "buy:DCA" not in strat.s["placement_backoffs"]
+
+    # 2. Dependent cross-check: _run_strategy_loop(reload_external=True) reloads when mtime moves backward
+    state_file = tmp_path / "spot_state.json"
+    state_file.write_text('{"marker":"reloaded"}', encoding="utf-8")
+    os.utime(state_file, (1_700_000_000.0, 1_700_000_000.0))
+
+    class _DummyLoop(BaseSpotMixin):
+        def __init__(self):
+            self.p = SimpleNamespace(check_minutes=0.05)
+            self.state_file = str(state_file)
+            self._state_file_mtime = 1_700_000_500.0  # future mtime before clock rollback / restore
+            self._state_write_failed = False
+            self.s = {"marker": "stale"}
+            self.reloaded = 0
+            self.exit_manager = None
+            self.venue_label = "Test"
+            self.pair = "BTCUSDC"
+            self.stop_ev = SimpleNamespace(_done=False)
+
+        def _mod_global(self, name, default):
+            return default
+
+        def _touch_strategy_heartbeat(self, *args, **kwargs):
+            return None
+
+        def _recover_state_write_or_skip(self):
+            return True
+
+        def _load(self):
+            self.reloaded += 1
+            self._state_file_mtime = os.path.getmtime(self.state_file)
+            return {"marker": "reloaded"}
+
+        def reconcile(self, _price):
+            return True
+
+        def step(self, _price):
+            return None
+
+        def _save(self):
+            return None
+
+        def _log_msg(self, _msg):
+            return None
+
+    import threading
+
+    stop = threading.Event()
+    loop_obj = _DummyLoop()
+    loop_obj._run_strategy_loop(
+        price_fn=lambda: 100.0,
+        status_log_fn=lambda _p: stop.set(),
+        stop=stop,
+        reload_external=True,
+    )
+    assert loop_obj.reloaded == 1
+    assert loop_obj.s["marker"] == "reloaded"
+
+
+
 

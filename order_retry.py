@@ -723,6 +723,19 @@ def update_claimed_qty(claim_snapshot, qty, *, now=None, applied_scale=None):
     return None
 
 
+def _claim_lease_active(claim_until, now_f: float, *, lease_sec=None) -> bool:
+    """Return whether ``claim_until`` represents a plausible active lease (ignoring corrupt far-future leases)."""
+    cu = safe_nonneg_float(claim_until, default=0.0) or 0.0
+    if cu <= now_f:
+        return False
+    max_lease = max(
+        safe_pos_float(lease_sec, default=0.0) or 0.0,
+        safe_pos_float(RETRY_CLAIM_LEASE_SEC, default=0.0) or 0.0,
+        3600.0,
+    )
+    return (cu - now_f) <= max_lease + 60.0
+
+
 def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, applied_scale=None):
     """Durably mark one exact claimed revision possibly submitted."""
     if not isinstance(claim_snapshot, dict):
@@ -744,10 +757,9 @@ def begin_claimed_submit(claim_snapshot, *, now=None, lease_sec=None, qty=None, 
                 record["producer_pid"] = current_pid
                 record["producer_process_start_id"] = current_start_identity
                 record["submission_state"] = "producer_claimed"
-                record["claim_until"] = max(
-                    safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0,
-                    now_f + lease_f,
-                )
+                prev_cu = safe_nonneg_float(record.get("claim_until"), default=0.0) or 0.0
+                base_cu = prev_cu if _claim_lease_active(prev_cu, now_f, lease_sec=lease_f) else 0.0
+                record["claim_until"] = max(base_cu, now_f + lease_f)
                 return _apply_claim_qty_and_scale(record, existing, qty, applied_scale)
     return None
 
@@ -1047,7 +1059,7 @@ def claim(ids, now=None, lease_sec=None):
     token = uuid.uuid4().hex
     with _locked_queue() as existing:
         for rec in existing:
-            if clean_order_id(rec.get("id")) not in ids or safe_float(rec.get("claim_until"), default=0.0) > now:
+            if clean_order_id(rec.get("id")) not in ids or _claim_lease_active(rec.get("claim_until"), now, lease_sec=lease_f):
                 continue
             revision = max(0, exact_int(rec.get("revision"), 0))
             placement = dict(rec.get("place_kwargs") or {})
@@ -1546,7 +1558,7 @@ def is_expired(rec, now=None):
     attempts = 0 if raw_attempts is None else exact_nonneg_int(raw_attempts, default=None)
     if attempts is None or now_f is None or created is None or ttl_started is None:
         return True
-    if claim_until > now_f:
+    if _claim_lease_active(claim_until, now_f):
         return False
     raw_expires_at = rec.get("expires_at_ts")
     if raw_expires_at is not None:
@@ -1622,7 +1634,9 @@ def is_due(rec, now=None, *, poll_interval_sec=None):
             or RETRY_INTERVAL_SEC
         )
         eff_interval = min(RETRY_INTERVAL_SEC, eff_poll)
-    return claim_until <= now_f and (now_f - base) >= eff_interval
+    return (not _claim_lease_active(claim_until, now_f)) and (
+        base > now_f + 60.0 or (now_f - base) >= eff_interval
+    )
 
 
 def is_retry_price_favorable(side, current_price, requested_price, tol=None) -> bool:
