@@ -344,7 +344,7 @@ class TestMonitororderProtectsOtherBots(TempDirTestCase):
              patch.object(oq, "resolve_accepted_order", return_value=True) as mock_resolve, \
              patch.object(ta, "_fire_order", return_value={"orderId": 10574512957}):
             order_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 82125.73, 82207.94)
-            mock_cancel.assert_called_once_with("BTCUSDC", "10574289378")
+            mock_cancel.assert_called_once_with("BTCUSDC", "10574289378", provider_name="binance")
             mock_resolve.assert_called_once_with("BTCUSDC", "10574289378")
             self.assertEqual(order_ids, [10574512957])
 

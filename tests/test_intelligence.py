@@ -4228,12 +4228,18 @@ def test_iter78_tradeall_small_big_conflict_rtrade_orphan_cancel_and_quantity_sc
 
     # 2. tradeall.track_and_place_order retains order_id when mkt.cancel_order returns False
     resolved_ids = []
-    monkeypatch.setattr(tradeall.mkt, "cancel_order", lambda sym, oid: False)
+    cancel_calls = []
+    monkeypatch.setattr(
+        tradeall.mkt,
+        "cancel_order",
+        lambda sym, oid, **kw: cancel_calls.append((sym, oid, kw)) or False,
+    )
     monkeypatch.setattr(tradeall.order_retry, "resolve_accepted_order", lambda sym, oid: resolved_ids.append(oid))
     monkeypatch.setattr(tradeall.api, "cancel_expired_orders", lambda *args, **kwargs: None)
     monkeypatch.setattr(tradeall, "_fire_order", lambda *args, **kwargs: None)
     tracked = ["777"]
     res_ids = tradeall.track_and_place_order("BUY", "BTCUSDC", 1, 100.0, 100.0, order_ids=tracked)
+    assert cancel_calls == [("BTCUSDC", "777", {"provider_name": "binance"})]
     assert resolved_ids == []
     assert res_ids == ["777"]
 
