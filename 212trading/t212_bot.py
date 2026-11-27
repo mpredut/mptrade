@@ -197,12 +197,19 @@ def main() -> int:
         if STOP.is_set():
             break
         cfg = parse_dotenv(path)
+        if "STRAT_ENABLED" in cfg and not bool_env("STRAT_ENABLED", True, env=cfg):
+            log(f"  ! [{name}] STRAT_ENABLED!=true -- skipping (t212_bot only runs strategies)")
+            continue
         t = threading.Thread(target=run_asset, name=name, daemon=True,
                              args=(name, cfg, client, args.paper, args.skip_wait))
         t.start()
         threads.append(t)
         if STOP.wait(0.5):  # stagger startup to avoid simultaneous API calls
             break
+
+    if not threads:
+        log("  ! [t212_bot] no STRAT_ENABLED=true assets to run -- exiting cleanly")
+        return 0
 
     exit_code = 0
     try:

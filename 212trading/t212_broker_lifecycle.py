@@ -693,9 +693,15 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             if callable(hist_fn) and not hasattr(hist_fn, "_mock_name"):
                 latest = hist_fn(self.ticker, side=side, refresh=True)
                 if isinstance(latest, dict):
+                    now_h = self._now()
                     fill_oid = extract_order_id(latest, default="") or ""
                     fill_ts_s = safe_pos_float(extract_timestamp_s(latest, default=None), None)
-                    last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
+                    raw_last_sell_ts = safe_pos_float(self.s.get("last_sell_ts"), None)
+                    last_sell_ts = (
+                        raw_last_sell_ts
+                        if (raw_last_sell_ts is not None and raw_last_sell_ts <= now_h + 60.0)
+                        else None
+                    )
                     stale_hist = bool(
                         (fill_oid and fill_oid == str(self.s.get("last_hist_fill_id") or ""))
                         or (side == "SELL" and fill_ts_s is not None and last_sell_ts is not None and fill_ts_s <= last_sell_ts + 0.5)
@@ -705,7 +711,13 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                         if isinstance(latest_any, dict):
                             any_side = str(latest_any.get("side") or "").strip().upper()
                             any_ts_s = safe_pos_float(extract_timestamp_s(latest_any, default=None), None)
-                            if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
+                            if (
+                                any_side
+                                and any_side != side.upper()
+                                and any_ts_s is not None
+                                and not (fill_ts_s <= now_h + 60.0 and any_ts_s > now_h + 60.0)
+                                and any_ts_s >= fill_ts_s
+                            ):
                                 stale_hist = True
                     fill_qty = first_pos_float(latest.get("executedQty"), latest.get("qty"))
                     fill_px = safe_pos_float(latest.get("price"), None)

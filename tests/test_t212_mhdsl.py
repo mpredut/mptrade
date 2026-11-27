@@ -1635,3 +1635,56 @@ def test_t212_bot_main_reports_degraded_on_partial_thread_exit_and_error_on_tota
     assert error_hbs[-1]["status"]["dead_assets"] == ["nvda", "spcx"]
     assert error_hbs[-1]["force"] is True
 
+
+def test_pass36_t212_bot_skips_strat_enabled_false_without_false_degraded_heartbeat(tmp_path, monkeypatch):
+    """Pass #36 pure invariant + dependent cross-check:
+    t212_bot.main must skip configs with explicit STRAT_ENABLED=false before spawning threads so
+    healthy sibling assets are never reported as degraded/dead_assets, and exit 0 when all configs are off.
+    """
+    nvda_env = tmp_path / "config.nvda.env"
+    ant_env = tmp_path / "config.ant.env"
+    nvda_env.write_text("T212_TICKER=NVDA_US_EQ\nSTRAT_ENABLED=true\n", encoding="utf-8")
+    ant_env.write_text("T212_TICKER=ANT_US_EQ\nSTRAT_ENABLED=false\n", encoding="utf-8")
+
+    started: list[str] = []
+    heartbeats: list[dict] = []
+
+    def _fake_run_asset(name, _cfg, _client, _paper, _skip_wait):
+        started.append(name)
+        t212_bot.STOP.wait(timeout=3.0)
+
+    def _fake_hb(name, **kw):
+        heartbeats.append({"name": name, **kw})
+        t212_bot.STOP.set()
+
+    orig_wait = t212_bot.STOP.wait
+    monkeypatch.setattr(t212_bot, "parse_t212_cli_args", lambda _ap, _here: SimpleNamespace(
+        list=False, only=None, paper=True, skip_wait=True, env_file=str(tmp_path / ".env"),
+    ))
+    monkeypatch.setattr(t212_bot, "single_instance", lambda _name: None)
+    monkeypatch.setattr(t212_bot, "load_t212_environment", lambda _f: None)
+    monkeypatch.setattr(t212_bot, "discover_assets", lambda _d: [("nvda", str(nvda_env)), ("ant", str(ant_env))])
+    monkeypatch.setattr(t212_bot, "filter_enabled_assets", lambda assets, **_kw: (assets, []))
+    monkeypatch.setattr(t212_bot, "build_t212_client_from_env", lambda *_a, **_kw: SimpleNamespace(list_instruments=lambda: []))
+    monkeypatch.setattr(t212_bot, "run_asset", _fake_run_asset)
+    monkeypatch.setattr(t212_bot, "touch_module_heartbeat", _fake_hb)
+    monkeypatch.setattr(t212_bot.signal, "signal", lambda *_a, **_kw: None)
+    monkeypatch.setattr(t212_bot.STOP, "wait", lambda timeout=None: False if timeout == 0.5 else orig_wait(0.02))
+
+    rc = t212_bot.main()
+    assert rc == 0
+    assert started == ["nvda"]
+    assert heartbeats
+    assert all(h.get("status") == {"status": "ok"} for h in heartbeats)
+    assert all(h.get("symbols") == ["nvda"] for h in heartbeats)
+
+    # All configs STRAT_ENABLED=false -> exits 0 cleanly without error heartbeat
+    started.clear()
+    heartbeats.clear()
+    monkeypatch.setattr(t212_bot, "discover_assets", lambda _d: [("ant", str(ant_env))])
+    rc_all_off = t212_bot.main()
+    assert rc_all_off == 0
+    assert started == []
+    assert heartbeats == []
+
+

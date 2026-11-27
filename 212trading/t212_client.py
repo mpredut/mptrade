@@ -674,6 +674,14 @@ class T212Client:
                     if pub and sync_trades:
                         self._sync_trade_cache(s_val)
                     return s_val
+                with self._lock:
+                    fail_ts = self._fetch_fail.get("_hist_cache")
+                    hc = getattr(self, "_hist_cache", None)
+                    now_m = time.monotonic()
+                    if fail_ts is not None and 0.0 <= (now_m - fail_ts) < self._pf_ttl:
+                        if hc and isinstance(hc[1], list) and 0.0 <= (now_m - hc[0]) < 600.0:
+                            return hc[1]
+                        return None
                 return self._fetch_order_history_locked(
                     publish_cache=pub, sync_trade_cache=sync_trades
                 )
@@ -765,13 +773,14 @@ class T212Client:
         such as rate limit, authentication, or timeout.
         """
         now = time.monotonic()
-        cache = getattr(self, "_read_fail_log", None)
-        if cache is None:
-            cache = self._read_fail_log = {}
-        last = cache.get(what)
-        if last and last[0] == status and (now - last[1]) < 60:
-            return                                  # Same recent reason; do not log again.
-        cache[what] = (status, now)
+        with self._lock:
+            cache = getattr(self, "_read_fail_log", None)
+            if cache is None:
+                cache = self._read_fail_log = {}
+            last = cache.get(what)
+            if last and last[0] == status and (now - last[1]) < 60:
+                return                                  # Same recent reason; do not log again.
+            cache[what] = (status, now)
         if status == 429:
             log(f"  ! T212 {what}: rate limit (429) - temporarily unavailable")
         elif status in (401, 403):
@@ -853,6 +862,7 @@ class T212Client:
                     self._record_read_fail(f"{what} (invalid JSON)", status, attr)
                     return None
                 if not isinstance(data, expect_type):
+                    self._record_read_fail(f"{what} (unexpected JSON type)", status, attr)
                     return None
                 if expect_type is list:
                     data = [item for item in data if isinstance(item, dict)]

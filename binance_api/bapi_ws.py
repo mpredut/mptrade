@@ -223,15 +223,16 @@ class BinancePriceStream(PublicPriceStreamBase):
             )
             if isinstance(raw_ts, bool):
                 raw_ts = None
+            now_ms = math.trunc(time.time() * 1000)
             if raw_ts is not None:
                 ts_f = safe_float(raw_ts, default=None)
                 if ts_f is None:
                     raise ValueError(f"invalid ticker timestamp: {raw_ts!r}")
                 ts_ms = math.trunc(ts_f)
             else:
-                ts_ms = math.trunc(time.time() * 1000)
-            if ts_ms <= 0:
-                ts_ms = math.trunc(time.time() * 1000)
+                ts_ms = now_ms
+            if ts_ms <= 0 or ts_ms > now_ms + 60_000:
+                ts_ms = now_ms
             with self._lock:
                 self._prices[symbol] = price
             self._notify_subscribers(symbol, [[ts_ms, price]])

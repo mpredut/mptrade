@@ -304,7 +304,8 @@ class Strategy(T212BrokerLifecycleMixin):
     def _pre_reentry_gate_hook(self, price: float) -> tuple[bool, str] | None:
         last_sell_ts = normalize_epoch_sec(self.s.get("last_sell_ts"), None)
         if self.p.reentry_ttl_hours > 0 and last_sell_ts:
-            if (self._now() - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0:
+            now_s = self._now()
+            if (now_s - last_sell_ts) >= self.p.reentry_ttl_hours * 3600.0 or last_sell_ts > now_s + 60.0:
                 self.s.pop("sl_rebuy", None)
         rb = self.s.get("sl_rebuy")
         if isinstance(rb, dict) and rb:
@@ -461,9 +462,12 @@ class Strategy(T212BrokerLifecycleMixin):
         """Return whether a resting limit BUY should be cancelled and placed again."""
         if str(order.get("side") or "").strip().upper() != "BUY" or is_market_order(order):
             return False
-        order_ts = safe_nonneg_float(order.get("ts"), 0.0)
+        order_ts = normalize_epoch_sec(order.get("ts"), default=0.0, allow_zero=True) or 0.0
         order_lim = safe_pos_float(order.get("limit"), None)
-        if order_lim is None or (self._now() - order_ts) / 60 <= self.p.order_ttl_min:
+        if order_lim is None:
+            return False
+        age_sec = self._now() - order_ts
+        if -60.0 <= age_sec <= self.p.order_ttl_min * 60.0:
             return False
         return price * (1 - self.p.entry_discount_pct / 100) > order_lim * 1.003
 

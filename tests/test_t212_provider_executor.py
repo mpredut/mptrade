@@ -1900,4 +1900,97 @@ def test_pass23_t212_launch_watcher_lifecycle_and_strategy_backoff_invariants_cr
     assert "5.0" in ds.s["tp_fail_until"]
 
 
+def test_pass36_t212_client_history_backoff_unexpected_json_and_lifecycle_future_ts(tmp_path, monkeypatch):
+    """Pass #36 pure invariants + dependent cross-checks:
+    1. T212Client.refresh_order_history respects _fetch_fail['_hist_cache'] backoff after HTTP 429 on cold cache.
+    2. T212Client._read_cached records _fetch_fail on HTTP 200 with unexpected JSON root type instead of hot-looping.
+    3. T212BrokerLifecycleMixin._exact_execution_price ignores corrupt far-future last_sell_ts / opposite fill ts.
+    4. Strategy._pre_reentry_gate_hook expires sl_rebuy on corrupt far-future last_sell_ts and _buy_is_stale flags
+       resting BUYs with corrupt far-future order ts once price drifts.
+    """
+    import importlib
+    tbl = importlib.import_module("212trading.t212_broker_lifecycle")
+    strat_mod = importlib.import_module("212trading.strategy")
+
+    # 1 & 2. T212Client cold-cache 429 history backoff + unexpected JSON root type backoff
+    hist_calls = {"n": 0}
+    pf_calls = {"n": 0}
+
+    def _fake_get(url, headers=None):
+        if "/history/orders" in url:
+            hist_calls["n"] += 1
+            return 429, b"rate limit"
+        if "/equity/portfolio" in url:
+            pf_calls["n"] += 1
+            return 200, b'{"unexpected": true}'
+        return 200, b"[]"
+
+    monkeypatch.setattr(t212_client, "http_get", _fake_get)
+    cli = t212_client.T212Client(
+        "k_p36", "s_p36", "live",
+        min_gap_sec=0.0, order_min_gap_sec=0.0, portfolio_ttl_sec=10.0,
+        enable_shared_disk_cache=False,
+    )
+    assert cli.refresh_order_history(max_age_sec=6.0, publish_cache=False) is None
+    assert cli.refresh_order_history(max_age_sec=6.0, publish_cache=False) is None
+    assert hist_calls["n"] == 1
+
+    assert cli.get_portfolio() is None
+    assert cli.get_portfolio() is None
+    assert pf_calls["n"] == 1
+
+    # 3. T212BrokerLifecycleMixin._exact_execution_price ignores corrupt far-future last_sell_ts & opposite fill ts
+    t_now = 1_795_200_000.0
+    sell_fill = {"orderId": "S-36", "side": "SELL", "executedQty": 2.0, "price": 155.0, "timestamp": t_now - 10.0}
+    future_buy = {"orderId": "B-FUT", "side": "BUY", "executedQty": 2.0, "price": 140.0, "timestamp": t_now + 86400.0}
+
+    class _DummyLifecycle(tbl.T212BrokerLifecycleMixin):
+        def __init__(self):
+            self.ticker = "NVDA_US_EQ"
+            self.yahoo_sym = "NVDA"
+            self.ccy = "USD"
+            self.fx_to_usd = 1.0
+            self.dry_run = False
+            self.desktop = False
+            self.client = SimpleNamespace(
+                latest_filled_order_for_ticker=lambda _t, side=None, refresh=False: (
+                    sell_fill if side == "SELL" else future_buy
+                ),
+            )
+            self.s = tbl._new_state()
+            self.s["last_sell_ts"] = t_now + 86400.0
+
+        def _now(self):
+            return t_now
+
+        def _log_msg(self, _msg):
+            pass
+
+    dl = _DummyLifecycle()
+    assert dl._exact_execution_price("SELL", 2.0, {}) == pytest.approx(155.0)
+
+    # 4. Dependent cross-check on Strategy._pre_reentry_gate_hook and _buy_is_stale with corrupt far-future timestamps
+    st_obj = object.__new__(strat_mod.Strategy)
+    st_obj.ticker = "NVDA_US_EQ"
+    st_obj.p = SimpleNamespace(
+        reentry_ttl_hours=4.0,
+        sl_rebuy_bounce_pct=1.5,
+        reentry_tolerance_pct=0.0,
+        order_ttl_min=10.0,
+        entry_discount_pct=0.2,
+    )
+    st_obj.s = tbl._new_state()
+    st_obj.s["last_sell_ts"] = t_now + 86400.0
+    st_obj.s["sl_rebuy"] = {"low": 100.0, "sell_price": 105.0}
+    st_obj._clock = lambda: t_now
+    assert st_obj._pre_reentry_gate_hook(101.0) is None
+    assert "sl_rebuy" not in st_obj.s
+
+    fresh_buy = {"side": "BUY", "limit": 100.0, "ts": t_now - 30.0, "market": False}
+    future_buy_ord = {"side": "BUY", "limit": 100.0, "ts": t_now + 86400.0, "market": False}
+    assert st_obj._buy_is_stale(fresh_buy, 105.0) is False
+    assert st_obj._buy_is_stale(future_buy_ord, 105.0) is True
+
+
+
 

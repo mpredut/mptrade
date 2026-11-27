@@ -146,7 +146,7 @@ def _parse_order_response(res: object, *, include_avg_px: bool = False) -> tuple
         return True, filled.get("oid"), msg
     if "error" in st:
         return False, None, str(st["error"])
-    return True, None, str(st)
+    return False, None, str(st)
 
 
 def _force_timeout(api_obj, seconds: float = 30.0) -> None:
@@ -250,6 +250,7 @@ class HLClient:
             )
             _force_timeout(self.exchange, seconds=EXCHANGE_TIMEOUT_SECONDS)
         self._meta_cache: dict[str, dict] = {}
+        self._meta_lock = threading.Lock()
 
     @classmethod
     def public(cls, *, account_address: str | None = None,
@@ -259,22 +260,30 @@ class HLClient:
 
     # ----- metadata / prices --------------------------------------------------
     def _meta(self) -> dict:
-        cached = getattr(self, "_meta_cache", None)
-        if not isinstance(cached, dict):
-            cached = {}
-            self._meta_cache = cached
-        if not cached:
-            raw_meta = self.info.meta()
-            universe = raw_meta.get("universe") if isinstance(raw_meta, dict) else None
-            loaded = {
-                a["name"]: a
-                for a in (universe if isinstance(universe, list) else ())
-                if isinstance(a, dict) and a.get("name")
-            }
+        lock = getattr(self, "_meta_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._meta_lock = lock
+        with lock:
+            cached = getattr(self, "_meta_cache", None)
+            if isinstance(cached, dict) and cached:
+                return cached
+        raw_meta = self.info.meta()
+        universe = raw_meta.get("universe") if isinstance(raw_meta, dict) else None
+        loaded = {
+            a["name"]: a
+            for a in (universe if isinstance(universe, list) else ())
+            if isinstance(a, dict) and a.get("name")
+        }
+        with lock:
             if loaded:
                 self._meta_cache = loaded
                 return loaded
-        return cached
+            cached = getattr(self, "_meta_cache", None)
+            if not isinstance(cached, dict):
+                cached = {}
+                self._meta_cache = cached
+            return cached
 
     @classmethod
     def _coin_candidates(cls, coin: object) -> tuple[str, ...]:

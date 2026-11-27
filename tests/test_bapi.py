@@ -1758,4 +1758,100 @@ def test_pass22_paginate_rate_limit_bound_and_ws_bridge_isolation_invariants_cro
     assert saved_caches == ["BinanceOrderFilled:ERR", "BinanceTrade:OK", "BinanceOrderOpen:OK"]
 
 
+def test_pass36_ws_bridge_isolation_epoch_norm_price_future_ts_and_hl_parse():
+    """Pass #36 pure invariants + dependent cross-checks:
+    1. bapi_ws_bridge.mark_ws_event_received normalizes epoch-ms inputs to epoch seconds.
+    2. bapi_ws_bridge.handle_binance_ws_event isolates per-cache remote refresh exceptions on symbol-less
+       executionReport fallback and only persists caches whose refresh succeeded.
+    3. BinancePriceStream._process_message clamps corrupt far-future / microsecond ticker timestamps
+       before notifying subscribers.
+    4. hyperliquid.hl_client._parse_order_response fails closed on unrecognized status dicts and
+       HLClient._meta is thread-safe under concurrent lookups.
+    """
+    import threading
+    from binance_api import bapi_ws_bridge
+    from tests.conftest import load_venue_modules
+    hl_mod = load_venue_modules("hyperliquid", "hl_client")
+
+    # 1. Pure invariant: epoch-ms normalized to seconds in mark_ws_event_received
+    orig_ts = bapi_ws_bridge._ws_last_event_ts
+    orig_healthy = bapi_ws_bridge._ws_is_healthy
+    try:
+        recorded_ts = bapi_ws_bridge.mark_ws_event_received(1_795_000_000_000)
+        assert recorded_ts == pytest.approx(1_795_000_000.0)
+    finally:
+        bapi_ws_bridge._ws_last_event_ts = orig_ts
+        bapi_ws_bridge._ws_is_healthy = orig_healthy
+
+    # 2. Dependent cross-check: symbol-less executionReport isolates failed BinanceOrderFilled refresh
+    actions = []
+
+    def _fail_refresh():
+        actions.append("filled:refresh_err")
+        raise RuntimeError("binance timeout")
+
+    caches = {
+        "BinanceOrderFilled": SimpleNamespace(
+            query_remote_and_update_cache=_fail_refresh,
+            save_state_to_file_if_enabled=lambda: actions.append("filled:save"),
+        ),
+        "BinanceTrade": SimpleNamespace(
+            query_remote_and_update_cache=lambda: actions.append("trade:refresh_ok"),
+            save_state_to_file_if_enabled=lambda: actions.append("trade:save"),
+        ),
+        "BinanceOrderOpen": SimpleNamespace(
+            query_remote_and_update_cache=lambda: actions.append("open:refresh_ok"),
+            save_state_to_file_if_enabled=lambda: actions.append("open:save"),
+        ),
+    }
+    bapi_ws_bridge.handle_binance_ws_event(
+        {"e": "executionReport", "s": "", "i": 999, "X": "FILLED", "x": "TRADE", "S": "BUY"},
+        cache_getter=lambda name: caches[name],
+        log_enabled=False,
+    )
+    assert actions == ["filled:refresh_err", "trade:refresh_ok", "open:refresh_ok", "trade:save", "open:save"]
+
+    # 3. Pure invariant + subscriber cross-check: BinancePriceStream clamps corrupt far-future E timestamps
+    ps = BinancePriceStream(symbols=["BTCUSDC"])
+    delivered = []
+    ps.subscribe(SimpleNamespace(on_items_update=lambda sym, items: delivered.append((sym, items))))
+    now_ms = int(time.time() * 1000)
+    ps._process_message(json.dumps({"data": {"s": "BTCUSDC", "c": "70000.0", "E": now_ms + 3_600_000}}))
+    assert len(delivered) == 1
+    assert delivered[0][0] == "BTCUSDC"
+    assert abs(delivered[0][1][0][0] - now_ms) <= 5_000
+    assert delivered[0][1][0][1] == pytest.approx(70000.0)
+
+    # 4. Pure invariant + thread-safety cross-check on hyperliquid.hl_client
+    for bad_status in ({}, {"resting": None}, {"filled": "bad"}, {"unexpected": "payload"}):
+        ok, oid, _msg = hl_mod._parse_order_response({"status": "ok", "response": {"data": {"statuses": [bad_status]}}})
+        assert ok is False and oid is None
+    assert hl_mod._parse_order_response(
+        {"status": "ok", "response": {"data": {"statuses": [{"filled": {"oid": 42, "totalSz": "1.5", "avgPx": "30.0"}}]}}},
+        include_avg_px=True,
+    ) == (True, 42, "filled 1.5 @ 30.0")
+
+    hl_obj = object.__new__(hl_mod.HLClient)
+    hl_obj._meta_cache = {}
+    hl_obj._meta_lock = threading.Lock()
+    hl_obj.info = SimpleNamespace(meta=lambda: {"universe": [{"name": "HYPE", "szDecimals": 2}]})
+    meta_results = []
+    meta_errors = []
+
+    def _meta_worker():
+        try:
+            meta_results.append(hl_obj._meta()["HYPE"]["szDecimals"])
+        except BaseException as exc:
+            meta_errors.append(exc)
+
+    threads = [threading.Thread(target=_meta_worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert meta_errors == []
+    assert meta_results == [2] * 8
+
+
+
 

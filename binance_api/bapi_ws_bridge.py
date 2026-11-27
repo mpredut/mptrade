@@ -15,7 +15,7 @@ from binance_api.bapi_ws_normalize import (
     parse_outbound_account_position,
     parse_trade_execution_report,
 )
-from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float, safe_pos_int
+from botcore import _parse_bool_flag, normalize_class_name, normalize_epoch_sec, safe_pos_float, safe_pos_int
 from instrument_registry import casefold_get
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 import log  # noqa: F401 -- keep print behavior aligned with the rest of the runtime
@@ -51,7 +51,7 @@ def mark_ws_available(value: bool) -> bool:
 def mark_ws_event_received(now: float | None = None) -> float:
     """Record a healthy user-data WebSocket heartbeat or event."""
     global _ws_last_event_ts, _ws_is_healthy
-    ts = safe_pos_float(now, default=None) or time.time()
+    ts = normalize_epoch_sec(now, default=None) or time.time()
     with _ws_health_lock:
         _ws_last_event_ts = ts
         _ws_is_healthy = True
@@ -282,24 +282,34 @@ def handle_binance_ws_event(
                 open_res = apply_open_order_from_execution_report(event, cache_getter=getter)
             should_persist = not (order_res is False and trade_res is False and open_res is False)
         else:
-            for cache_name in ("BinanceOrderFilled", "BinanceTrade"):
-                getter(cache_name).query_remote_and_update_cache()
+            order_res = False
+            trade_res = False
+            try:
+                getter("BinanceOrderFilled").query_remote_and_update_cache()
+                order_res = True
+            except Exception as exc:
+                builtins.print(f"[cacheManager][WS] BinanceOrderFilled remote refresh failed: {exc}")
+            try:
+                getter("BinanceTrade").query_remote_and_update_cache()
+                trade_res = True
+            except Exception as exc:
+                builtins.print(f"[cacheManager][WS] BinanceTrade remote refresh failed: {exc}")
             try:
                 getter("BinanceOrderOpen").query_remote_and_update_cache()
                 open_res = True
-            except Exception:
-                pass
-            should_persist = True
+            except Exception as exc:
+                builtins.print(f"[cacheManager][WS] BinanceOrderOpen remote refresh failed: {exc}")
+            should_persist = bool(order_res or trade_res or open_res)
         if should_persist:
             if persist_fn is not None:
                 persist_fn(event_type)
             else:
-                if not symbol or order_res is not False:
+                if order_res is not False:
                     try:
                         getter("BinanceOrderFilled").save_state_to_file_if_enabled()
                     except Exception as exc:
                         builtins.print(f"[cacheManager][WS] BinanceOrderFilled save failed: {exc}")
-                if not symbol or trade_res is not False:
+                if trade_res is not False:
                     try:
                         getter("BinanceTrade").save_state_to_file_if_enabled()
                     except Exception as exc:
