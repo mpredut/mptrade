@@ -610,9 +610,11 @@ def load_symbol_microstructure(
     ob: Any = None,
     deriv: Any = None,
     whale: Any = None,
+    now_ts: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     """Load and normalize orderbook depth, derivatives, and whale snapshot across symbol variants."""
     read_json_fn = _resolve_read_json_cached(read_json_fn)
+    eff_now = safe_pos_float(now_ts, default=None)
     sym_u = str(sym or "").strip().upper()
     is_eq_sym = is_equity_symbol(sym_u)
     sym_cands = [
@@ -635,6 +637,8 @@ def load_symbol_microstructure(
                 if not prefer_freshest:
                     return d, cand
                 ts_v = first_epoch_sec(d.get("ts"), d.get("timestamp"), default=0.0, allow_iso=True) or 0.0
+                if eff_now is not None and ts_v > eff_now + 60.0:
+                    ts_v = 0.0
                 if cand.upper() == sym_u and exact_d is None:
                     exact_d, exact_cand, exact_ts = d, cand, ts_v
                 if best_d is None or ts_v > best_ts:
@@ -897,7 +901,13 @@ def ensure_fresh_symbol_microstructure(
                 if isinstance(ob_disk, dict) and (safe_pos_float(ob_disk.get("spread_bps"), default=0.0) or 0.0) > 200.0:
                     return True
             return False
-        return max_age is not None and (eff_now - os.path.getmtime(fpath)) > max_age
+        if max_age is None:
+            return False
+        try:
+            mtime = os.path.getmtime(fpath)
+        except OSError:
+            return True
+        return mtime > eff_now + 60.0 or (eff_now - mtime) > max_age
 
     def _run_fresh_collector(col_cls: Any) -> bool:
         col = col_cls(cache_dir=eff_cache_dir, start_sync=True)
@@ -1193,6 +1203,7 @@ def _extract_fresh_layer3_t212_prices(
     items_map = cp_doc.get("items") if isinstance(cp_doc.get("items"), dict) else cp_doc
     ft_map = cp_doc.get("fetchtime") if isinstance(cp_doc.get("fetchtime"), dict) else {}
     doc_ts = normalize_epoch_sec(cp_doc.get("ts"), default=None)
+    valid_doc_ts = doc_ts if (doc_ts is not None and 0.0 < doc_ts <= now_ts + 60.0) else None
     for tkr in tickers:
         tkr_u = str(tkr or "").strip().upper()
         if not tkr_u:
@@ -1209,12 +1220,15 @@ def _extract_fresh_layer3_t212_prices(
                 item_ts = normalize_epoch_sec(last_el[0], default=None)
             elif len(raw_item) >= 2 and isinstance(raw_item[0], (int, float)):
                 item_ts = normalize_epoch_sec(raw_item[0], default=None)
-        eff_ts = max(
-            (t for t in (ft_ts, item_ts, doc_ts) if t is not None and t > 0.0),
-            default=None,
-        )
-        if eff_ts is not None and 0.0 <= (now_ts - eff_ts) < max_age_sec:
-            out[tkr_u] = (px_v, eff_ts)
+        sym_candidates = [t for t in (ft_ts, item_ts) if t is not None and 0.0 < t <= now_ts + 60.0]
+        if sym_candidates:
+            eff_ts: Optional[float] = max(sym_candidates)
+        elif ft_ts is None and item_ts is None:
+            eff_ts = valid_doc_ts
+        else:
+            eff_ts = None
+        if eff_ts is not None and -60.0 <= (now_ts - eff_ts) < max_age_sec:
+            out[tkr_u] = (px_v, min(eff_ts, now_ts))
     return out
 
 
@@ -1244,7 +1258,6 @@ def refresh_stale_t212_cached_positions(
         t212_entries.append((bkey, rticker, bval, prev_ts))
     if not t212_entries:
         return False
-    min_t212_ts = min(entry[3] for entry in t212_entries)
     max_t212_ts = max(entry[3] for entry in t212_entries)
     if max_t212_ts <= 0.0:
         return False
@@ -1263,7 +1276,7 @@ def refresh_stale_t212_cached_positions(
         if prev_c_px is None or abs(new_c_px - round(prev_c_px, 4)) >= 1e-4 or ts_missing or is_stale_ts:
             c_pos["price"] = new_c_px
             reprice_position_balance_fields(c_pos, cur_px)
-            if prev_c_ts > 0.0:
+            if 0.0 < prev_c_ts <= now_ts + 60.0:
                 c_pos.setdefault("base_bal_ts", round(prev_c_ts, 3))
                 c_pos.setdefault("quote_bal_ts", round(prev_c_ts, 3))
             c_pos["ts"] = new_ts
@@ -1284,7 +1297,7 @@ def refresh_stale_t212_cached_positions(
             if (l3_hit := l3_marks.get(rticker)) is None:
                 continue
             px_l3, ts_l3 = l3_hit
-            if prev_ts <= 0.0 or ts_l3 >= prev_ts:
+            if prev_ts <= 0.0 or prev_ts > now_ts + 60.0 or ts_l3 >= prev_ts:
                 if _update_t212_pos_price(c_pos, px_l3, ts_missing=prev_ts <= 0.0, new_ts=round(ts_l3, 3)):
                     t212_dirty = True
                 refreshed_tickers.add(rticker)
@@ -1306,12 +1319,11 @@ def refresh_stale_t212_cached_positions(
         return t212_dirty
     if is_real_t212 or is_symbol_market_open is not _ORIG_IS_SYMBOL_MARKET_OPEN:
         try:
-            probe_sym = remaining_stale[0][1] or "NVDA_US_EQ"
-            if not is_symbol_market_open(probe_sym, now_ts):
+            if not any(is_symbol_market_open(rt or "NVDA_US_EQ", now_ts) for _, rt, _, _ in remaining_stale):
                 return t212_dirty
         except Exception:
             pass
-    if 0.0 <= (now_ts - max(min_t212_ts, _LAST_T212_PORTFOLIO_POLL_TS)) < max_age_sec:
+    if 0.0 <= (now_ts - _LAST_T212_PORTFOLIO_POLL_TS) < max_age_sec:
         return t212_dirty
     try:
         _LAST_T212_PORTFOLIO_POLL_TS = now_ts
@@ -2104,14 +2116,29 @@ class SymbolMicrostructureSnapshotCollector(MicrostructureCacheCollectorBase):
         *,
         read_json_fn: Any = None,
         ensure_fresh: bool = False,
+        now_ts: Optional[float] = None,
+        allow_network: bool = True,
         ob: Optional[Dict[str, Any]] = None,
         deriv: Optional[Dict[str, Any]] = None,
         whale: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Optional[Dict[str, Any]]:
         if ensure_fresh:
-            ensure_fresh_symbol_microstructure(cachedb_dir, symbol, read_json_fn=read_json_fn)
-        return load_symbol_microstructure(cachedb_dir, symbol, read_json_fn=read_json_fn, ob=ob, deriv=deriv, whale=whale)
+            ensure_fresh_symbol_microstructure(
+                cachedb_dir,
+                symbol,
+                now_ts=now_ts,
+                allow_network=allow_network,
+            )
+        return load_symbol_microstructure(
+            cachedb_dir,
+            symbol,
+            read_json_fn=read_json_fn,
+            ob=ob,
+            deriv=deriv,
+            whale=whale,
+            now_ts=now_ts,
+        )
 
 
 @dataclass(frozen=True)
@@ -2538,7 +2565,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 include_derivatives=True,
                 allow_network=allow_network,
             )
-            hl_m_seed = load_symbol_microstructure(cachedb_dir, hl_sym, _rj) if hl_sym not in pt_map else None
+            hl_m_seed = load_symbol_microstructure(cachedb_dir, hl_sym, _rj, now_ts=eff_now) if hl_sym not in pt_map else None
             if hl_sym not in pt_map and (
                 any(not has_equity_suffix(k) and canonical_base_asset(k) == hl_base for k in pt_map)
                 or hl_m_seed
@@ -2978,7 +3005,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 include_derivatives=True,
                 allow_network=allow_network,
             )
-        if not (m_info := load_symbol_microstructure(cachedb_dir, sym, _rj)):
+        if not (m_info := load_symbol_microstructure(cachedb_dir, sym, _rj, now_ts=eff_now)):
             return
         sym_px_m = safe_float((pt_map.get(sym) or {}).get("price"), 0.0)
         ob_ts_m = safe_pos_float(m_info.pop("_ob_ts", None), default=0.0) or 0.0
@@ -3075,7 +3102,7 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     include_derivatives=True,
                     allow_network=allow_network,
                 )
-            if not (m_info_ref := load_symbol_microstructure(cachedb_dir, msym, _rj)):
+            if not (m_info_ref := load_symbol_microstructure(cachedb_dir, msym, _rj, now_ts=eff_now)):
                 continue
             ob_ref_ts = safe_pos_float(m_info_ref.pop("_ob_ts", None), default=0.0) or 0.0
             msym_quotes = compatible_quote_suffixes(msym)

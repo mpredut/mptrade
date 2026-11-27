@@ -548,6 +548,8 @@ def parse_operator_regime_note_text(
         return None
     eff_now = resolve_now_ts(now_ts)
     eff_mtime = safe_pos_float(mtime_ts, default=eff_now) or eff_now
+    if eff_mtime > eff_now + 60.0:
+        eff_mtime = eff_now
     ttl_days = resolve_operator_note_ttl_days(default_ttl_days)
     expires_ts = eff_mtime + ttl_days * 86400.0
 

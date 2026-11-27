@@ -662,3 +662,117 @@ class TestUnifiedWeightResolution(unittest.TestCase):
         self.assertIsNone(pw.slice_timestamped_window(ts_ms[:2], vals[:2], 300.0))
 
 
+class TestPriceAnalysisPass13IsolationAndHealth(TempDirTestCase):
+    def test_pass13_cycle_symbol_isolation_and_honest_heartbeat_crosscheck(self):
+        """Pass 13 invariants & multi-cycle cross-check for priceAnalysis:
+        1. Exception in one symbol's signature or trend compute isolates to that symbol, preserves prev_trend,
+           does not advance sigs/last_compute_ts, and continues sibling symbols.
+        2. _run_price_analysis_daemon_step emits forced error/degraded heartbeats on write or symbol failures
+           and forces an immediate ok heartbeat upon recovery transition.
+        """
+        out_file = os.path.join(self.tmp, "priceanalysis.json")
+        cycle_state = {}
+        hb_events = []
+
+        def _capture_hb(module_name, **kwargs):
+            hb_events.append((module_name, kwargs))
+
+        t_base = 1_796_200_000.0
+        good_btc = {"direction": "up", "start_timestamp": t_base - 7200, "duration_seconds": 7200, "estimated_future_hours": 24, "timestamp": int(t_base)}
+        good_eth = {"direction": "down", "start_timestamp": t_base - 3600, "duration_seconds": 3600, "estimated_future_hours": 12, "timestamp": int(t_base)}
+
+        # Cycle 1: healthy baseline -> write succeeds, heartbeat state="ok", force=False
+        with (
+            patch.object(pa, "_series_signature_for", side_effect=lambda s: (100, int(t_base), 1.0)),
+            patch.object(pa, "getTrendLongTerm_fixed", side_effect=lambda s, **_kw: dict(good_btc if s == "BTCUSDC" else good_eth)),
+        ):
+            trends1, ok1, fail1 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t_base
+            )
+        self.assertTrue(ok1)
+        self.assertEqual(fail1, [])
+        self.assertEqual(trends1["BTCUSDC"]["direction"], "up")
+        self.assertEqual(trends1["ETHUSDC"]["direction"], "down")
+        self.assertEqual(hb_events[-1][1]["status"]["state"], "ok")
+        self.assertFalse(hb_events[-1][1]["force"])
+
+        # Cycle 2: BTCUSDC raises during trend compute -> ETHUSDC still updates, BTCUSDC keeps prev_trend & retries next cycle,
+        # heartbeat forced with state="degraded" and failed_symbols=["BTCUSDC"].
+        t2 = t_base + 1200.0
+        eth_v2 = {**good_eth, "direction": "up", "timestamp": int(t2)}
+
+        def _partial_fail(sym, **_kw):
+            if sym == "BTCUSDC":
+                raise RuntimeError("corrupt sparse cache")
+            return dict(eth_v2)
+
+        with (
+            patch.object(pa, "_series_signature_for", side_effect=lambda s: (101, int(t2), 2.0)),
+            patch.object(pa, "getTrendLongTerm_fixed", side_effect=_partial_fail),
+        ):
+            trends2, ok2, fail2 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t2
+            )
+        self.assertTrue(ok2)
+        self.assertEqual(fail2, ["BTCUSDC"])
+        self.assertEqual(trends2["BTCUSDC"]["direction"], "up")
+        self.assertEqual(trends2["ETHUSDC"]["direction"], "up")
+        self.assertEqual(cycle_state["last_compute_ts"]["BTCUSDC"], t_base)
+        self.assertEqual(cycle_state["last_compute_ts"]["ETHUSDC"], t2)
+        self.assertEqual(hb_events[-1][1]["status"]["state"], "degraded")
+        self.assertEqual(hb_events[-1][1]["status"]["failed_symbols"], ["BTCUSDC"])
+        self.assertTrue(hb_events[-1][1]["force"])
+        with open(out_file, encoding="utf-8") as fh:
+            persisted2 = json.load(fh)
+        self.assertEqual(persisted2["ETHUSDC"]["direction"], "up")
+        self.assertEqual(persisted2["BTCUSDC"]["direction"], "up")
+
+        # Cycle 3: disk write failure -> heartbeat forced with state="error", error="write_failed"
+        t3 = t2 + 60.0
+        with (
+            patch.object(pa, "_series_signature_for", side_effect=lambda s: (102, int(t3), 3.0)),
+            patch.object(pa, "getTrendLongTerm_fixed", side_effect=lambda s, **_kw: dict(good_btc if s == "BTCUSDC" else eth_v2)),
+            patch.object(pa, "atomic_write_json", side_effect=OSError("disk full")),
+        ):
+            _, ok3, fail3 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t3
+            )
+        self.assertFalse(ok3)
+        self.assertEqual(fail3, [])
+        self.assertEqual(hb_events[-1][1]["status"]["state"], "error")
+        self.assertEqual(hb_events[-1][1]["status"]["error"], "write_failed")
+        self.assertTrue(hb_events[-1][1]["force"])
+
+        # Cycle 4: full recovery -> heartbeat forced with state="ok" on transition, then steady-state force=False
+        t4 = t3 + 60.0
+        with (
+            patch.object(pa, "_series_signature_for", side_effect=lambda s: (103, int(t4), 4.0)),
+            patch.object(pa, "getTrendLongTerm_fixed", side_effect=lambda s, **_kw: dict(good_btc if s == "BTCUSDC" else eth_v2)),
+        ):
+            _, ok4, fail4 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t4
+            )
+            _, ok5, fail5 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t4 + 60.0
+            )
+        self.assertTrue(ok4 and ok5)
+        self.assertEqual(fail4, [])
+        self.assertEqual(fail5, [])
+        self.assertEqual(hb_events[-2][1]["status"]["state"], "ok")
+        self.assertTrue(hb_events[-2][1]["force"])
+        self.assertEqual(hb_events[-1][1]["status"]["state"], "ok")
+        self.assertFalse(hb_events[-1][1]["force"])
+
+        # Signature read exception on all symbols -> state="error", does not crash
+        t6 = t4 + 120.0
+        with patch.object(pa, "_series_signature_for", side_effect=RuntimeError("sig lock error")):
+            _, ok6, fail6 = pa._run_price_analysis_daemon_step(
+                ["BTCUSDC", "ETHUSDC"], cycle_state, filename=out_file, heartbeat_fn=_capture_hb, now_ts=t6
+            )
+        self.assertTrue(ok6)
+        self.assertEqual(fail6, ["BTCUSDC", "ETHUSDC"])
+        self.assertEqual(hb_events[-1][1]["status"]["state"], "error")
+        self.assertTrue(hb_events[-1][1]["force"])
+
+
+

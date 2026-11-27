@@ -425,8 +425,8 @@ def getTrendLongTerm_fixed(symbol: str, window_hours: int = 24, step_hours: int 
     }
 
 # Persist all trend results with human-readable output.
-def write_all_trends(all_trends, filename=None):
-    """Atomically write trend results and display a human-readable summary."""
+def _write_all_trends_checked(all_trends, filename=None) -> Tuple[dict, bool]:
+    """Atomically write trend results and return ``(all_trends, write_ok)``."""
     filename = filename or cache_path(PRICE_ANALYSIS_FILENAME)
     if not isinstance(all_trends, dict):
         all_trends = {}
@@ -460,13 +460,21 @@ def write_all_trends(all_trends, filename=None):
     
     print("\n" + "="*80 + "\n")
     
+    write_ok = False
     try:
         save_json_state(filename, all_trends, indent=2, write_fn=atomic_write_json, fsync=False)
         print(f"Results were written to {filename}")
+        write_ok = True
     except Exception as exc:
         print(f"Could not write {filename}: {exc}")
     
-    return all_trends
+    return all_trends, write_ok
+
+
+def write_all_trends(all_trends, filename=None):
+    """Atomically write trend results and display a human-readable summary."""
+    written, _ = _write_all_trends_checked(all_trends, filename=filename)
+    return written
 
 
 UPDATE_AND_REFRESH_TREND = 60 * 1  # One minute.
@@ -544,8 +552,8 @@ def run_price_analysis_cycle(
     last_draw: dict = st.setdefault("last_draw_ts", {})
 
     all_trends = {}
+    failed_symbols: List[str] = []
     for symbol in symbols:
-        sig = _series_signature_for(symbol) if priceLstFor is _ORIG_PRICE_LST_FOR else None
         prev_trend = trends_cache.get(symbol)
         prev_sig = sigs.get(symbol)
         prev_comp_ts = safe_pos_float(last_compute.get(symbol), default=0.0) or 0.0
@@ -553,6 +561,13 @@ def run_price_analysis_cycle(
         due_draw = eff_draw_enabled and ((prev_draw_ts <= 0.0) or (eff_now - prev_draw_ts) >= eff_draw_itv)
         due_refresh = (prev_comp_ts <= 0.0) or (eff_now - prev_comp_ts) >= eff_skip_cap
         has_prev = symbol in trends_cache
+        try:
+            sig = _series_signature_for(symbol) if priceLstFor is _ORIG_PRICE_LST_FOR else None
+        except Exception as exc:
+            print(f"[priceAnalysis] ERROR reading series signature for {symbol}: {exc}")
+            failed_symbols.append(symbol)
+            all_trends[symbol] = prev_trend if has_prev else None
+            continue
         unchanged = (
             sig is not None
             and prev_sig is not None
@@ -583,7 +598,13 @@ def run_price_analysis_cycle(
         }
         if flip_from is not None:
             trend_kwargs["draw_on_direction_change_from"] = flip_from
-        res = getTrendLongTerm_fixed(symbol, **trend_kwargs)
+        try:
+            res = getTrendLongTerm_fixed(symbol, **trend_kwargs)
+        except Exception as exc:
+            print(f"[priceAnalysis] ERROR computing long-term trend for {symbol}: {exc}")
+            failed_symbols.append(symbol)
+            all_trends[symbol] = prev_trend if has_prev else None
+            continue
         new_dir = res.get("direction") if isinstance(res, dict) else None
         if flip_from is not None and new_dir is not None and new_dir != flip_from:
             due_draw = True
@@ -596,7 +617,53 @@ def run_price_analysis_cycle(
             last_draw[symbol] = eff_now
         if eff_yield > 0.0:
             time.sleep(eff_yield)
+    st["_failed_symbols"] = failed_symbols
     return all_trends
+
+
+def _run_price_analysis_daemon_step(
+    symbols,
+    cycle_state: dict,
+    *,
+    filename: Optional[str] = None,
+    heartbeat_fn=touch_module_heartbeat,
+    now_ts: Optional[float] = None,
+) -> Tuple[dict, bool, List[str]]:
+    """Run one priceAnalysis daemon cycle, persist trends, and report honest health via heartbeat."""
+    sym_list = list(symbols)
+    all_trends = run_price_analysis_cycle(sym_list, cycle_state, now_ts=now_ts)
+    failed_symbols = list(cycle_state.get("_failed_symbols") or ())
+    _, write_ok = _write_all_trends_checked(all_trends, filename=filename)
+    prev_hb_state = cycle_state.get("_last_hb_state")
+    if not write_ok:
+        hb_state = "error"
+        hb_status = {
+            "state": "error",
+            "error": "write_failed",
+            "failed_symbols": failed_symbols,
+            "trends": all_trends,
+        }
+    elif failed_symbols:
+        hb_state = "error" if (sym_list and len(failed_symbols) >= len(sym_list)) else "degraded"
+        hb_status = {
+            "state": hb_state,
+            "failed_symbols": failed_symbols,
+            "trends": all_trends,
+        }
+    else:
+        hb_state = "ok"
+        hb_status = {"state": "ok", "trends": all_trends}
+    force_hb = (hb_state != "ok") or (prev_hb_state is not None and prev_hb_state != "ok")
+    cycle_state["_last_hb_state"] = hb_state
+    heartbeat_fn(
+        "priceAnalysis",
+        interval_sec=30.0,
+        force=force_hb,
+        status=hb_status,
+        symbols=sym_list,
+        intervals={"refresh_trend": UPDATE_AND_REFRESH_TREND},
+    )
+    return all_trends, write_ok, failed_symbols
 
 
 if __name__ == "__main__":
@@ -617,15 +684,7 @@ if __name__ == "__main__":
             process = psutil.Process(os.getpid())
             print("Memory used (MB):", process.memory_info().rss / 1024**2)
 
-            all_trends = run_price_analysis_cycle(symbols, cycle_state)
-            write_all_trends(all_trends)
-            touch_module_heartbeat(
-                "priceAnalysis",
-                interval_sec=30.0,
-                status={"trends": all_trends},
-                symbols=list(symbols),
-                intervals={"refresh_trend": UPDATE_AND_REFRESH_TREND},
-            )
+            all_trends, _write_ok, _failed_syms = _run_price_analysis_daemon_step(symbols, cycle_state)
 
             print(f"write : {all_trends}")
             time.sleep(UPDATE_AND_REFRESH_TREND)

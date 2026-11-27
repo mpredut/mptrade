@@ -3266,4 +3266,171 @@ def test_pass4_polymarket_bettor_clickbait_filter_and_90m_corporate_risk_decay(t
     assert all(item.get("is_corporate_risk") is None for item in eq_breaking)
 
 
+def test_pass13_calendar_per_leg_freshness_and_headline_ts_invariants_and_crosscheck(tmp_path):
+    """Pass 13 invariants & producer-consumer cross-check for calendar_ssot:
+    1. Per-leg events_ts (72h) and earnings_ts (48h) govern freshness independently of top-level ts,
+       so fresh earnings cannot rejuvenate stale carried-over macro events (and vice versa).
+    2. Explicit non-positive/invalid or far-future leg timestamps are rejected as stale, while
+       synthetic snapshots without any timestamp retain backward-compatible freshness.
+    3. headline_effective_ts does not let truthy string '0' or malformed first_seen_ts shadow valid published_ts.
+    4. Cross-check: MacroEconomicCalendarCollector partial-failure snapshot flows into resolve_macro_economic_calendar.
+    """
+    from intelligence.macro.calendar_ssot import (
+        _is_calendar_leg_fresh,
+        headline_effective_ts,
+        resolve_macro_economic_calendar,
+    )
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_calendar_snapshot
+
+    t0 = datetime(2026, 11, 18, 13, 0, 0, tzinfo=timezone.utc).timestamp()
+
+    # Pure invariant 1: per-leg freshness isolation + explicit zero/invalid/far-future rejection + absent-ts compat
+    assert _is_calendar_leg_fresh({"events": []}, "events_ts", t0, 72.0 * 3600.0) is True
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": t0 - 100.0}, "events_ts", t0, 72.0 * 3600.0) is True
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": t0 + 600.0}, "events_ts", t0, 72.0 * 3600.0) is True
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": t0 - 80.0 * 3600.0}, "events_ts", t0, 72.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": 0}, "events_ts", t0, 72.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": "bad"}, "events_ts", t0, 72.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": t0, "events_ts": t0 + 100.0 * 3600.0}, "events_ts", t0, 72.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": t0, "earnings_ts": t0 - 50.0 * 3600.0}, "earnings_ts", t0, 48.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": t0, "earnings_ts": t0 + 60.0 * 3600.0}, "earnings_ts", t0, 48.0 * 3600.0) is False
+    assert _is_calendar_leg_fresh({"ts": 0}, "events_ts", t0, 72.0 * 3600.0) is False
+
+    # Pure invariant 2: stale events_ts (>72h) masked by fresh top-level ts (from earnings) must NOT pass as live calendar
+    cpi_ts = datetime(2026, 11, 18, 13, 30, 0, tzinfo=timezone.utc).timestamp()
+    stale_events_snap = {
+        "ts": t0,
+        "events_ts": t0 - 80.0 * 3600.0,
+        "earnings_ts": t0,
+        "events_ok": True,
+        "earnings_ok": True,
+        "events": [
+            {
+                "ts": cpi_ts,
+                "date_iso": "2026-11-18",
+                "ny_time": "08:30",
+                "title": "Stale Carried CPI",
+                "impact": "HIGH",
+            }
+        ],
+        "earnings": [
+            {
+                "symbol": "NVDA",
+                "name": "NVIDIA",
+                "date_iso": "2026-11-18",
+                "timing": "AMC",
+                "eps_forecast": "$0.85",
+                "is_portfolio_holding": True,
+            }
+        ],
+    }
+    cal_stale_ev = resolve_macro_economic_calendar(
+        now_ts=t0,
+        calendar_snapshot=stale_events_snap,
+        tracked_equity_tickers=["NVDA"],
+    )
+    assert all(e["title"] != "Stale Carried CPI" for e in cal_stale_ev["confirmed_events_today"])
+    assert len(cal_stale_ev["earnings_today"]) == 1 and cal_stale_ev["earnings_today"][0]["symbol"] == "NVDA"
+
+    # Symmetric: fresh events_ts with stale earnings_ts (>48h) keeps events and drops stale earnings
+    stale_earn_snap = {
+        **stale_events_snap,
+        "events_ts": t0,
+        "earnings_ts": t0 - 50.0 * 3600.0,
+    }
+    cal_stale_er = resolve_macro_economic_calendar(
+        now_ts=t0,
+        calendar_snapshot=stale_earn_snap,
+        tracked_equity_tickers=["NVDA"],
+    )
+    assert any(e["title"] == "Stale Carried CPI" for e in cal_stale_er["confirmed_events_today"])
+    assert cal_stale_er["earnings_today"] == []
+    assert cal_stale_er["upcoming_earnings"] == []
+
+    # Pure invariant 3: headline_effective_ts skips truthy '0', negative, and malformed first_seen_ts
+    pub_epoch = t0 - 600.0
+    for bad_first in ("0", "0.0", -10, "invalid-ts", False):
+        assert headline_effective_ts({"first_seen_ts": bad_first, "published_ts": pub_epoch}, t0) == pytest.approx(pub_epoch)
+
+    # Dependent cross-check (real-world weekend partial-failure scenario):
+    # - Friday 17:00 EST (t_seed): both ForexFactory and Nasdaq succeed -> Mon 2026-11-16 earnings persisted with earnings_ts=t_seed.
+    # - Saturday (t_mid = t_seed + 20h <= 24h): ForexFactory succeeds (events_ts=t_mid, ts=t_mid), Nasdaq fails -> collector
+    #   carries over Mon earnings with earnings_ts=t_seed.
+    # - Sunday (t_seed + 40h <= 48h): both carried-over Mon earnings and Mon macro event are fresh and merged.
+    # - Monday 08:00 EST (t_seed + 63h > 48h, t_mid + 43h <= 48h): top-level ts is still <= 48h, but earnings_ts is 63h stale ->
+    #   resolve_macro_economic_calendar MUST drop stale Friday earnings while keeping the 43h-fresh Mon macro event.
+    cdir = tmp_path / "cal_xcheck"
+    (cdir / "macro").mkdir(parents=True, exist_ok=True)
+    t_seed = datetime(2026, 11, 13, 22, 0, 0, tzinfo=timezone.utc).timestamp()  # Fri 17:00 EST
+    t_mid = t_seed + 20.0 * 3600.0  # Sat 18:00 UTC (+20h <= 24h carry-over)
+    t_sun = t_seed + 40.0 * 3600.0  # Sun 14:00 UTC (+40h <= 48h)
+    t_mon = datetime(2026, 11, 16, 13, 0, 0, tzinfo=timezone.utc).timestamp()  # Mon 08:00 EST (+63h > 48h, +43h from t_mid)
+    ff_mon = [
+        {
+            "title": "Monday Core CPI m/m",
+            "country": "USD",
+            "date": "2026-11-16T08:30:00-05:00",
+            "impact": "High",
+            "forecast": "0.3%",
+            "previous": "0.2%",
+        }
+    ]
+    nasdaq_mon = {
+        "data": {
+            "rows": [
+                {
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corp",
+                    "time": "time-after-hours",
+                    "epsForecast": "$0.85",
+                    "marketCap": "$3,000,000,000,000",
+                }
+            ]
+        }
+    }
+
+    def _fri_fetch(url, **_kw):
+        if "ff_calendar" in url:
+            return ff_mon
+        if "calendar/earnings" in url and "date=2026-11-16" in url:
+            return nasdaq_mon
+        return {"data": {"rows": []}}
+
+    snap_fri = collect_macro_calendar_snapshot(
+        str(cdir), now_ts=t_seed, persist=True, fetch_fn=_fri_fetch, tracked_equity_tickers=["NVDA"]
+    )
+    assert snap_fri is not None and snap_fri["earnings_ts"] == pytest.approx(t_seed)
+
+    def _sat_events_only_fetch(url, **_kw):
+        if "ff_calendar" in url:
+            return ff_mon
+        raise RuntimeError("nasdaq weekend outage")
+
+    snap_sat = collect_macro_calendar_snapshot(
+        str(cdir), now_ts=t_mid, persist=True, fetch_fn=_sat_events_only_fetch, tracked_equity_tickers=["NVDA"]
+    )
+    assert snap_sat is not None
+    assert snap_sat["events_ok"] is True and snap_sat["earnings_ok"] is False
+    assert snap_sat["ts"] == pytest.approx(t_mid)
+    assert snap_sat["events_ts"] == pytest.approx(t_mid)
+    assert snap_sat["earnings_ts"] == pytest.approx(t_seed)
+
+    # Sunday (+40h <= 48h): both Mon macro event and carried-over Mon NVDA earnings are active
+    resolved_sun = resolve_macro_economic_calendar(
+        now_ts=t_sun, calendar_snapshot=snap_sat, tracked_equity_tickers=["NVDA"]
+    )
+    assert any("Monday Core CPI m/m" in w for w in resolved_sun["upcoming_windows"])
+    assert any(e["symbol"] == "NVDA" for e in resolved_sun["upcoming_earnings"])
+
+    # Monday (+63h > 48h from earnings_ts, +43h <= 48h from top-level ts):
+    # stale earnings MUST be dropped while fresh Mon CPI event stays active
+    resolved_mon = resolve_macro_economic_calendar(
+        now_ts=t_mon, calendar_snapshot=snap_sat, tracked_equity_tickers=["NVDA"]
+    )
+    assert any(e["title"] == "Monday Core CPI m/m" for e in resolved_mon["confirmed_events_today"])
+    assert resolved_mon["earnings_today"] == []
+    assert resolved_mon["upcoming_earnings"] == []
+
+
+
 

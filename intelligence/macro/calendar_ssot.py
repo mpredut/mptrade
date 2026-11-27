@@ -14,6 +14,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scale,
     exact_int,
+    first_epoch_sec,
     is_us_market_early_close,
     is_us_market_holiday,
     normalize_epoch_sec,
@@ -23,7 +24,6 @@ from botcore import (
     safe_float,
     safe_int,
     safe_nonneg_float,
-    safe_nonneg_ts,
     safe_pos_float,
     split_csv,
     us_market_early_close_name,
@@ -504,6 +504,34 @@ def _format_confirmed_event_inline(ev: Mapping[str, Any]) -> str:
     return f"{title} [{impact}]{_format_confirmed_event_meta(fc, prev)}"
 
 
+def _resolve_calendar_leg_ts(calendar_snapshot: Mapping[str, Any], leg_key: str) -> Optional[float]:
+    """Resolve per-leg epoch timestamp (``events_ts`` / ``earnings_ts``), falling back to top-level ``ts`` only when absent."""
+    raw_leg = calendar_snapshot.get(leg_key)
+    if raw_leg is not None:
+        parsed = normalize_epoch_sec(raw_leg, default=None)
+        return parsed if (parsed is not None and parsed > 0.0) else -1.0
+    raw_top = calendar_snapshot.get("ts")
+    if raw_top is not None:
+        parsed = normalize_epoch_sec(raw_top, default=None)
+        return parsed if (parsed is not None and parsed > 0.0) else -1.0
+    return None
+
+
+def _is_calendar_leg_fresh(
+    calendar_snapshot: Mapping[str, Any],
+    leg_key: str,
+    now_ts: float,
+    max_age_sec: float,
+) -> bool:
+    """Return True when the calendar leg timestamp is absent (synthetic snapshot) or within ``+/-max_age_sec``."""
+    leg_ts = _resolve_calendar_leg_ts(calendar_snapshot, leg_key)
+    if leg_ts is None:
+        return True
+    if leg_ts <= 0.0:
+        return False
+    return abs(now_ts - leg_ts) <= max_age_sec
+
+
 def _merge_confirmed_macro_events(
     ts: float,
     dt_eet: datetime,
@@ -524,8 +552,7 @@ def _merge_confirmed_macro_events(
     has_live_feed = False
 
     if isinstance(calendar_snapshot, Mapping):
-        snap_ts = normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
-        snap_fresh = snap_ts <= 0.0 or (ts - snap_ts) <= (72.0 * 3600.0)
+        snap_fresh = _is_calendar_leg_fresh(calendar_snapshot, "events_ts", ts, 72.0 * 3600.0)
         raw_events = calendar_snapshot.get("events") if snap_fresh else None
         if isinstance(raw_events, (list, tuple)):
             for raw_ev in raw_events:
@@ -639,8 +666,7 @@ def _extract_scheduled_earnings(
     """Extract today's and upcoming corporate earnings from a cached calendar snapshot."""
     if not isinstance(calendar_snapshot, Mapping):
         return [], []
-    snap_ts = normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
-    if snap_ts > 0.0 and (ts - snap_ts) > (48.0 * 3600.0):
+    if not _is_calendar_leg_fresh(calendar_snapshot, "earnings_ts", ts, 48.0 * 3600.0):
         return [], []
     raw_earnings = calendar_snapshot.get("earnings")
     if not isinstance(raw_earnings, (list, tuple)) or not raw_earnings:
@@ -914,14 +940,9 @@ def resolve_macro_economic_calendar(
             return True
         return code in routine_labels and any(abs(ev_ts - c_ts) <= 300.0 for c_ts in confirmed_slot_ts_list)
 
-    snap_ts_raw = (
-        normalize_epoch_sec(calendar_snapshot.get("ts"), default=0.0) or 0.0
-        if isinstance(calendar_snapshot, Mapping)
-        else 0.0
-    )
     has_authoritative_live_calendar = has_live_feed or (
         isinstance(calendar_snapshot, Mapping)
-        and (snap_ts_raw <= 0.0 or (ts - snap_ts_raw) <= (72.0 * 3600.0))
+        and _is_calendar_leg_fresh(calendar_snapshot, "events_ts", ts, 72.0 * 3600.0)
         and _parse_bool_flag(calendar_snapshot.get("events_ok"), False)
     )
     routine_macro_confirmed = bool(live_macro_prints) if has_authoritative_live_calendar else headline_macro_confirmed
@@ -1386,9 +1407,13 @@ def parse_headline_age_minutes(h: Any, *, max_age_min: float = 2880.0) -> Option
 
 def headline_effective_ts(h: Any, now: float) -> float:
     """Resolve effective publication/observation epoch timestamp (seconds) for a headline item."""
-    ts_val = safe_nonneg_ts(
-        obj_attr(h, "first_seen_ts", None) or obj_attr(h, "published_ts", None),
-        0.0,
+    ts_val = (
+        first_epoch_sec(
+            obj_attr(h, "first_seen_ts", None),
+            obj_attr(h, "published_ts", None),
+            default=0.0,
+        )
+        or 0.0
     )
     pub_raw = obj_attr(h, "pub_date", None)
     pub_ts: Optional[float] = None

@@ -1358,3 +1358,79 @@ def test_pass6_long_horizon_and_intraday_collectors_never_stamp_fresh_on_outage(
     nvda_4h_after = load_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", "4h")
     assert nvda_4h_after is not None and nvda_4h_after["updated_ts"] == pytest.approx(t0)
 
+
+def test_pass13_operator_regime_note_far_future_mtime_clamp_and_delta_expiry_crosscheck() -> None:
+    """Pass 13 invariant & cross-check: far-future mtime_ts (> now_ts + 60s) is clamped to eff_now so TTL
+    never stretches indefinitely into the future, and delta-plan cleanly clears the note once TTL elapses."""
+    import pytest
+
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+    corrupt_future_mtime = t0 + 365.0 * 86400.0
+
+    # Pure invariant: clamped mtime produces bounded 3-day TTL rather than 368-day immortal expiry
+    parsed = parse_operator_regime_note_text(
+        "Risk-off regime caution.",
+        mtime_ts=corrupt_future_mtime,
+        now_ts=t0,
+        default_ttl_days=3.0,
+    )
+    assert parsed is not None
+    assert parsed["mtime_ts"] == pytest.approx(t0)
+    assert parsed["expires_ts"] == pytest.approx(t0 + 3.0 * 86400.0)
+    assert parsed["expires_in_days"] == pytest.approx(3.0)
+    assert parsed["age_days"] == pytest.approx(0.0)
+
+    # Small harmless clock skew (<= 60s) is preserved without resetting mtime
+    skew_parsed = parse_operator_regime_note_text(
+        "Mild clock skew note.",
+        mtime_ts=t0 + 30.0,
+        now_ts=t0,
+        default_ttl_days=3.0,
+    )
+    assert skew_parsed is not None
+    assert skew_parsed["mtime_ts"] == pytest.approx(t0 + 30.0)
+
+    # Dependent cross-check: same-day TTL: 1h note with corrupt far-future mtime is anchored at t0, expires at t0+3660s,
+    # and triggers Operator_Note(EXPIRED_CLEARED) on warm continuation turn
+    short_note = parse_operator_regime_note_text(
+        "TTL: 1h\nRisk-off regime caution.",
+        mtime_ts=corrupt_future_mtime,
+        now_ts=t0,
+        default_ttl_days=3.0,
+    )
+    assert short_note is not None
+    assert short_note["mtime_ts"] == pytest.approx(t0)
+    assert short_note["expires_ts"] == pytest.approx(t0 + 3600.0)
+
+    fixed_cal = {"session_label": "US_RTH", "next_high_impact_event": "None"}
+    sensors_t0 = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0,
+        macro_calendar=fixed_cal,
+        prices_and_trends={"BTCUSDC": {"price": 60000.0, "chg_24h_pct": 0.5, "low_24h": 59500.0, "high_24h": 60500.0}},
+        operator_regime_note=short_note,
+    )
+    p1 = evaluate_prompt_delta_plan(sensors_t0, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="op-p13")
+
+    t_expired = t0 + 3660.0
+    expired_note = parse_operator_regime_note_text(
+        "TTL: 1h\nRisk-off regime caution.",
+        mtime_ts=t0,
+        now_ts=t_expired,
+        default_ttl_days=3.0,
+    )
+    assert expired_note is None
+    sensors_exp = TelemetrySensorSnapshot(
+        evaluated_at_ts=t_expired,
+        macro_calendar=fixed_cal,
+        prices_and_trends={"BTCUSDC": {"price": 60010.0, "chg_24h_pct": 0.5, "low_24h": 59500.0, "high_24h": 60500.0}},
+        operator_regime_note=expired_note,
+    )
+    p2 = evaluate_prompt_delta_plan(
+        sensors_exp, asset_scope="crypto", now_ts=t_expired, is_warm_resume=True, prev_state=p1.next_state, conversation_id="op-p13"
+    )
+    warm_exp = build_supervisor_prompt(
+        sensors_exp, LogEventSummary(0, 0, 0), spec=topic_spec("auto_cryptotrade_executor"), compact_rules=True, delta_plan=p2
+    )
+    assert "Operator_Note(EXPIRED_CLEARED)" in warm_exp
+
+

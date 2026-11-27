@@ -3597,6 +3597,193 @@ def test_equity_context_outage_cboe_transient_and_stale_agg_cvd_invariants(tmp_p
     assert snap_btc.agg_spot_cvd_source is None
 
 
+def test_pass13_microstructure_collector_and_tca_invariants_and_crosscheck(tmp_path, monkeypatch):
+    """Pass 13 invariants & cross-check for microstructure_collector and tca_risk_evaluator:
+    1. SymbolMicrostructureSnapshotCollector.collect(ensure_fresh=True) does not raise TypeError.
+    2. ensure_fresh_symbol_microstructure treats far-future file mtime (> now + 60s) as stale needing refresh.
+    3. _extract_fresh_layer3_t212_prices never lets file-wide doc_ts rejuvenate stale per-symbol quotes or
+       lets a corrupt far-future ft_ts reject a valid fresh item_ts.
+    4. refresh_stale_t212_cached_positions heals far-future prev_ts in Stage 1 (without copying far-future ts into
+       base_bal_ts/quote_bal_ts), checks any(is_symbol_market_open) across all remaining_stale entries, and never
+       lets a fresh sibling throttle healing a corrupt far-future sibling.
+    5. load_symbol_microstructure(..., now_ts=...) demotes far-future sibling variants, and
+       enrich_open_limit_orders_tca flags far-future L2 books as [ob_stale] without wall/front-run advice.
+    6. Cross-check: enrich_24h_and_microstructure + enrich_open_limit_orders_tca end-to-end with corrupt timestamps.
+    """
+    import intelligence.sentiment.collectors.microstructure_collector as mc_mod
+    from intelligence.sentiment.collectors.microstructure_collector import (
+        SymbolMicrostructureSnapshotCollector,
+        _extract_fresh_layer3_t212_prices,
+        enrich_24h_and_microstructure,
+        ensure_fresh_symbol_microstructure,
+        load_symbol_microstructure,
+        refresh_stale_t212_cached_positions,
+    )
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+    from state_io import save_json_state
+
+    now_s = 1_796_200_000.0
+    cdir = tmp_path / "cachedb"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    (cdir / "state").mkdir(parents=True, exist_ok=True)
+    (cdir / "telemetry").mkdir(parents=True, exist_ok=True)
+
+    # 1. SymbolMicrostructureSnapshotCollector.collect(ensure_fresh=True) works without TypeError
+    ensure_calls: list[tuple[str, str, float | None, bool]] = []
+    orig_ensure = mc_mod.ensure_fresh_symbol_microstructure
+    monkeypatch.setattr(
+        mc_mod,
+        "ensure_fresh_symbol_microstructure",
+        lambda cd, sym, *, now_ts=None, allow_network=True, **_kw: ensure_calls.append((cd, sym, now_ts, allow_network)) or False,
+    )
+    col_snap = SymbolMicrostructureSnapshotCollector()
+    res_collect = col_snap.collect(str(cdir), "BTCUSDC", ensure_fresh=True, now_ts=now_s, allow_network=False)
+    assert res_collect is None
+    assert ensure_calls == [(str(cdir), "BTCUSDC", now_s, False)]
+    monkeypatch.setattr(mc_mod, "ensure_fresh_symbol_microstructure", orig_ensure)
+
+    # 2. ensure_fresh_symbol_microstructure triggers refresh when file mtime is corrupt far-future (> now + 60s)
+    #    while leaving a sibling fresh-mtime whale snapshot untouched
+    monkeypatch.setattr(mc_mod, "is_live_network_backfill_enabled", lambda: True)
+    ob_path = cdir / "telemetry" / "orderbook_depth_BTCUSDC.json"
+    wh_path = cdir / "telemetry" / "whale_snapshot_BTCUSDC.json"
+    save_json_state(str(ob_path), {"symbol": "BTCUSDC", "mid_price": 70000.0, "ts": now_s - 5.0})
+    save_json_state(str(wh_path), {"symbol": "BTCUSDC", "taker_buy_sell_ratio": 1.0, "ts": now_s - 5.0})
+    os.utime(ob_path, (now_s + 7200.0, now_s + 7200.0))
+    os.utime(wh_path, (now_s - 5.0, now_s - 5.0))
+    fetched_collectors: list[tuple[str, str]] = []
+
+    def _make_stub_col(kind: str):
+        class _StubFreshCol:
+            def __init__(self, cache_dir=None, start_sync=False):
+                _ = (cache_dir, start_sync)
+
+            def fetch(self, sym, allow_network=True, now=None):
+                _ = (allow_network, now)
+                fetched_collectors.append((kind, sym))
+                return {"ok": True}
+
+        return _StubFreshCol
+
+    monkeypatch.setattr(mc_mod, "OrderbookDepthCollector", _make_stub_col("ob"))
+    monkeypatch.setattr(mc_mod, "WhalePositioningCollector", _make_stub_col("whale"))
+    monkeypatch.setattr(mc_mod, "collector_used_stale_fallback", lambda _c, _s: False)
+    assert ensure_fresh_symbol_microstructure(str(cdir), "BTCUSDC", now_ts=now_s, max_age_ob_sec=180.0, max_age_whale_sec=180.0) is True
+    assert fetched_collectors == [("ob", "BTCUSDC")]
+    monkeypatch.setattr(mc_mod, "is_live_network_backfill_enabled", lambda: False)
+
+    # 3. _extract_fresh_layer3_t212_prices per-symbol isolation & far-future guard
+    vb_path = cdir / "state" / "venue_balances_state.json"
+    cp_path = cdir / "prices" / "cache_current_price.json"
+    save_json_state(
+        str(cp_path),
+        {
+            "ts": now_s - 1.0,  # fresh doc_ts written by BTCUSDC sibling
+            "items": {
+                "NVDA_US_EQ": [[int((now_s - 10800.0) * 1000), 140.0]],  # 3h stale
+                "AAPL_US_EQ": [[int((now_s - 15.0) * 1000), 220.0]],     # fresh item_ts, corrupt future ft_ts
+                "MSFT_US_EQ": 410.0,                                      # legacy bare scalar -> doc_ts fallback OK
+                "AMD_US_EQ": 160.0,                                       # corrupt future ft_ts only -> rejected
+            },
+            "fetchtime": {
+                "NVDA_US_EQ": now_s - 10800.0,
+                "AAPL_US_EQ": now_s + 86400.0,
+                "AMD_US_EQ": now_s + 86400.0,
+            },
+        },
+    )
+    l3_marks = _extract_fresh_layer3_t212_prices(
+        str(vb_path), ["NVDA_US_EQ", "AAPL_US_EQ", "MSFT_US_EQ", "AMD_US_EQ"], now_s, max_age_sec=180.0
+    )
+    assert "NVDA_US_EQ" not in l3_marks
+    assert "AMD_US_EQ" not in l3_marks
+    assert l3_marks["AAPL_US_EQ"] == pytest.approx((220.0, now_s - 15.0))
+    assert l3_marks["MSFT_US_EQ"] == pytest.approx((410.0, now_s - 1.0))
+
+    # 4a. Stage 1 heals corrupt far-future prev_ts without copying corrupt future ts into base_bal_ts/quote_bal_ts
+    vb_stage1 = {
+        "pos:t212:AAPL_US_EQ": {
+            "symbol": "AAPL_US_EQ",
+            "free": 2.0,
+            "price": 215.0,
+            "value_usd": 430.0,
+            "ts": now_s + 86400.0,
+        }
+    }
+    save_json_state(str(vb_path), vb_stage1)
+    assert refresh_stale_t212_cached_positions(vb_stage1, str(vb_path), now_s, max_age_sec=180.0) is True
+    assert vb_stage1["pos:t212:AAPL_US_EQ"]["price"] == pytest.approx(220.0)
+    assert vb_stage1["pos:t212:AAPL_US_EQ"]["ts"] == pytest.approx(now_s - 15.0)
+    assert "base_bal_ts" not in vb_stage1["pos:t212:AAPL_US_EQ"]
+    assert "quote_bal_ts" not in vb_stage1["pos:t212:AAPL_US_EQ"]
+
+    # 4b. Stage 2 checks any(is_symbol_market_open) across all remaining_stale AND does not let a fresh sibling mask far-future sibling
+    vb_stage2 = {
+        "pos:t212:FRESH_US_EQ": {"symbol": "FRESH_US_EQ", "free": 1.0, "price": 50.0, "ts": now_s - 10.0},
+        "pos:t212:CLOSED_EU_EQ": {"symbol": "CLOSED_EU_EQ", "free": 1.0, "price": 10.0, "ts": now_s - 3600.0},
+        "pos:t212:OPEN_US_EQ": {"symbol": "OPEN_US_EQ", "free": 1.0, "price": 99.0, "ts": now_s + 86400.0},
+    }
+    save_json_state(str(vb_path), vb_stage2)
+    stage2_polls: list[int] = []
+
+    class _StubT212Multi:
+        def portfolio_mark_prices(self):
+            stage2_polls.append(1)
+            return {"OPEN_US_EQ": 101.5}
+
+    monkeypatch.setattr(mc_mod._t212_prov_mod, "T212Provider", _StubT212Multi)
+    monkeypatch.setattr(mc_mod, "_LAST_T212_PORTFOLIO_POLL_TS", 0.0)
+    monkeypatch.setattr(mc_mod, "is_symbol_market_open", lambda sym, ts=None: sym == "OPEN_US_EQ")
+    assert refresh_stale_t212_cached_positions(vb_stage2, str(vb_path), now_s, max_age_sec=180.0) is True
+    assert len(stage2_polls) == 1
+    assert vb_stage2["pos:t212:OPEN_US_EQ"]["price"] == pytest.approx(101.5)
+    assert vb_stage2["pos:t212:OPEN_US_EQ"]["ts"] == pytest.approx(now_s)
+
+    # 5. load_symbol_microstructure demotes far-future sibling variant, and enrich_open_limit_orders_tca flags far-future L2 book
+    save_json_state(
+        str(cdir / "telemetry" / "derivatives_telemetry_BTCUSDC.json"),
+        {"symbol": "BTCUSDC", "funding_rate": 0.0001, "open_interest_usd": 50_000_000.0, "ts": now_s - 15.0},
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "derivatives_telemetry_BTCUSDT.json"),
+        {"symbol": "BTCUSDT", "funding_rate": 0.0099, "open_interest_usd": 99_000_000.0, "ts": now_s + 86400.0},
+    )
+    save_json_state(
+        str(cdir / "telemetry" / "orderbook_depth_BTCUSDC.json"),
+        {
+            "symbol": "BTCUSDC",
+            "mid_price": 70000.0,
+            "best_bid": 69995.0,
+            "best_ask": 70005.0,
+            "bid_depth_usd": 500000.0,
+            "ask_depth_usd": 500000.0,
+            "imbalance_ratio": 0.5,
+            "largest_bid_wall_price": 69800.0,
+            "largest_bid_wall_usd": 150000.0,
+            "largest_ask_wall_price": 70200.0,
+            "largest_ask_wall_usd": 150000.0,
+            "spread_bps": 1.43,
+            "ts": now_s + 7200.0,
+        },
+    )
+    loaded_m = load_symbol_microstructure(str(cdir), "BTCUSDC", now_ts=now_s)
+    assert loaded_m is not None
+    assert loaded_m["funding_rate"] == pytest.approx(0.0001)
+
+    # Dependent cross-check: enrich_24h_and_microstructure -> enrich_open_limit_orders_tca end-to-end
+    pt_xc = {"BTCUSDC": {"price": 70000.0, "trend": 0, "growth_coefficient": 0.0}}
+    micro_xc: dict = {}
+    enrich_24h_and_microstructure(str(cdir), str(tmp_path), pt_xc, micro_xc, {}, {}, now_s, allow_network=False)
+    assert micro_xc["BTCUSDC"]["funding_rate"] == pytest.approx(0.0001)
+    orders_xc = [{"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 69600.0, "qty": 0.02}]
+    enrich_open_limit_orders_tca(orders_xc, pt_xc, micro_xc, now_ts=now_s)
+    assert orders_xc[0].get("ob_flag") == "[ob_stale]"
+    assert "ob_age_s" not in orders_xc[0]
+    assert "wall_queue_pos" not in orders_xc[0]
+    assert "recommended_front_run_px" not in orders_xc[0]
+
+
+
 
 
 

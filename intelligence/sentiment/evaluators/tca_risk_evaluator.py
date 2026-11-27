@@ -334,16 +334,23 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
                 m_entry.get("_ob_raw_ts") if m_entry.get("_ob_raw_ts") is not None else m_entry.get("_ob_ts")
             ) if isinstance(m_entry, dict) else None
             ob_ts = normalize_epoch_sec(ob_raw_ts, default=0.0) or 0.0
-            ob_age_s = max(0.0, ref_now - ob_ts) if ob_ts > 0.0 else None
+            ob_is_future_corrupt = bool(explicit_now is not None and ob_ts > ref_now + 60.0)
+            ob_age_s = max(0.0, ref_now - ob_ts) if (ob_ts > 0.0 and not ob_is_future_corrupt) else None
             ob_is_stale = bool(
                 tca_caps.has_real_l2_book
-                and ob_age_s is not None
-                and (explicit_now is not None or (0.0 <= (ref_now - ob_ts) <= 7.0 * 86400.0))
-                and ob_age_s > eff_ob_stale_sec
+                and (
+                    ob_is_future_corrupt
+                    or (
+                        ob_age_s is not None
+                        and (explicit_now is not None or (0.0 <= (ref_now - ob_ts) <= 7.0 * 86400.0))
+                        and ob_age_s > eff_ob_stale_sec
+                    )
+                )
             )
-            if ob_is_stale and ob_age_s is not None:
+            if ob_is_stale:
                 o["ob_flag"] = "[ob_stale]"
-                o["ob_age_s"] = round(ob_age_s, 1)
+                if ob_age_s is not None:
+                    o["ob_age_s"] = round(ob_age_s, 1)
             raw_dist_pct = safe_float(o.get("dist_from_spot_pct"), default=0.0) or 0.0
             # BY DESIGN: Directional adverse distance -- marketable/in-the-money resting limits (BUY >= spot or SELL <= spot)
             # have 0 adverse barrier distance rather than being penalized by abs(dist_from_spot_pct).
