@@ -1080,7 +1080,7 @@ def summarize_active_ai_trade_plans(
             lb_entry = ro_entry.get("last_buy")
             if not isinstance(lb_entry, dict):
                 continue
-            lb_ts_s = _parse_pos_epoch_s(lb_entry.get("ts_ms") or lb_entry.get("ts"))
+            lb_ts_s = _parse_pos_epoch_s(lb_entry.get("ts_ms")) or _parse_pos_epoch_s(lb_entry.get("ts"))
             if lb_ts_s is not None and lb_ts_s > after_ts + 1.0:
                 return True
         return False

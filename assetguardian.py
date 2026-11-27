@@ -2423,6 +2423,31 @@ def evaluate_and_maybe_sell_or_buy(
     return False
 
 
+def _run_assetguardian_cycle(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT) -> tuple[dict, float]:
+    """Run one AssetGuardian cycle and return ``(heartbeat_status, sleep_seconds)``."""
+    cycle_err: str | None = None
+    with _cycle_io_scope():
+        try:
+            evaluate_and_maybe_sell_or_buy(minutes_back=minutes_back)
+        except Exception as e:
+            cycle_err = str(e)[:200]
+            print(f" Runtime ERROR: {e}")
+        if _STOP_EVENT.is_set():
+            return (
+                {"status": "error", "error": cycle_err} if cycle_err else {"status": "ok"},
+                CHECK_INTERVAL_SECONDS,
+            )
+        try:
+            sleep_seconds = _next_check_seconds()
+        except Exception as e:
+            if cycle_err is None:
+                cycle_err = str(e)[:200]
+            print(f" Runtime ERROR computing next check interval: {e}")
+            sleep_seconds = CHECK_INTERVAL_SECONDS
+    hb_status = {"status": "error", "error": cycle_err} if cycle_err else {"status": "ok"}
+    return hb_status, sleep_seconds
+
+
 def run_forever():
     _STOP_EVENT.clear()
     for _sig in (signal.SIGTERM, signal.SIGINT):
@@ -2443,25 +2468,28 @@ def run_forever():
         "assetguardian",
         interval_sec=30.0,
         force=True,
+        status={"status": "ok"},
         symbols=list(TRACKED_SYMBOLS),
         intervals={"check_interval": CHECK_INTERVAL_SECONDS},
     )
+    prev_unhealthy = False
     try:
         while not _STOP_EVENT.is_set():
-            with _cycle_io_scope():
-                try:
-                    evaluate_and_maybe_sell_or_buy(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT)
-                except Exception as e:
-                    print(f" Runtime ERROR: {e}")
-                if _STOP_EVENT.is_set():
-                    break
-                sleep_seconds = _next_check_seconds()
+            hb_status, sleep_seconds = _run_assetguardian_cycle(
+                minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT
+            )
+            if _STOP_EVENT.is_set():
+                break
+            is_unhealthy = hb_status.get("status") != "ok"
             touch_module_heartbeat(
                 "assetguardian",
                 interval_sec=30.0,
+                force=is_unhealthy or prev_unhealthy,
+                status=hb_status,
                 symbols=list(TRACKED_SYMBOLS),
                 intervals={"check_interval": sleep_seconds},
             )
+            prev_unhealthy = is_unhealthy
             # Flushing at the cycle boundary publishes all preceding lines when stdout
             # is redirected by flota_start.sh, preventing a quiet bot from appearing stale.
             print(f"[DEBUG] sleep {sleep_seconds}s before next cycle", flush=True)

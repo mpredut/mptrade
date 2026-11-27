@@ -10,7 +10,7 @@ import math
 import os
 from typing import Any, Mapping, Optional
 
-from botcore import resolve_now_ts, safe_pos_float
+from botcore import first_epoch_sec, resolve_now_ts, safe_pos_float
 from cachepaths import (
     CACHE_CURRENT_PRICE_FILENAME,
     canonical_base_asset,
@@ -70,9 +70,9 @@ def _load_workspace_balances_and_prices(
             bn_fee = (fee_state.get("venues") or {}).get("binance") if isinstance(fee_state, dict) else None
             bnb_px = safe_pos_float(bn_fee.get("bnb_price_usdc") if isinstance(bn_fee, dict) else None, default=None)
             if bnb_px is not None:
-                bnb_ts_s = safe_pos_float(
-                    (bn_fee.get("ts") if isinstance(bn_fee, dict) else None)
-                    or (fee_state.get("ts") if isinstance(fee_state, dict) else None),
+                bnb_ts_s = first_epoch_sec(
+                    bn_fee.get("ts") if isinstance(bn_fee, dict) else None,
+                    fee_state.get("ts") if isinstance(fee_state, dict) else None,
                     default=None,
                 ) or resolve_now_ts()
                 bnb_ts_ms = math.trunc(bnb_ts_s * 1000.0)

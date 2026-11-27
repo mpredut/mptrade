@@ -26,6 +26,7 @@ from market_monitor.newcoinsdiscovery import NewCoinsMonitor, NewCoinsFactory, M
 from notify_engine.ntfyapi import AlertNotifier, format_ntfy_url
 from botcore import (
     add_store_true_cli_args,
+    is_worker_thread_alive,
     load_env_stack,
     optional_env,
     required_bool_env,
@@ -216,6 +217,39 @@ def start_new_coin_checker(cachePriceAll, interval_seconds=3600,
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _build_pricewatcher_heartbeat_state(
+    price_checker,
+    cache_price_all=None,
+    new_coins_checker=None,
+    cleanup_thread=None,
+) -> tuple[dict, bool]:
+    """Evaluate liveness of pricewatcher background workers and return ``(status_dict, core_dead)``."""
+    dead_threads: list[str] = []
+    core_dead = False
+    if price_checker is None or not is_worker_thread_alive(price_checker):
+        dead_threads.append("price_checker")
+        core_dead = True
+    if cache_price_all is not None:
+        sync_thread = getattr(cache_price_all, "sync_thread", None)
+        if sync_thread is None:
+            sync_thread = getattr(cache_price_all, "_sync_thread", None)
+        if sync_thread is not None and not bool(getattr(sync_thread, "is_alive", lambda: False)()):
+            dead_threads.append("price_sync")
+            core_dead = True
+    if new_coins_checker is not None and not is_worker_thread_alive(new_coins_checker):
+        dead_threads.append("new_coins_checker")
+    if cleanup_thread is not None and not bool(getattr(cleanup_thread, "is_alive", lambda: False)()):
+        dead_threads.append("periodic_cleanup")
+
+    if core_dead:
+        status_dict: dict = {"status": "error", "dead_threads": dead_threads}
+    elif dead_threads:
+        status_dict = {"status": "degraded", "dead_threads": dead_threads}
+    else:
+        status_dict = {"status": "ok", "dead_threads": []}
+    return status_dict, core_dead
+
+
 def _cleanup_legacy_heartbeat() -> None:
     """Remove obsolete ``price_watcher.heartbeat`` so SRE heartbeat harvesting never flags it stale."""
     leg_hb = str(resolve_cachedb_filepath(os.path.join(get_cachedb_dir(), "price_watcher.heartbeat")))
@@ -296,12 +330,36 @@ def main():
     try:
         hb_syms = list(cfg.get("watch") or ())
         hb_itv = {"price_scan": cfg["price_scan_seconds"]}
-        touch_module_heartbeat("pricewatcher", interval_sec=30.0, force=True, symbols=hb_syms, intervals=hb_itv)
+        init_hb_status, _ = _build_pricewatcher_heartbeat_state(
+            price_checker, cachePriceAll, new_coins_checker=new_coins_checker, cleanup_thread=cleanup_thread
+        )
+        touch_module_heartbeat(
+            "pricewatcher", interval_sec=30.0, force=True, status=init_hb_status, symbols=hb_syms, intervals=hb_itv
+        )
         _cleanup_legacy_heartbeat()
         print("\nWaiting for alerts... (Ctrl+C to stop)\n", flush=True)
+        prev_unhealthy = init_hb_status.get("status") != "ok"
         while True:
             time.sleep(30)
-            touch_module_heartbeat("pricewatcher", interval_sec=30.0, symbols=hb_syms, intervals=hb_itv)
+            hb_status, core_dead = _build_pricewatcher_heartbeat_state(
+                price_checker, cachePriceAll, new_coins_checker=new_coins_checker, cleanup_thread=cleanup_thread
+            )
+            is_unhealthy = hb_status.get("status") != "ok"
+            touch_module_heartbeat(
+                "pricewatcher",
+                interval_sec=30.0,
+                force=is_unhealthy or prev_unhealthy,
+                status=hb_status,
+                symbols=hb_syms,
+                intervals=hb_itv,
+            )
+            prev_unhealthy = is_unhealthy
+            if core_dead:
+                print(f"[pricewatcher] FATAL: core worker thread(s) exited: {hb_status['dead_threads']}", flush=True)
+                if new_coins_checker is not None:
+                    new_coins_checker.stop_monitoring()
+                price_checker.stop_monitoring()
+                raise SystemExit(1)
     except KeyboardInterrupt:
         print("\nStopping system...")
         if new_coins_checker is not None:

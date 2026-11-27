@@ -488,10 +488,22 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     )
                     return False
                 counts = {s: len(v) for s, v in self.cache.items()}
+                clean_ft = {
+                    k: vf
+                    for k, raw in self.fetchtime_per_symbol.items()
+                    if isinstance(k, str) and k.strip() and (vf := safe_pos_float(raw, default=None)) is not None
+                }
+                clean_cursor = {
+                    k: ci
+                    for k, raw in self._rest_sync_cursor_per_symbol.items()
+                    if isinstance(k, str) and k.strip() and (ci := safe_pos_int(raw, default=None)) is not None
+                }
+                self.fetchtime_per_symbol = clean_ft
+                self._rest_sync_cursor_per_symbol = clean_cursor
                 payload = {
                     "items": self.cache,
-                    "fetchtime": self.fetchtime_per_symbol,
-                    "rest_sync_cursor": self._rest_sync_cursor_per_symbol,
+                    "fetchtime": clean_ft,
+                    "rest_sync_cursor": clean_cursor,
                     "metadata": {
                         "last_cleanup": time.time(),
                         "retention_days": ret_days,
@@ -506,8 +518,8 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                 }
                 meta_payload = {
                     "counts": dict(counts),
-                    "fetchtime": dict(self.fetchtime_per_symbol),
-                    "rest_sync_cursor": dict(self._rest_sync_cursor_per_symbol),
+                    "fetchtime": dict(clean_ft),
+                    "rest_sync_cursor": dict(clean_cursor),
                 }
                 if not self._commit_file_and_meta_locked(
                     lambda: atomic_write_json(self.filename, payload, indent=1),

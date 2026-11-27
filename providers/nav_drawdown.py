@@ -13,6 +13,7 @@ from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
     fmt_signed,
+    normalize_epoch_sec,
     normalize_side,
     resolve_now_ts,
     safe_float,
@@ -62,12 +63,16 @@ def _normalize_venues_map(raw: Any) -> dict[str, float]:
     return out
 
 
+_MAX_VALID_NAV_EPOCH_SEC: float = 4_102_444_800.0  # 2100-01-01T00:00:00Z
+_MAX_FUTURE_NAV_DRIFT_SEC: float = 3600.0
+
+
 def _normalize_nav_point(raw: Any) -> Optional[dict[str, Any]]:
     if not isinstance(raw, Mapping):
         return None
-    ts_s = safe_pos_float(raw.get("ts"), default=None)
+    ts_s = normalize_epoch_sec(raw.get("ts"), default=None)
     nav_usd = safe_pos_float(raw.get("nav_usd"), default=None)
-    if ts_s is None or nav_usd is None:
+    if ts_s is None or ts_s > _MAX_VALID_NAV_EPOCH_SEC or nav_usd is None:
         return None
     pt: dict[str, Any] = {
         "ts": round(ts_s, 3),
@@ -174,7 +179,8 @@ def append_nav_history_point(
     min_gap = safe_nonneg_float(min_interval_sec, default=DEFAULT_NAV_SAMPLE_INTERVAL_SEC)
     ret_days = safe_pos_float(retention_days, default=DEFAULT_NAV_RETENTION_DAYS) or DEFAULT_NAV_RETENTION_DAYS
     cutoff = norm_new["ts"] - (ret_days * 86400.0)
-    cleaned = [p for p in cleaned if p["ts"] >= cutoff]
+    max_allowed_ts = norm_new["ts"] + _MAX_FUTURE_NAV_DRIFT_SEC
+    cleaned = [p for p in cleaned if cutoff <= p["ts"] <= max_allowed_ts]
 
     if cleaned:
         last = cleaned[-1]
@@ -246,14 +252,20 @@ def evaluate_nav_drawdown_metrics(
 ) -> dict[str, Any]:
     """Compute cashflow-adjusted daily/24h/7d/30d NAV drawdown and 30d daily Sharpe from NAV history."""
     scope_norm = _normalize_nav_scope(scope)
+    explicit_now = resolve_now_ts(now_ts) if now_ts is not None else None
+    max_allowed_hist_ts = (explicit_now + _MAX_FUTURE_NAV_DRIFT_SEC) if explicit_now is not None else None
     scoped_points: list[tuple[dict[str, Any], bool]] = []
     for item in (history if isinstance(history, list) else []):
         if (norm_it := _normalize_nav_point(item)) is not None:
+            if max_allowed_hist_ts is not None and norm_it["ts"] > max_allowed_hist_ts:
+                continue
             if (proj := _project_nav_point_to_scope(norm_it, scope_norm)) is not None:
                 scoped_points.append(proj)
     scoped_points.sort(key=lambda pair: pair[0]["ts"])
 
     cur_norm = _normalize_nav_point(current_point)
+    if cur_norm is not None and max_allowed_hist_ts is not None and cur_norm["ts"] > max_allowed_hist_ts:
+        cur_norm = None
     cur_proj = _project_nav_point_to_scope(cur_norm, scope_norm) if cur_norm is not None else None
     if cur_proj is not None:
         if not scoped_points or cur_proj[0]["ts"] > scoped_points[-1][0]["ts"]:
@@ -262,8 +274,8 @@ def evaluate_nav_drawdown_metrics(
             scoped_points[-1] = cur_proj
 
     eff_now = (
-        resolve_now_ts(now_ts)
-        if now_ts is not None
+        explicit_now
+        if explicit_now is not None
         else (scoped_points[-1][0]["ts"] if scoped_points else resolve_now_ts(None))
     )
     empty: dict[str, Any] = {

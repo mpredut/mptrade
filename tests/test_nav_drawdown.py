@@ -556,6 +556,102 @@ def test_nav_drawdown_large_deposit_with_dip_preserves_index_and_guard():
     assert ok_day1 is False and "ai_daily_nav_drawdown_guard" in rsn_day1
 
 
+def test_pass10_nav_future_poison_bnb_ts_shadowing_and_intent_plan_ts_invariants(tmp_path):
+    """Pass #10 pure invariants + dependent cross-checks:
+    1. Corrupt far-future or millisecond timestamps in NAV history cannot freeze recording or blind the daily DD guard.
+    2. _load_workspace_balances_and_prices does not let truthy string '0' bn_fee.ts shadow valid fee_state.ts.
+    3. summarize_active_ai_trade_plans does not let truthy string '0' ts_ms shadow valid last_buy.ts.
+    """
+    from providers.intent_telemetry import summarize_active_ai_trade_plans
+    from providers.nav_history_store import _load_workspace_balances_and_prices
+    from providers.venue_fee_maintenance import resolve_fee_schedule_cache_path
+    from state_io import atomic_write_json
+
+    day0 = datetime(2026, 11, 20, 1, 0, tzinfo=timezone.utc).timestamp()
+
+    # 1. Corrupt far-future point on disk must NOT freeze append_nav_history_point or blind evaluate_nav_drawdown_metrics
+    poisoned_hist = [
+        {"ts": int(day0 * 1000), "nav_usd": 10000.0, "invested_usd": 8000.0, "free_cash_usd": 2000.0, "venues_usd": {"binance": 10000.0}},
+        {"ts": day0 + 50 * 86400.0, "nav_usd": 99999.0, "invested_usd": 99999.0, "free_cash_usd": 0.0, "venues_usd": {"binance": 99999.0}},
+        {"ts": 9_999_999_999.0, "nav_usd": 88888.0, "invested_usd": 88888.0, "free_cash_usd": 0.0, "venues_usd": {"binance": 88888.0}},
+    ]
+    updated, appended = append_nav_history_point(
+        poisoned_hist,
+        {"ts": day0 + 3600.0, "nav_usd": 9400.0, "invested_usd": 7400.0, "free_cash_usd": 2000.0, "venues_usd": {"binance": 9400.0}},
+    )
+    assert appended is True
+    assert len(updated) == 2
+    assert updated[0]["ts"] == pytest.approx(day0)
+
+    # Normal out-of-order replay within 1h still refuses append (preserves monotonicity)
+    _, appended_old = append_nav_history_point(
+        updated,
+        {"ts": day0 + 1800.0, "nav_usd": 9500.0, "invested_usd": 7500.0, "free_cash_usd": 2000.0, "venues_usd": {"binance": 9500.0}},
+    )
+    assert appended_old is False
+
+    # Dependent cross-check: even without running append first, evaluate_nav_drawdown_metrics ignores far-future poison
+    # and the daily DD guard still catches the real -6.0% drawdown!
+    m_poison = evaluate_nav_drawdown_metrics(
+        poisoned_hist + [{"ts": day0 + 3600.0, "nav_usd": 9400.0, "invested_usd": 7400.0, "free_cash_usd": 2000.0, "venues_usd": {"binance": 9400.0}}],
+        now_ts=day0 + 3600.0,
+    )
+    assert m_poison["sample_count"] == 2
+    assert m_poison["daily_nav_drawdown_pct"] == pytest.approx(-6.0, abs=0.05)
+    ok_dd, rsn_dd, _ = evaluate_daily_nav_drawdown_guard(m_poison, decision="BUY", mode="enforce", limit_pct=5.0)
+    assert ok_dd is False and "ai_daily_nav_drawdown_guard" in rsn_dd
+
+    # 2. _load_workspace_balances_and_prices skips truthy string "0" in bn_fee["ts"] and preserves fee_state["ts"]
+    cdir = tmp_path / "cachedb"
+    fee_ts = 1_750_000_000.0
+    atomic_write_json(
+        resolve_fee_schedule_cache_path(str(cdir)),
+        {"ts": fee_ts, "venues": {"binance": {"ts": "0", "bnb_price_usdc": 610.0}}},
+    )
+    _, _, cp_out = _load_workspace_balances_and_prices(str(tmp_path))
+    assert cp_out["BNBUSDC"][0][0] == int(fee_ts * 1000)
+    assert cp_out["BNBUSDC"][0][1] == pytest.approx(610.0)
+
+    # 3. summarize_active_ai_trade_plans recognizes newer BUY fill when last_buy has ts_ms="0" + valid ts
+    sell_ts = day0 + 100.0
+    intents = [
+        {
+            "status": "EXECUTED",
+            "decision": "SELL",
+            "symbol": "BTCUSDC",
+            "venue": "binance",
+            "order_type": "MARKET",
+            "timestamp": sell_ts,
+            "target_px": 55000.0,
+            "invalidation_px": 65000.0,
+            "execution_payload": {"status": "FILLED", "orderId": "oid-s1", "executedQty": "0.1", "price": "60000.0"},
+        }
+    ]
+    plans = summarize_active_ai_trade_plans(
+        intents,
+        "crypto",
+        day0 + 600.0,
+        lambda _i, default=None: 6000.0,
+        tradable_positions=[
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "price": 60000.0,
+                "value_usd": 6000.0,
+                "effective_max_buy_usd": 2000.0,
+            }
+        ],
+        recent_orders={
+            "binance:BTCUSDC": {
+                "venue": "binance",
+                "last_buy": {"ts_ms": "0", "ts": sell_ts + 120.0, "price": 59500.0, "qty": 0.1},
+            }
+        },
+    )
+    assert plans == []
+
+
+
 
 
 

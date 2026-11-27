@@ -985,3 +985,91 @@ def test_pricefetcher_carries_forward_legacy_quote_series_and_cleans_legacy_hear
     assert (sys_dir / "notify_queue_state.json").is_file()
     assert not leg_q.exists()
     assert len(NotifyQueueStateStore.read_lines_nolock(q_target)) == 1
+
+
+def test_pricewatcher_heartbeat_liveness_and_pricefetcher_nonpos_fetchtime_sanitization(tmp_path, monkeypatch):
+    """Pass #10 invariant + cross-check: pricewatcher detects dead threads and pricefetcher strips non-positive fetchtimes."""
+    import json
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("CMC_API_KEY", os.environ.get("CMC_API_KEY") or "test-cmc-key")
+    monkeypatch.setenv("NTFY_TOPIC_PRICE", os.environ.get("NTFY_TOPIC_PRICE") or "ntfy-price-test")
+    from market_monitor import pricewatcher
+
+    alive_thr = SimpleNamespace(is_alive=lambda: True)
+    dead_thr = SimpleNamespace(is_alive=lambda: False)
+
+    # 1. Pure invariants on _build_pricewatcher_heartbeat_state
+    st_ok, core_ok = pricewatcher._build_pricewatcher_heartbeat_state(
+        SimpleNamespace(_thread=alive_thr),
+        SimpleNamespace(sync_thread=alive_thr),
+        new_coins_checker=SimpleNamespace(_thread=alive_thr),
+        cleanup_thread=alive_thr,
+    )
+    assert st_ok == {"status": "ok", "dead_threads": []}
+    assert core_ok is False
+
+    # Dead auxiliary thread -> degraded (core_dead=False)
+    st_deg, core_deg = pricewatcher._build_pricewatcher_heartbeat_state(
+        SimpleNamespace(_thread=alive_thr),
+        SimpleNamespace(sync_thread=alive_thr),
+        new_coins_checker=SimpleNamespace(_thread=dead_thr),
+        cleanup_thread=alive_thr,
+    )
+    assert st_deg["status"] == "degraded"
+    assert st_deg["dead_threads"] == ["new_coins_checker"]
+    assert core_deg is False
+
+    # Dead core price_checker or price_sync -> error (core_dead=True)
+    st_err1, core_err1 = pricewatcher._build_pricewatcher_heartbeat_state(
+        SimpleNamespace(_thread=dead_thr),
+        SimpleNamespace(sync_thread=alive_thr),
+    )
+    assert st_err1["status"] == "error" and "price_checker" in st_err1["dead_threads"]
+    assert core_err1 is True
+
+    st_err2, core_err2 = pricewatcher._build_pricewatcher_heartbeat_state(
+        SimpleNamespace(_thread=alive_thr),
+        SimpleNamespace(sync_thread=dead_thr),
+    )
+    assert st_err2["status"] == "error" and "price_sync" in st_err2["dead_threads"]
+    assert core_err2 is True
+
+    # 2. Dependent cross-check on CacheAllPriceFetcherManager.save_state_to_file stripping non-positive fetchtimes & cursors
+    monkeypatch.setattr(
+        "market_monitor.pricefetcher.PricePlatformFactory.check_symbol_support",
+        lambda self, sym: {"Binance": True},
+    )
+    cache_file = tmp_path / "cache_watcher_all_price.json"
+    now_ms = int(time.time() * 1000)
+    cache_file.write_text(
+        json.dumps(
+            {
+                "items": {"BTC": [[now_ms - 60000, 59900.0]]},
+                "fetchtime": {"BTC": now_ms - 60000},
+                "rest_sync_cursor": {},
+                "symbol_metadata": {"added_time": {}, "active_symbols": ["BTC"], "preferred_source": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mgr = CacheAllPriceFetcherManager(
+        60,
+        ["BTC"],
+        filename=str(cache_file),
+        read_only=False,
+        data_sync_mode="producer",
+    )
+    save_ms = now_ms + 5000
+    mgr.cache["BTC"] = [[now_ms - 60000, 59900.0], [save_ms, 60000.0]]
+    mgr.fetchtime_per_symbol = {"BTC": save_ms, "ZERO": 0, "NEG": -5.0, "BAD": "nan", "NONE": None}
+    mgr._rest_sync_cursor_per_symbol = {"BTC": save_ms, "ZERO": 0, "BAD": "bad"}
+    assert mgr.save_state_to_file() is True
+
+    saved = json.loads(cache_file.read_text(encoding="utf-8"))
+    meta = json.loads((tmp_path / "cache_watcher_all_price.json.meta").read_text(encoding="utf-8"))
+    assert saved["fetchtime"] == {"BTC": float(save_ms)}
+    assert meta["fetchtime"] == {"BTC": float(save_ms)}
+    assert saved["rest_sync_cursor"] == {"BTC": save_ms}
+    assert meta["rest_sync_cursor"] == {"BTC": save_ms}
+

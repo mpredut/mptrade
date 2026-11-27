@@ -116,7 +116,7 @@ def reset_trades_monitor_state_for_test():
     _trades_monitor_warmup_failed_symbols.clear()
 
 
-def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None):
+def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=None, *, failed_symbols_out=None):
     """Detect and notify newly executed trades on Binance centrally."""
     global _trades_monitor_initialized
 
@@ -130,6 +130,8 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                 _trades_monitor_warmup_failed_symbols.discard(symbol)
             except Exception as _e:
                 _trades_monitor_warmup_failed_symbols.add(symbol)
+                if isinstance(failed_symbols_out, list):
+                    failed_symbols_out.append(str(symbol))
                 print(f"[MONITORTRADES] Error during trades warmup for {symbol}: {_e}")
         _trades_monitor_initialized = True
         return
@@ -247,6 +249,8 @@ def check_and_notify_executed_trades(maxage_trade_s=4 * 24 * 3600, symbols_list=
                     price=avg_price,
                 )
         except Exception as _e:
+            if isinstance(failed_symbols_out, list):
+                failed_symbols_out.append(str(symbol))
             print(f"[MONITORTRADES] Error checking executed trades for {symbol}: {_e}")
 
 
@@ -1522,6 +1526,93 @@ def monitor_price_and_trade(inst, sbs, maxage_trade_s=None, gain_threshold=None,
     _save_mt_state()
 
 
+def _run_monitortrades_cycle(
+    maxage_trade_s: float,
+    guard_window_days: float,
+    *,
+    notify_only: Optional[bool] = None,
+    symbols_list=None,
+) -> Tuple[Dict[str, Any], list[str]]:
+    """Run one isolated monitortrades loop cycle and return ``(heartbeat_status, symbols)``."""
+    eff_notify_only = MT_NOTIFY_ONLY if notify_only is None else bool(notify_only)
+    precheck_errors: list[str] = []
+    notify_errors: list[str] = []
+    monitor_errors: list[str] = []
+    flush_error: Optional[str] = None
+    watched_syms = list(symbols_list if symbols_list is not None else sym.symbols)
+
+    days = secondsToDays(maxage_trade_s)
+    for header, fetch_fn in (
+        ("ORDER COUNT", lambda side, symbol, age: mkt.get_orders(symbol, side, age)),
+        ("TRADE COUNT", apitrades.get_trade_orders),
+    ):
+        print(header)
+        for symbol in watched_syms:
+            try:
+                print(f"For {symbol}")
+                for side in ("BUY", "SELL"):
+                    found = fetch_fn(side, symbol, maxage_trade_s)
+                    print(f"get_trade_orders:           Found {len(found)} close '{side}' orders in the last {days} days.")
+                orders = fetch_fn(None, symbol, maxage_trade_s)
+                print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
+            except Exception as _e:
+                precheck_errors.append(f"{header}:{symbol}")
+                print(f"[MONITORTRADES] Error in loop pre-checks ({header} {symbol}): {_e}")
+
+    try:
+        check_and_notify_executed_trades(
+            maxage_trade_s,
+            symbols_list=watched_syms,
+            failed_symbols_out=notify_errors,
+        )
+    except Exception as _e:
+        notify_errors.append(f"all:{_e}")
+        print(f"[MONITORTRADES] Error in check_and_notify_executed_trades: {_e}")
+
+    hb_symbols = list(watched_syms)
+    instrument_count = 0
+    if not eff_notify_only:
+        instruments = load_for("mt")
+        if not instruments:
+            raise RuntimeError("No enabled monitortrades instruments are configured")
+        instrument_count = len(instruments)
+        hb_symbols = [_inst.symbol for _inst in instruments.values()]
+        for _inst in instruments.values():
+            print(f"-----{_inst.name} ({_inst.symbol}@{_inst.provider_label})------")
+            try:
+                monitor_price_and_trade(_inst, sbs=guard_window_days * 24 * 3600 + 60)
+            except Exception as _e:
+                monitor_errors.append(_inst.symbol)
+                print(f"[{_inst.name}] monitoring error: {_e}")
+            print("--------------")
+
+        try:
+            _smart_sl_guard.flush_smart_stop_loss_alerts()
+        except Exception as _e:
+            flush_error = str(_e)[:200]
+            print(f"flush_smart_stop_loss_alerts error: {_e}")
+
+    all_monitored_failed = instrument_count > 0 and len(monitor_errors) >= instrument_count
+    all_notify_failed = eff_notify_only and bool(watched_syms) and len(notify_errors) >= len(watched_syms)
+    if all_monitored_failed or all_notify_failed:
+        cycle_status = "error"
+    elif precheck_errors or notify_errors or monitor_errors or flush_error:
+        cycle_status = "degraded"
+    else:
+        cycle_status = "ok"
+
+    hb_status: Dict[str, Any] = {"status": cycle_status}
+    if monitor_errors:
+        hb_status["failed_symbols"] = sorted(set(monitor_errors))
+    if notify_errors:
+        hb_status["notify_errors"] = notify_errors[:10]
+    if precheck_errors:
+        hb_status["precheck_errors"] = precheck_errors[:10]
+    if flush_error:
+        hb_status["flush_error"] = flush_error
+    return hb_status, hb_symbols
+
+
 def main():
     instruments = load_for("mt")
     if not instruments:
@@ -1544,48 +1635,22 @@ def main():
     d = MT_GUARD_WINDOW_DAYS
     touch_module_heartbeat(
         "monitortrades", interval_sec=30.0, force=True,
+        status={"status": "ok"},
+        symbols=[_inst.symbol for _inst in instruments.values()],
         intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
     )
+    prev_unhealthy = False
     while True:
-        try:
-            days = secondsToDays(maxage_trade_s)
-            for header, fetch_fn in (
-                ("ORDER COUNT", lambda side, symbol, age: mkt.get_orders(symbol, side, age)),
-                ("TRADE COUNT", apitrades.get_trade_orders),
-            ):
-                print(header)
-                for symbol in sym.symbols:
-                    print(f"For {symbol}")
-                    for side in ("BUY", "SELL"):
-                        found = fetch_fn(side, symbol, maxage_trade_s)
-                        print(f"get_trade_orders:           Found {len(found)} close '{side}' orders in the last {days} days.")
-                    orders = fetch_fn(None, symbol, maxage_trade_s)
-                    print(f"get_trade_orders:           Total found {len(orders)} orders in the last {days} days.")
-            check_and_notify_executed_trades(maxage_trade_s)
-        except Exception as _e:
-            print(f"[MONITORTRADES] Error in loop pre-checks: {_e}")
-
-        if not MT_NOTIFY_ONLY:
-            instruments = load_for("mt")
-            if not instruments:
-                raise RuntimeError("No enabled monitortrades instruments are configured")
-            for _inst in instruments.values():
-                print(f"-----{_inst.name} ({_inst.symbol}@{_inst.provider_label})------")
-                try:
-                    monitor_price_and_trade(_inst, sbs=d * 24 * 3600 + 60)
-                except Exception as _e:
-                    print(f"[{_inst.name}] monitoring error: {_e}")
-                print("--------------")
-
-            try:
-                _smart_sl_guard.flush_smart_stop_loss_alerts()
-            except Exception as _e:
-                print(f"flush_smart_stop_loss_alerts error: {_e}")
-
+        hb_status, hb_symbols = _run_monitortrades_cycle(maxage_trade_s, d)
+        is_unhealthy = hb_status.get("status") != "ok"
         touch_module_heartbeat(
             "monitortrades", interval_sec=30.0,
+            force=is_unhealthy or prev_unhealthy,
+            status=hb_status,
+            symbols=hb_symbols,
             intervals={"loop_sleep": MT_MAIN_LOOP_SLEEP_SEC},
         )
+        prev_unhealthy = is_unhealthy
         time.sleep(MT_MAIN_LOOP_SLEEP_SEC)
 
 

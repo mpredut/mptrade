@@ -1865,3 +1865,50 @@ def test_cycle_io_scope_deduplicates_state_growth_and_p3b_reads_and_invalidates_
     assert camp_zf["initial_qty"] == pytest.approx(0.020)
 
 
+def test_assetguardian_cycle_and_run_forever_report_honest_error_heartbeats(monkeypatch):
+    """Pass #10 invariant + cross-check: corrupt/failing cycles never crash _next_check_seconds or lie healthy on heartbeat."""
+    ag._STOP_EVENT.clear()
+
+    # 1. Pure invariant on _run_assetguardian_cycle when BOTH evaluate and _next_check_seconds raise
+    monkeypatch.setattr(ag, "evaluate_and_maybe_sell_or_buy", lambda **kw: (_ for _ in ()).throw(RuntimeError("state corrupt")))
+    monkeypatch.setattr(ag, "_next_check_seconds", lambda: (_ for _ in ()).throw(RuntimeError("load_state failed")))
+    hb_err, sleep_s = ag._run_assetguardian_cycle()
+    assert hb_err["status"] == "error"
+    assert "state corrupt" in hb_err["error"]
+    assert sleep_s == pytest.approx(ag.CHECK_INTERVAL_SECONDS)
+
+    # 2. Dependent cross-check on run_forever: forces error heartbeat then forces recovery ok heartbeat
+    hb_calls = []
+    call_idx = {"n": 0}
+
+    def _fake_eval(**kw):
+        call_idx["n"] += 1
+        if call_idx["n"] == 1:
+            raise RuntimeError("boom_once")
+        return False
+
+    def _fake_wait(_sec):
+        if call_idx["n"] >= 2:
+            ag._STOP_EVENT.set()
+        return ag._STOP_EVENT.is_set()
+
+    monkeypatch.setattr(ag, "evaluate_and_maybe_sell_or_buy", _fake_eval)
+    monkeypatch.setattr(ag, "_next_check_seconds", lambda: 5.0)
+    monkeypatch.setattr(ag, "touch_module_heartbeat", lambda name, **kw: hb_calls.append((name, kw)))
+    monkeypatch.setattr(ag._STOP_EVENT, "wait", _fake_wait)
+    monkeypatch.setattr(ag, "request_stop_price_ws_streams", lambda: None)
+    monkeypatch.setattr(ag, "stop_price_ws_streams", lambda _d: None)
+    monkeypatch.setattr(ag.CacheManagerInterface, "shutdown_all_instances", classmethod(lambda cls, timeout=0.8: None))
+
+    ag.run_forever()
+    ag._STOP_EVENT.clear()
+
+    # Startup force + cycle 1 forced error + cycle 2 forced recovery ok
+    assert len(hb_calls) == 3
+    assert hb_calls[1][1]["status"]["status"] == "error"
+    assert hb_calls[1][1]["force"] is True
+    assert hb_calls[2][1]["status"]["status"] == "ok"
+    assert hb_calls[2][1]["force"] is True
+
+
+

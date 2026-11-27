@@ -2236,3 +2236,66 @@ def test_pending_exit_closed_status_resolves_and_trade_notify_loads_owner_map_on
     assert len(owner_map_calls) == 1
     assert [n["symbol"] for n in notified] == ["BTCUSDC", "ETHUSDC", "HYPEUSD"]
     assert seen_venues == [("BTCUSDC", "binance"), ("ETHUSDC", "binance"), ("HYPEUSD", "kraken")]
+
+
+def test_monitortrades_cycle_isolates_precheck_failures_and_reports_honest_heartbeat(monkeypatch):
+    """Pass #10 invariant + cross-check: per-symbol pre-check error never starves fill notifications or hides degraded/error status."""
+    mt.reset_trades_monitor_state_for_test()
+    mt._trades_monitor_initialized = True
+
+    notified = []
+
+    def _fake_get_orders(symbol, side, age):
+        if symbol == "BADUSDC":
+            raise RuntimeError("transient order cache read failure")
+        return []
+
+    def _fake_get_trades(_client, symbol, _age):
+        if symbol == "GOODUSDC":
+            return [{"id": "tr-1", "orderId": "ord-1", "symbol": "GOODUSDC", "side": "BUY", "qty": 1.0, "price": 50.0, "time": 1_800_000_000_000}]
+        return []
+
+    inst_bad = SimpleNamespace(name="BAD", symbol="BADUSDC", provider_label="binance")
+    inst_good = SimpleNamespace(name="GOOD", symbol="GOODUSDC", provider_label="binance")
+    monitored = []
+
+    def _fake_monitor(inst, sbs):
+        monitored.append(inst.symbol)
+        if inst.symbol == "BADUSDC":
+            raise RuntimeError("monitor failure")
+
+    monkeypatch.setattr(mt.mkt, "get_orders", _fake_get_orders)
+    monkeypatch.setattr(mt.apitrades, "get_trade_orders", _fake_get_trades)
+    monkeypatch.setattr(mt.order_retry, "get_accepted_order_owner_map", lambda: {})
+    monkeypatch.setattr(mt.alert, "notify", lambda **kw: notified.append(kw))
+    monkeypatch.setattr(mt, "load_for", lambda role: {"BADUSDC": inst_bad, "GOODUSDC": inst_good})
+    monkeypatch.setattr(mt, "monitor_price_and_trade", _fake_monitor)
+    monkeypatch.setattr(mt._smart_sl_guard, "flush_smart_stop_loss_alerts", lambda: None)
+
+    # 1. Partial failure: BADUSDC fails pre-check & monitoring, but GOODUSDC fill notification & monitoring STILL execute -> degraded
+    hb_deg, hb_syms = mt._run_monitortrades_cycle(
+        3600.0, 1.0, notify_only=False, symbols_list=["BADUSDC", "GOODUSDC"]
+    )
+    assert [n["symbol"] for n in notified] == ["GOODUSDC"]
+    assert monitored == ["BADUSDC", "GOODUSDC"]
+    assert hb_deg["status"] == "degraded"
+    assert hb_deg["failed_symbols"] == ["BADUSDC"]
+    assert any("BADUSDC" in e for e in hb_deg["precheck_errors"])
+    assert hb_syms == ["BADUSDC", "GOODUSDC"]
+
+    # 2. Total instrument failure -> error
+    monkeypatch.setattr(mt, "monitor_price_and_trade", lambda inst, sbs: (_ for _ in ()).throw(RuntimeError("all down")))
+    hb_err, _ = mt._run_monitortrades_cycle(
+        3600.0, 1.0, notify_only=False, symbols_list=["GOODUSDC"]
+    )
+    assert hb_err["status"] == "error"
+    assert set(hb_err["failed_symbols"]) == {"BADUSDC", "GOODUSDC"}
+
+    # 3. Full recovery -> ok
+    monkeypatch.setattr(mt.mkt, "get_orders", lambda symbol, side, age: [])
+    monkeypatch.setattr(mt, "monitor_price_and_trade", lambda inst, sbs: None)
+    hb_ok, _ = mt._run_monitortrades_cycle(
+        3600.0, 1.0, notify_only=False, symbols_list=["GOODUSDC"]
+    )
+    assert hb_ok == {"status": "ok"}
+
