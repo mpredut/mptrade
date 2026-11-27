@@ -1086,6 +1086,12 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                         alt_series_24h, m24, live_cur_px, now_ts=now_ms_eq / 1000.0
                     )
                     recalculate_live_price_geometry(m24, cur_px_est)
+            elif (
+                not rth_fresh_eq
+                and m24
+                and (last_alt_pt[0] > (now_ms_eq + 60_000) or (now_ms_eq - last_alt_pt[0]) <= 14 * 86400 * 1000)
+            ):
+                m24.pop("chg_15m_pct", None)
             if rth_fresh_eq and m24 and cur_px_est > 0.0:
                 recalculate_live_price_geometry(m24, cur_px_est)
             if m24 and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):

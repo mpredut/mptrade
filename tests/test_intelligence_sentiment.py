@@ -19265,6 +19265,47 @@ def test_cycle30_flat_equity_no_stale_kalman_vel_time_travel():
     assert entry_with_15m["kalman_vel"] == pytest.approx(-0.05)
 
 
+def test_cycle31_pretrade_stale_flat_equity_15m_and_shopping_deals_spam_filter(tmp_path):
+    """Cycle 31 live PROD audit fixes:
+    1. collect_pretrade_telemetry prunes phantom chg_15m_pct on unchanged >20m stale equity tails (matching Section 3A).
+    2. is_excluded_reference_news_item filters consumer Black Friday / Cyber Monday / Prime Day deals spam
+       while keeping genuine macro retail-sales headlines.
+    """
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+
+    # 1. Pretrade telemetry on RGNT_US_EQ flat at $0.937 for 42m omits phantom 15m=+1.30% while keeping 24h
+    cdir = tmp_path / "cachedb_c31"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    now_s = time.time()
+    tail_ms = int((now_s - 42.0 * 60.0) * 1000)
+    # 24h base at 0.925, last tick 0.925 -> 0.937 42m ago, then flat 0.937 up to now
+    rgnt_bars = (
+        [[tail_ms - 24 * 3600_000, 0.925]]
+        + [[tail_ms - (20 - i) * 60_000, 0.925] for i in range(1, 20)]
+        + [[tail_ms, 0.937]]
+        + [[tail_ms + k * 60_000, 0.937] for k in range(1, 42)]
+    )
+    (cdir / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_bars}}),
+        encoding="utf-8",
+    )
+    (cdir / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": [[int(now_s * 1000), 0.937]]}}),
+        encoding="utf-8",
+    )
+    pt_rgnt = ptc.collect_pretrade_telemetry("RGNT_US_EQ", cachedb_dir=str(cdir), allow_network=False)
+    evol = pt_rgnt.get("24h Multi-Horizon Price Evolution", "")
+    assert "24h=+1.30%" in evol
+    assert "15m=" not in evol
+
+    # 2. Consumer Black Friday / Cyber Monday / Prime Day deals spam excluded; macro retail sales kept
+    assert is_excluded_reference_news_item("I found 39 Black Friday tech deals actually worth shopping") is True
+    assert is_excluded_reference_news_item("Best Cyber Monday laptop deals to shop right now") is True
+    assert is_excluded_reference_news_item("Prime Day deals on smartwatches") is True
+    assert is_excluded_reference_news_item("US Black Friday retail sales rise 4.1% YoY - Reuters") is False
+
+
 
 
 
