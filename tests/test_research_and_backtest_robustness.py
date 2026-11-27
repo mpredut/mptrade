@@ -1891,7 +1891,10 @@ def test_binance_market_data_trades_intent_gateway_and_cli_edge_cases(monkeypatc
     tc = t212_cli_mod.T212Client("k", "s", env="demo", min_gap_sec=0.0, portfolio_ttl_sec=1.0, order_min_gap_sec=0.0)
     monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'{"not": "a_list"}'))
     assert tc.list_instruments() is None
+    # Backoff suppresses immediate retry within portfolio_ttl_sec; clear _fetch_fail before verifying valid list filtering
     monkeypatch.setattr(t212_cli_mod, "http_get", lambda url, headers=None: (200, b'["bad", {"ticker": "NVDA_US_EQ", "isin": ""}]'))
+    assert tc.list_instruments() is None
+    tc._fetch_fail.clear()
     assert tc.list_instruments() == [{"ticker": "NVDA_US_EQ", "isin": ""}]
     assert t212_bot_mod.verify_instrument_isin(tc, " nvda_us_eq ", "US67066G1040") is True
     monkeypatch.setattr(t212_cli_mod, "http_post_json", lambda url, payload=None, headers=None: (200, b'["unexpected_list"]'))
