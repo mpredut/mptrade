@@ -1631,6 +1631,8 @@ def load_microstructure_cycle_history(
 def save_microstructure_cycle_history(
     cache_dir: Optional[str],
     history: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
 ) -> bool:
     """Persist rolling microstructure cycle history atomically via ``MicrostructureCycleHistoryStore``."""
     if not isinstance(history, dict):
@@ -1639,7 +1641,7 @@ def save_microstructure_cycle_history(
     if not mhist_path:
         return False
     try:
-        return MicrostructureCycleHistoryStore.upsert_history_locked(mhist_path, history, indent=2)
+        return MicrostructureCycleHistoryStore.upsert_history_locked(mhist_path, history, indent=2, now_ts=now_ts)
     except Exception:
         return False
 

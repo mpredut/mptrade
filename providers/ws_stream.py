@@ -509,7 +509,8 @@ class JsonPublicWsStreamBase(AsyncReconnectStreamBase):
                     continue
                 except _websockets.exceptions.ConnectionClosed:
                     break
-                except Exception:
-                    continue
+                except Exception as exc:
+                    _ws_logger.warning("%s recv error (%s); reconnecting...", self.__class__.__name__, exc)
+                    break
                 if self.ingest_raw_message(raw):
                     last_data_mono = time.monotonic()

@@ -329,8 +329,38 @@ def _evaluate_venue_coherence(
             elif side_u == "SELL" and base_k:
                 expected_base_locked[base_k] = expected_base_locked.get(base_k, 0.0) + rem_q
 
-    # 2. Bidirectional open-orders <-> balance locked parity.
-    if ev.open_file_exists and ev.balance_file_exists and ev.open_latest_ts > 0.0 and ev.balance_verified_ts > 0.0:
+    # 2. Bidirectional open-orders <-> balance locked parity (+ explicit far-future snapshot timestamp checks).
+    if now_s > 0.0 and ev.balance_file_exists and ev.balance_verified_ts > now_s + 60.0:
+        out.append(
+            CoherenceViolation(
+                venue=v,
+                rule="balance_verified_ts_future",
+                detail=(
+                    f"balance_verified_ts={ev.balance_verified_ts:.1f} is "
+                    f"{ev.balance_verified_ts - now_s:.1f}s in the future (> 60s skew)"
+                ),
+                severity="error",
+            )
+        )
+    if now_s > 0.0 and ev.open_file_exists and ev.open_latest_ts > now_s + 60.0:
+        out.append(
+            CoherenceViolation(
+                venue=v,
+                rule="open_orders_ts_future",
+                detail=(
+                    f"open_latest_ts={ev.open_latest_ts:.1f} is "
+                    f"{ev.open_latest_ts - now_s:.1f}s in the future (> 60s skew)"
+                ),
+                severity="error",
+            )
+        )
+    if (
+        ev.open_file_exists
+        and ev.balance_file_exists
+        and ev.open_latest_ts > 0.0
+        and ev.balance_verified_ts > 0.0
+        and (now_s <= 0.0 or (ev.open_latest_ts <= now_s + 60.0 and ev.balance_verified_ts <= now_s + 60.0))
+    ):
         bal_age = max(0.0, now_s - ev.balance_verified_ts)
         open_age = max(0.0, now_s - ev.open_latest_ts)
         both_aligned = abs(ev.open_latest_ts - ev.balance_verified_ts) <= sync_grace and max(bal_age, open_age) >= 2.0

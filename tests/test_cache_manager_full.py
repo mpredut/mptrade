@@ -4062,6 +4062,100 @@ def test_pass20_cache_manager_dead_thread_heartbeat_invariant_and_crosscheck(tmp
     assert last_run.get("total_threads") == 3
 
 
+def test_pass21_cycle_history_future_poison_and_periodic_sync_rollback_invariants_crosscheck(tmp_path, monkeypatch):
+    """Pass 21 pure invariants & cross-checks: MicrostructureCycleHistoryStore prunes far-future disk/update poison without wiping 4h history, and periodic_sync recovers on NTP clock rollback."""
+    import cacheInterface as ci
+    from intelligence.macro_sentiment_ssot import save_microstructure_cycle_history
+    from state_stores.microstructure_cycle_history import MicrostructureCycleHistoryStore
+
+    # 1. Pure invariant & cross-check: far-future poisoned row on disk must NOT wipe valid 4h cycle history on upsert
+    t_now = time.time()
+    cdb = tmp_path / "cachedb"
+    (cdb / "telemetry").mkdir(parents=True)
+    mh_path = MicrostructureCycleHistoryStore.resolve_path(str(cdb))
+    # Seed poisoned file directly with 1 valid past row + 1 corrupt far-future row
+    with open(mh_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "BTCUSDC": [
+                    {"ts": t_now - 600.0, "ob_imbalance": 0.52},
+                    {"ts": t_now + 86400.0, "ob_imbalance": 0.99},
+                ]
+            },
+            fh,
+        )
+    assert save_microstructure_cycle_history(
+        str(cdb),
+        {
+            "BTCUSDC": [
+                {"ts": t_now, "ob_imbalance": 0.58},
+                {"ts": t_now + 7200.0, "ob_imbalance": 0.11},
+            ]
+        },
+        now_ts=t_now,
+    ) is True
+    merged = MicrostructureCycleHistoryStore.load_path(mh_path)
+    ts_list = [round(r["ts"], 1) for r in merged["BTCUSDC"]]
+    assert ts_list == [round(t_now - 600.0, 1), round(t_now, 1)]
+
+    # Even with now_ts=None, a poisoned far-future disk sample (+86400s) is pruned when real-time updates arrive
+    with open(mh_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "ETHUSDC": [
+                    {"ts": t_now - 300.0, "ob_imbalance": 0.48},
+                    {"ts": t_now + 86400.0, "ob_imbalance": 0.99},
+                ]
+            },
+            fh,
+        )
+    assert MicrostructureCycleHistoryStore.upsert_history_locked(
+        mh_path,
+        {"ETHUSDC": [{"ts": t_now, "ob_imbalance": 0.51}]},
+    ) is True
+    merged_eth = MicrostructureCycleHistoryStore.load_path(mh_path)
+    assert [round(r["ts"], 1) for r in merged_eth["ETHUSDC"]] == [round(t_now - 300.0, 1), round(t_now, 1)]
+
+    # 2. Dependent cross-check: CacheManagerInterface.periodic_sync triggers resync_mem_file & maintain_append_persist on wall-clock rollback
+    class _RollbackCache(ci.CacheManagerInterface):
+        RESYNC_INTERVAL_SEC = 3600.0
+        RETENTION_CHECK_INTERVAL_SEC = 3600.0
+
+        def __init__(self, fname: str):
+            super().__init__(0.01, ["BTCUSDC"], fname, read_only=False)
+            self.save_state = True
+            self.append_mode = True
+            self.resync_hits = 0
+            self.maint_hits = 0
+
+        def query_remote_and_update_cache(self):
+            return True
+
+        def get_remote_items(self, *_a, **_kw):
+            return []
+
+        def _persist_periodic_state(self, _complete):
+            return None
+
+        def resync_mem_file(self):
+            self.resync_hits += 1
+
+        def maintain_append_persist(self):
+            self.maint_hits += 1
+            self._stop_event.set()
+
+    rc = _RollbackCache(str(tmp_path / "rb_cache.json"))
+    rc._first_sleep = False
+    clock_vals = iter([10_000.0, 10_000.0, 9_000.0, 9_000.0, 9_000.0])
+    monkeypatch.setattr(ci, "_now_time", lambda: next(clock_vals, 9_000.0))
+    th = rc.periodic_sync(0.01, save_state=True)
+    th.join(timeout=3.0)
+    rc.shutdown(timeout=1.0)
+    assert rc.resync_hits >= 1
+    assert rc.maint_hits >= 1
+
+
+
 
 
 

@@ -2105,6 +2105,48 @@ def test_pass15_future_timestamp_coherence_invariants_and_cli_crosscheck(tmp_pat
     assert "currentprice NVDA_US_EQ" in out_txt
 
 
+def test_pass21_account_coherence_future_balance_and_open_ts_without_fills_invariant_and_crosscheck():
+    """Pass 21 pure invariant & cross-check: Rule 2 explicitly flags far-future balance_verified_ts and open_latest_ts even with zero fills/open orders."""
+    from verify_tools.account_cache_coherence import (
+        AccountCacheCoherenceSnapshot,
+        VenueCoherenceEvidence,
+        evaluate_account_cache_coherence,
+    )
+
+    t_now = 1_795_000_000.0
+
+    # 1. Corrupt far-future balance_verified_ts & open_latest_ts with zero fills -> BOTH explicit errors emitted
+    ev_future = VenueCoherenceEvidence(
+        venue="kraken",
+        balance_file_exists=True,
+        balance_verified_ts=t_now + 3600.0,
+        balance_items={"USD": {"free": 100.0, "locked": 0.0}},
+        open_file_exists=True,
+        open_latest_ts=t_now + 1800.0,
+        open_items={"HYPEUSD": []},
+    )
+    snap_fut = AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_future})
+    viols_fut = evaluate_account_cache_coherence(snap_fut)
+    rules_fut = {v.rule for v in viols_fut}
+    assert "balance_verified_ts_future" in rules_fut
+    assert "open_orders_ts_future" in rules_fut
+
+    # 2. Cross-check: normal past timestamps with aligned balances/open orders emit zero violations
+    ev_ok = VenueCoherenceEvidence(
+        venue="kraken",
+        balance_file_exists=True,
+        balance_verified_ts=t_now - 10.0,
+        balance_items={"USD": {"free": 100.0, "locked": 0.0}},
+        open_file_exists=True,
+        open_latest_ts=t_now - 10.0,
+        open_items={"HYPEUSD": []},
+    )
+    snap_ok = AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_ok})
+    viols_ok = evaluate_account_cache_coherence(snap_ok)
+    assert not any(v.rule in ("balance_verified_ts_future", "open_orders_ts_future") for v in viols_ok)
+
+
+
 
 
 

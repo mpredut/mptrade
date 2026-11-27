@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Callable, Mapping, Optional
 
 from botcore import normalize_epoch_sec, safe_pos_float, safe_pos_int
@@ -23,9 +24,23 @@ def _merge_symbol_history_series(
     *,
     max_age_sec: float = 14400.0,
     max_points: int = 90,
+    now_ts: Optional[float] = None,
 ) -> list[dict[str, Any]]:
+    eff_now = normalize_epoch_sec(now_ts, default=None)
+    if eff_now is not None:
+        max_disk_ts: Optional[float] = eff_now + 60.0
+        max_new_ts: Optional[float] = eff_now + 60.0
+    else:
+        wall_cap = time.time() + 60.0
+        new_ts_vals = [
+            t for r in (new_rows if isinstance(new_rows, list) else ()) if (t := _snap_ts(r)) > 0.0
+        ]
+        max_new_in = max(new_ts_vals) if new_ts_vals else 0.0
+        max_new_ts = None
+        max_disk_ts = max(wall_cap, max_new_in + 60.0) if max_new_in > wall_cap else wall_cap
+
     by_ts: dict[float, dict[str, Any]] = {}
-    for src in (disk_rows, new_rows):
+    for src, ts_cap in ((disk_rows, max_disk_ts), (new_rows, max_new_ts)):
         if not isinstance(src, list):
             continue
         for row in src:
@@ -33,6 +48,8 @@ def _merge_symbol_history_series(
                 continue
             ts_v = _snap_ts(row)
             if ts_v <= 0.0:
+                continue
+            if ts_cap is not None and ts_v > ts_cap:
                 continue
             by_ts[round(ts_v, 3)] = dict(row)
     if not by_ts:
@@ -86,6 +103,7 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
         max_age_sec: float = 14400.0,
         max_points: int = 90,
         indent: int = 2,
+        now_ts: Optional[float] = None,
     ) -> bool:
         """Atomically merge per-symbol cycle history updates under ``generation_file_lock`` (prevents lost updates)."""
         if not mhist_path or not isinstance(updates, Mapping):
@@ -125,6 +143,7 @@ class MicrostructureCycleHistoryStore(StateStoreBase):
                             rows,
                             max_age_sec=safe_pos_float(max_age_sec, default=14400.0) or 14400.0,
                             max_points=safe_pos_int(max_points, default=90) or 90,
+                            now_ts=now_ts,
                         )
                 else:
                     merged[sym_k] = rows

@@ -1699,16 +1699,16 @@ class CacheManagerInterface(ABC):
                         else:
                             self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
                         self._persist_periodic_state(sync_complete)
-                        if (
-                            self.save_state
-                            and (_now_time() - last_resync) > self.RESYNC_INTERVAL_SEC
+                        now_sync = _now_time()
+                        if self.save_state and (
+                            now_sync < last_resync
+                            or (now_sync - last_resync) > self.RESYNC_INTERVAL_SEC
                         ):
                             self.resync_mem_file()
                             last_resync = _now_time()
-                        if (
-                            self.append_mode
-                            and (_now_time() - last_maint)
-                            > self.RETENTION_CHECK_INTERVAL_SEC
+                        if self.append_mode and (
+                            now_sync < (last_maint - maint_stagger)
+                            or (now_sync - last_maint) > self.RETENTION_CHECK_INTERVAL_SEC
                         ):
                             self.maintain_append_persist()
                             last_maint = _now_time()

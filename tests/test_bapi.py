@@ -850,7 +850,8 @@ def test_trailingstop_rejects_boolean_price_balance_trend_iter43_s5():
     ts._balances = [{"asset": "BTC", "free": True, "locked": True}]
     assert ts.price("BTCUSDC") is None
     assert ts.free_qty("BTC") == 0.0
-    assert ts.total_qty("BTC") == 0.0
+    assert ts.total_qty("BTC") is None
+    assert ts.has_valid_balance("BTC") is False
     assert ts.cost_basis("BTCUSDC") is None
 
 def test_bapi_placeorder__submit_binance_order_rejects_bool_nan_inf_even_when_iter51_s1():

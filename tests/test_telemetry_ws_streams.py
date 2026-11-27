@@ -580,4 +580,74 @@ def test_pass19_smart_sl_future_start_ts_and_ws_status_invariants_crosscheck(mon
         ssl_mod._GRACE_TRACKER.update(orig_tracker)
 
 
+def test_pass21_json_ws_stream_recv_error_breaks_and_bapi_watchdog_monotonic(monkeypatch):
+    """Pass 21 pure invariants & cross-checks: JsonPublicWsStreamBase breaks on ws.recv() errors instead of CPU-spinning, and BinanceAccountStream._watchdog_loop uses monotonic age against NTP rollbacks."""
+    import asyncio
+    from binance_api import bapi_ws
+    from providers import ws_stream as ws_mod
+
+    # 1. Pure invariant: non-TimeoutError from ws.recv() breaks _connect_and_run() after 1 recv() call (zero spin loop)
+    recv_calls = 0
+
+    class _BrokenWs:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def send(self, _msg):
+            return None
+
+        async def recv(self):
+            nonlocal recv_calls
+            recv_calls += 1
+            raise OSError("socket reset")
+
+    class _FakeWebsocketsModule:
+        class exceptions:
+            class ConnectionClosed(Exception):
+                pass
+
+        @staticmethod
+        def connect(*_a, **_kw):
+            return _BrokenWs()
+
+    st = BinanceFuturesMarkPriceStream(["BTCUSDT"], stale_reconnect_sec=120.0)
+    monkeypatch.setattr(ws_mod, "_websockets", _FakeWebsocketsModule)
+    asyncio.run(st._connect_and_run())
+    assert recv_calls == 1
+
+    # 2. Dependent cross-check: BinanceAccountStream._watchdog_loop detects silence monotonically even if wall clock steps backwards,
+    #    and treats corrupt far-future _last_event_ts (without _last_event_mono) as unhealthy rather than clamping age=0.
+    wall_t = [1_795_000_000.0]
+    mono_t = [100.0]
+    monkeypatch.setattr(bapi_ws.time, "time", lambda: wall_t[0])
+    monkeypatch.setattr(bapi_ws.time, "monotonic", lambda: mono_t[0])
+
+    unhealthy_hits: list[str] = []
+    acc = bapi_ws.BinanceAccountStream(
+        on_event=lambda _e: None,
+        on_unhealthy=lambda: (unhealthy_hits.append("unhealthy"), acc._stop_event.set()),
+        loss_timeout_sec=10.0,
+    )
+    acc._available = True
+    acc._mark_event()  # records wall=1_795_000_000, mono=100.0
+    wall_t[0] = 1_794_999_000.0  # NTP rollback by -1000s!
+    mono_t[0] = 115.0            # +15s monotonic silence (> 10s loss_timeout_sec)
+    acc._watchdog_loop()
+    assert unhealthy_hits == ["unhealthy"]
+
+    # Case B: directly injected far-future _last_event_ts without _last_event_mono triggers fallback instead of age=0.0
+    unhealthy_hits.clear()
+    acc._stop_event.clear()
+    acc._available = True
+    acc._healthy = True
+    acc._last_event_mono = 0.0
+    acc._last_event_ts = wall_t[0] + 7200.0
+    acc._watchdog_loop()
+    assert unhealthy_hits == ["unhealthy"]
+
+
+
 

@@ -309,6 +309,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
         self._watchdog_thread: Optional[threading.Thread] = None
         self._health_lock = threading.Lock()
         self._last_event_ts = 0.0
+        self._last_event_mono = 0.0
         self._available = False
         self._healthy = False
 
@@ -322,6 +323,7 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
     def _mark_event(self) -> None:
         with self._health_lock:
             self._last_event_ts = time.time()
+            self._last_event_mono = time.monotonic()
             self._healthy = True
         self.on_healthy()
 
@@ -477,8 +479,15 @@ class BinanceAccountStream(AsyncReconnectStreamBase):
     def _watchdog_loop(self) -> None:
         while not self._stop_event.is_set():
             now = time.time()
+            now_mono = time.monotonic()
             with self._health_lock:
-                age = max(0.0, now - self._last_event_ts) if self._last_event_ts else math.inf
+                if not self._last_event_ts:
+                    age = math.inf
+                elif self._last_event_mono > 0.0:
+                    age = max(0.0, now_mono - self._last_event_mono)
+                else:
+                    raw_age = now - self._last_event_ts
+                    age = math.inf if raw_age < -60.0 else max(0.0, raw_age)
                 available, healthy = self._available, self._healthy
             if available and healthy and age > self.loss_timeout_sec:
                 age_i = safe_nonneg_int(age, default=None)
