@@ -454,8 +454,9 @@ def compute_volume_rvol_metrics(
     series_end_ms = max(bars[-1][0], last_any_ts_ms)
     vol_now_ms = pos_bars[-1][0]
     ref_end_ms = series_end_ms
-    if now_ts is not None and now_ts > 0.0:
-        now_ms_v = now_ts * 1000.0
+    eff_now_s = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
+    if eff_now_s is not None and eff_now_s > 0.0:
+        now_ms_v = eff_now_s * 1000.0
         if 0.0 <= (now_ms_v - series_end_ms) <= 7.0 * _MS_1D:
             ref_end_ms = now_ms_v
     if (ref_end_ms - vol_now_ms) > 3600_000.0:

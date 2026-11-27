@@ -3222,6 +3222,161 @@ def test_pass14_timed_quote_and_aligned_pair_future_timestamp_invariants() -> No
     assert micro["HYPEUSD"]["cross_venue_arb_bps"] == pytest.approx(-expected_bps, abs=0.1)
 
 
+def test_pass15_small_btc_lifo_lot_plain_decimal_and_section3b_future_ob_invariants() -> None:
+    """Pass #15 invariants & cross-checks:
+    1) Sub-1e-4 BTC LIFO lots (e.g. 0.00006 BTC = $3.70) render in plain decimal without scientific notation
+       across _format_tradable_position_line, _format_recent_order_line, and format_recent_fill_subcycle_parts,
+       eliminating live PROD PROMPT_NUMERIC_HYGIENE ('6e-05') and PROMPT_POSITION_ANCHORS_AND_CYCLE_MATH failures.
+    2) Section 3B / microstructure evaluators fall back from truthy '0' _ob_raw_ts to _ob_ts, freeze far-future L2
+       orderbooks, prune far-future cycle_delta poison, normalize epoch-ms timestamps, and handle epoch-ms now_ts."""
+    from intelligence.sentiment.evaluators.microstructure_evaluator import (
+        evaluate_microstructure_cycle_deltas,
+        reconcile_sibling_flow_and_liq_regimes,
+        reconcile_spot_and_orderbook_microstructure,
+        select_reconciled_spot_or_ob_price,
+        should_rescale_usd_sibling_walls,
+    )
+    from intelligence.sentiment.evaluators.portfolio_evaluator import format_recent_fill_subcycle_parts
+    from intelligence.sentiment.evaluators.price_series_evaluator import compute_volume_rvol_metrics
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import evaluate_microstructure_prompt_view
+    from orchestratorOS.supervisor.prompt_sections import (
+        _fmt_plain_float,
+        _format_recent_order_line,
+        _format_tradable_position_line,
+        _resolve_sensor_age_min,
+    )
+
+    # 1. Pure invariants on _fmt_plain_float & portfolio sub-1e-4 formatting
+    assert _fmt_plain_float(0.00006, compact=True) == "0.00006"
+    assert _fmt_plain_float(1_500_000.0, compact=True) == "1500000"
+    assert _fmt_plain_float(0.025017, compact=True) == "0.025017"
+    assert _fmt_plain_float(10.0, compact=True) == "10"
+
+    now_s = 1_795_750_000.0
+    now_ms = int(now_s * 1000)
+
+    # Exact live PROD binance:BTCUSDC position that triggered '[6e-05' & sum=5.02507 > 0.025077
+    btc_pos = {
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "base": "BTC",
+        "quote": "USDC",
+        "free_base": 0.025077,
+        "value_usd": 1546.42,
+        "free_quote": 2000.0,
+        "price": 61666.985,
+        "active_avg_buy_px": 61334.478221,
+        "pnl_vs_avg_pct": 0.54,
+        "open_lots": [
+            {"qty": 0.00006, "entry_px": 61334.478221, "ts_ms": now_ms - 3600_000},
+            {"qty": 0.025017, "entry_px": 61334.478221, "ts_ms": now_ms - 1800_000},
+        ],
+    }
+    pos_line = _format_tradable_position_line(btc_pos, max_usd=2000.0, min_usd=10.0)
+    assert "e-05" not in pos_line.lower()
+    assert "0.00006@61334.478221" in pos_line
+    assert "0.025017@61334.478221" in pos_line
+
+    # Dependent cross-check: rendered prompt passes audit_rendered_prompt_text with ZERO violations!
+    prompt_txt = (
+        "LIVE TELEMETRY SNAPSHOT:\n"
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        f"{pos_line}\n"
+        "### 2. MACRO:\n"
+    )
+    viols = audit_rendered_prompt_text(prompt_txt)
+    assert viols == [], [f"{v.code}:{v.subject}:{v.detail}" for v in viols]
+
+    # Same plain-decimal invariant in format_recent_fill_subcycle_parts & _format_recent_order_line
+    ro_sample = {
+        "last_action_side": "BUY",
+        "last_buy": {"qty": 0.00006, "price": 61334.478221, "ts_ms": now_ms - 600_000, "actor": "BOT"},
+        "open_lots": btc_pos["open_lots"],
+        "recent_buys": [
+            {"qty": 0.00006, "price": 61334.478221},
+            {"qty": 0.025017, "price": 61334.478221},
+        ],
+    }
+    sub_parts = format_recent_fill_subcycle_parts(ro_sample, include_open_lots=True)
+    assert all("e-05" not in p.lower() for p in sub_parts)
+    assert any("0.00006@61334.478221" in p for p in sub_parts)
+    ro_line = _format_recent_order_line("BTCUSDC", ro_sample, now_ms)
+    assert "e-05" not in ro_line.lower() and "0.00006 @ 61334.478221" in ro_line
+
+    # 2. _resolve_sensor_age_min: "0" ts falls back to valid timestamp; far-future ts returns None
+    assert _resolve_sensor_age_min({"ts": "0", "timestamp": now_s - 120.0}, now_ts=now_s) == pytest.approx(2.0)
+    assert _resolve_sensor_age_min({"ts": now_s + 3600.0, "age_min": 0.0}, now_ts=now_s) is None
+
+    # 3. MicrostructurePromptViewEvaluator: "0" _ob_raw_ts falls back to _ob_ts; far-future _ob_raw_ts freezes L2 book
+    rows_view = evaluate_microstructure_prompt_view(
+        {
+            "BTCUSDC": {
+                "ob_mid_price": 61600.0,
+                "bid_depth_usd": 100000.0,
+                "ask_depth_usd": 100000.0,
+                "spot_cvd_15m_usd": 15000.0,
+                "spot_cvd_source": "real_spot",
+                "_ob_raw_ts": "0",
+                "_ob_ts": now_s - 5.0,
+            },
+            "ETHUSDC": {
+                "ob_mid_price": 2000.0,
+                "bid_depth_usd": 80000.0,
+                "ask_depth_usd": 80000.0,
+                "spot_cvd_15m_usd": 12000.0,
+                "spot_cvd_source": "real_spot",
+                "_ob_raw_ts": now_s + 3600.0,
+            },
+        },
+        {"BTCUSDC": {"price": 61600.0}, "ETHUSDC": {"price": 2000.0}},
+        now_ts=now_s,
+    )
+    by_sym = {r["sym"]: r for r in rows_view}
+    assert by_sym["BTCUSDC"]["ob_is_frozen"] is False and by_sym["BTCUSDC"]["ob_age_s"] == pytest.approx(5.0)
+    assert by_sym["ETHUSDC"]["ob_is_frozen"] is True and by_sym["ETHUSDC"]["show_spot_cvd"] is False
+
+    # 4. Cross-venue arb falls back from "0" _ob_raw_ts to valid _ob_ts
+    m_arb = {
+        "HYPEUSDC": {"venue": "hyperliquid", "ob_mid_price": 61.635, "_ob_raw_ts": "0", "_ob_ts": now_s - 1.0, "spread_bps": 0.2},
+        "HYPEUSD": {"venue": "kraken", "ob_mid_price": 61.640, "_ob_raw_ts": now_s - 1.5, "spread_bps": 1.6},
+    }
+    pt_arb = {"HYPEUSDC": {"price": 61.635}, "HYPEUSD": {"price": 61.640}}
+    compute_cross_venue_arb_metrics("HYPEUSDC", m_arb["HYPEUSDC"], pt_arb["HYPEUSDC"], m_arb, pt_arb, now_ts=now_s)
+    assert m_arb["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(-0.8, abs=0.1)
+
+    # 5. Cycle delta history prunes far-future poison so recording unfreezes immediately
+    hist_poison = {"BTCUSDC": [{"ts": now_s - 400.0, "ob_imbalance": 0.45}, {"ts": now_s + 86400.0, "ob_imbalance": 0.99}]}
+    m_cd = {"BTCUSDC": {"ob_imbalance": 0.55}}
+    _, hist_out, dirty = evaluate_microstructure_cycle_deltas(m_cd, hist_poison, now_ts=now_s)
+    assert dirty is True
+    assert all(rec["ts"] <= now_s + 60.0 for rec in hist_out["BTCUSDC"])
+    assert hist_out["BTCUSDC"][-1]["ts"] == pytest.approx(now_s, abs=0.05)
+    assert m_cd["BTCUSDC"]["cycle_delta"]["ob_imbalance_delta"] == pytest.approx(0.10, abs=1e-4)
+
+    # 6. Far-future ob_ts rejected in select_reconciled_spot_or_ob_price, wall rescaling, & sibling ms/sec normalization
+    assert select_reconciled_spot_or_ob_price(0.0, 61.5, now_s + 3600.0, now_s) is None
+    assert should_rescale_usd_sibling_walls("HYPEUSD", 63.0, 61.0, 61.0, ob_ts=now_s + 3600.0, now_ts=now_s) is False
+    m_wall = {"ob_mid_price": 61.0, "best_bid": 60.9, "best_ask": 61.1, "bid_wall_px": 60.0, "ask_wall_px": 62.0}
+    _, _, action_fut = reconcile_spot_and_orderbook_microstructure(
+        "HYPEUSD", 63.0, m_wall, is_usd_sym=True, is_eq_sym=False, is_exact_ob_sym=False, ob_ts_sec=now_s + 3600.0, now_ts=now_s
+    )
+    assert action_fut == "none"
+
+    # Sibling reconciliation normalizes epoch-ms vs epoch-sec _deriv_ts (newer sec wins over older ms)
+    sib_m = {
+        "BTCUSDC": {"oi_usd": 1_000_000.0, "funding_rate": 0.0005, "_deriv_ts": now_s - 5.0},
+        "BTCUSD": {"oi_usd": 1_000_000.0, "funding_rate": 0.0001, "_deriv_ts": (now_s - 300.0) * 1000.0},
+    }
+    reconcile_sibling_flow_and_liq_regimes(sib_m, {"BTCUSDC": {"price": 61000.0}, "BTCUSD": {"price": 61000.0}})
+    assert sib_m["BTCUSD"]["funding_rate"] == pytest.approx(0.0005)
+
+    # 7. compute_volume_rvol_metrics produces identical results for epoch-sec and epoch-ms now_ts
+    bars_vol = [[int((now_s - (24 - k) * 600.0) * 1000.0), 100.0, 50.0] for k in range(25)]
+    r_sec = compute_volume_rvol_metrics(bars_vol, now_ts=now_s)
+    r_ms = compute_volume_rvol_metrics(bars_vol, now_ts=now_s * 1000.0)
+    assert r_sec and r_sec == r_ms
+
+
 
 
 

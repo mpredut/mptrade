@@ -500,9 +500,17 @@ def format_recent_fill_subcycle_parts(
         parts.append(f"Swing Sub-Cycle Avg BUY={sw_avg}")
     if (lifo_pnl := safe_float(fills.get("lifo_realized_pnl_usd"), None)) is not None and abs(lifo_pnl) >= 0.01:
         parts.append(f"Sub-Cycle LIFO Realized PnL={format_signed_usd(lifo_pnl, decimals=2)}")
+    def _fmt_plain_anchor(val: Any, dec: int) -> str:
+        rv = round_opt_px(val, dec)
+        if rv is None:
+            return "None"
+        if (0.0 < abs(rv) < 1e-4) or abs(rv) >= 1e6:
+            return f"{rv:.{dec}f}".rstrip("0").rstrip(".") or "0"
+        return str(rv)
+
     if include_open_lots:
         o_lots = [
-            f"{round_opt_px(lt.get('qty'), 6)}@{round_opt_px(lt.get('entry_px'), 6)}"
+            f"{_fmt_plain_anchor(lt.get('qty'), 6)}@{_fmt_plain_anchor(lt.get('entry_px'), 6)}"
             for lt in lots_seq[-4:]
             if isinstance(lt, dict) and lt.get("qty") is not None and lt.get("entry_px") is not None
         ]
@@ -518,7 +526,7 @@ def format_recent_fill_subcycle_parts(
             parts.append(f"Post-Trade Markout({', '.join(m_parts)})")
     for key_tr, lbl_tr in (("recent_buys", "Recent BUY Tranches"), ("recent_sells", "Recent SELL Tranches")):
         tr_list = [
-            f"{round_opt_px(item.get('qty'), 8)}@{round_opt_px(item.get('price'), 6)}"
+            f"{_fmt_plain_anchor(item.get('qty'), 8)}@{_fmt_plain_anchor(item.get('price'), 6)}"
             for item in (fills.get(key_tr) or ())
             if isinstance(item, dict) and item.get("qty") is not None and item.get("price") is not None
         ]

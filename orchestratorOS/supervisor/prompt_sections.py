@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from botcore import (
     _parse_bool_flag,
+    first_epoch_sec,
     fmt_signed,
     is_us_rth_open,
     normalize_epoch_sec,
@@ -107,12 +108,12 @@ def _resolve_sensor_age_min(d: Any, now_ts: Optional[float] = None) -> Optional[
         return None
     ref_now = safe_pos_float(now_ts, default=None)
     if ref_now is not None:
-        raw_ts = d.get("ts")
-        if raw_ts is None:
-            raw_ts = d.get("timestamp")
-        ts_v = normalize_epoch_sec(raw_ts, default=None)
-        if ts_v is not None and ts_v > 0.0 and ref_now >= ts_v - 5.0:
-            return round(max(0.0, (ref_now - ts_v) / 60.0), 1)
+        ts_v = first_epoch_sec(d.get("ts"), d.get("timestamp"), default=None)
+        if ts_v is not None and ts_v > 0.0:
+            if ts_v > ref_now + 60.0:
+                return None
+            if ref_now >= ts_v - 5.0:
+                return round(max(0.0, (ref_now - ts_v) / 60.0), 1)
     return safe_float(d.get("age_min"), default=None)
 
 
@@ -278,11 +279,14 @@ def _fmt_signed_usd(val: Any) -> str:
     return format_compact_usd(val, signed=True)
 
 
-def _fmt_plain_float(val: Any, decimals: int = 8) -> str:
-    """Format small non-zero floats without scientific notation (e.g. 3e-06 -> 0.000003)."""
+def _fmt_plain_float(val: Any, decimals: int = 8, *, compact: bool = False) -> str:
+    """Format finite numbers without scientific notation (e.g. 6e-05 -> 0.00006, 1.5e+06 -> 1500000)."""
     if isinstance(val, (int, float)) and not isinstance(val, bool) and math.isfinite(val):
-        if 0.0 < abs(val) < 1e-4:
-            return f"{val:.{decimals}f}".rstrip("0").rstrip(".")
+        abs_v = abs(val)
+        if (0.0 < abs_v < 1e-4) or abs_v >= 1e6:
+            return f"{val:.{decimals}f}".rstrip("0").rstrip(".") or "0"
+        if compact:
+            return f"{val:g}"
     return str(val)
 
 
@@ -1936,13 +1940,17 @@ def _format_tradable_position_line(
         t_extra += f", {anc['lbl']}={anc['px']}{pct_sfx}"
     if shown_lots := pv["shown_lifo_lots"]:
         lot_parts = [
-            f"{l_q:g}@{l_px}" + (f"({fmt_signed(l_pnl)}%)" if l_pnl is not None else "")
+            f"{_fmt_plain_float(l_q, compact=True)}@{_fmt_plain_float(l_px)}"
+            + (f"({fmt_signed(l_pnl)}%)" if l_pnl is not None else "")
             for l_q, l_px, l_pnl in shown_lots
         ]
         t_extra += f", open_lifo_lots=[{', '.join(lot_parts)}]"
         if (prof := pv["profitable_lifo"]) is not None:
             prof_usd, prof_q, prof_avg_pct = prof
-            t_extra += f", profitable_lifo_usd=${prof_usd:.2f}({prof_q:g}_{lot_base_lbl}@{fmt_signed(prof_avg_pct)}%)"
+            t_extra += (
+                f", profitable_lifo_usd=${prof_usd:.2f}"
+                f"({_fmt_plain_float(prof_q, compact=True)}_{lot_base_lbl}@{fmt_signed(prof_avg_pct)}%)"
+            )
         if (older_q := pv["older_core_qty"]) is not None:
             t_extra += f", older_core_qty={_fmt_plain_float(older_q)}_{lot_base_lbl}"
     if (lifo_vwap := pv["lifo_rem_vwap"]) is not None:
@@ -2429,7 +2437,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
         tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
         qty_v = entry.get("qty")
-        qty_pfx = f"{qty_v} @ " if qty_v is not None else ""
+        qty_pfx = f"{_fmt_plain_float(qty_v)} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
         other_entry = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
         other_ts = normalize_timestamp_ms(other_entry.get("ts_ms"), default=0) or 0
@@ -2441,7 +2449,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         ):
             meta_parts.append("lot_harvested")
         meta_sfx = f" ({', '.join(meta_parts)})" if meta_parts else ""
-        return f"{qty_pfx}{px}{meta_sfx}"
+        return f"{qty_pfx}{_fmt_plain_float(px)}{meta_sfx}"
 
     last_b_px = round_opt_px((oinfo.get("last_buy") or {}).get("price") if isinstance(oinfo.get("last_buy"), dict) else None, 6)
     subcycle_sfx = "".join(

@@ -2045,6 +2045,66 @@ def test_short_trend_save_drops_nonpositive_fetchtimes(tmp_path):
     assert "ETHUSDC" not in meta["fetchtime"]
 
 
+def test_pass15_future_timestamp_coherence_invariants_and_cli_crosscheck(tmp_path, monkeypatch, capsys):
+    """Pass #15 invariants & cross-checks: corrupt far-future timestamps (> now + 60s) must never silently pass
+    as fresh/negative-lag in account_cache_coherence or on closed-market symbols in check_cache_coherence."""
+    t_now = 1_795_765_000.0
+
+    # 1. Pure invariants: far-future balance_verified_ts triggers causal_fill_to_balance + health_disk_future_ts;
+    #    far-future per-symbol filled_orders/trades fetchtime triggers health_disk_future_ts + health_symbol_fetchtime_future.
+    ev_future = VenueCoherenceEvidence(
+        venue="kraken",
+        balance_file_exists=True,
+        balance_verified_ts=t_now + 7200.0,
+        filled_file_exists=True,
+        filled_items={
+            "HYPEUSD": [{"orderId": "kr-fut-1", "symbol": "HYPEUSD", "status": "FILLED", "timestamp": int((t_now - 30.0) * 1000)}],
+            "SPCXxUSD": [],
+        },
+        filled_sym_ft_ts={"HYPEUSD": t_now + 3600.0, "SPCXxUSD": t_now - 2.0},
+        filled_latest_ft_ts=t_now + 3600.0,
+        trade_file_exists=True,
+        trade_has_fetchtime_surface=True,
+        trade_items={"HYPEUSD": [], "SPCXxUSD": []},
+        trade_sym_ft_ts={"HYPEUSD": t_now + 3600.0, "SPCXxUSD": t_now - 2.0},
+        trade_latest_ft_ts=t_now + 3600.0,
+        health_sync_ts_by_stream={
+            "balances": t_now - 2.0,
+            "filled_orders": t_now - 2.0,
+            "trades": t_now - 2.0,
+        },
+        configured_symbols=frozenset({"HYPEUSD", "SPCXxUSD"}),
+    )
+    viols = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(now_s=t_now, venues={"kraken": ev_future}, health_present=True),
+        sync_grace_sec=15.0,
+    )
+    rules = [v.rule for v in viols]
+    assert "causal_fill_to_balance" in rules
+    assert rules.count("health_disk_future_ts") == 3
+    assert rules.count("health_symbol_fetchtime_future") == 2
+
+    # 2. Dependent cross-check: check_cache_coherence.main() rejects far-future timestamps even when market is closed
+    coh_dir = tmp_path / "coh_fut"
+    coh_dir.mkdir(parents=True)
+    atomic_write_json(
+        str(coh_dir / "cache_short_trend.json"),
+        {"items": {"NVDA_US_EQ": {"ts": t_now + 3600.0, "current_price": 180.0, "gradient_recent": 0.0}}},
+    )
+    atomic_write_json(
+        str(coh_dir / "cache_current_price.json"),
+        {"items": {"NVDA_US_EQ": [[(t_now + 3600.0) * 1000.0, 180.0]]}},
+    )
+    monkeypatch.setattr(ccc, "CACHEDB", str(coh_dir))
+    monkeypatch.setattr(ccc, "expected_symbols", lambda: ["NVDA_US_EQ"])
+    monkeypatch.setattr(ccc.time, "time", lambda: t_now)
+    monkeypatch.setattr(ccc, "is_symbol_market_open", lambda _s, _n=None: False)
+    assert ccc.main() == 1
+    out_txt = capsys.readouterr().out
+    assert "short_trend NVDA_US_EQ" in out_txt
+    assert "currentprice NVDA_US_EQ" in out_txt
+
+
 
 
 

@@ -186,12 +186,13 @@ def _audit_stream_per_symbol_fetchtimes(
     venue: str,
     stream_name: str,
     health_ts: float,
+    now_s: float,
     items_map: Mapping[str, Any],
     sym_ft_ts: Mapping[str, float],
     configured_symbols: frozenset[str],
     per_sym_lag_grace: float,
 ) -> None:
-    """Verify every tracked symbol in a stream snapshot has a fresh per-symbol fetchtime."""
+    """Verify every tracked symbol in a stream snapshot has a fresh, non-future per-symbol fetchtime."""
     items_cf = {
         str(k).strip().casefold(): str(k).strip()
         for k in (items_map or {})
@@ -220,6 +221,17 @@ def _audit_stream_per_symbol_fetchtimes(
                     detail=(
                         f"{sym_s} present in {stream_name} items but missing fetchtime while "
                         f"health {stream_name}_sync_ts={health_ts:.1f}"
+                    ),
+                )
+            )
+        elif now_s > 0.0 and sym_ft > now_s + 60.0:
+            out.append(
+                CoherenceViolation(
+                    venue=venue,
+                    rule="health_symbol_fetchtime_future",
+                    detail=(
+                        f"{sym_s} {stream_name} fetchtime={sym_ft:.1f} is {sym_ft - now_s:.1f}s "
+                        f"in the future relative to now_s={now_s:.1f}"
                     ),
                 )
             )
@@ -276,16 +288,17 @@ def _evaluate_venue_coherence(
                     filled_fids.add(fid_s)
 
     # 1. Causal fill -> balance freshness correlation.
+    bal_ts_future = now_s > 0.0 and ev.balance_verified_ts > now_s + 60.0
     if latest_fill_ts > 0.0 and ev.balance_file_exists and (now_s - latest_fill_ts) >= sync_grace:
-        if ev.balance_verified_ts <= 0.0 or latest_fill_ts > ev.balance_verified_ts + 0.5:
-            lag_s = max(0.0, latest_fill_ts - ev.balance_verified_ts)
+        if ev.balance_verified_ts <= 0.0 or bal_ts_future or latest_fill_ts > ev.balance_verified_ts + 0.5:
+            lag_s = max(0.0, latest_fill_ts - (0.0 if bal_ts_future else ev.balance_verified_ts))
             out.append(
                 CoherenceViolation(
                     venue=v,
                     rule="causal_fill_to_balance",
                     detail=(
-                        f"latest_fill_ts={latest_fill_ts:.1f} > balance_verified_ts={ev.balance_verified_ts:.1f} "
-                        f"(lag={lag_s:.1f}s, fill_age={now_s - latest_fill_ts:.1f}s)"
+                        f"latest_fill_ts={latest_fill_ts:.1f} vs balance_verified_ts={ev.balance_verified_ts:.1f} "
+                        f"({'future_ts' if bal_ts_future else f'lag={lag_s:.1f}s'}, fill_age={now_s - latest_fill_ts:.1f}s)"
                     ),
                 )
             )
@@ -556,6 +569,14 @@ def _evaluate_venue_coherence(
                             detail=f"health reports {stream_name}_sync_ts={h_ts:.1f} but disk snapshot file is missing",
                         )
                     )
+            elif now_s > 0.0 and disk_ts > now_s + 60.0:
+                out.append(
+                    CoherenceViolation(
+                        venue=v,
+                        rule="health_disk_future_ts",
+                        detail=f"{stream_name} disk_ts={disk_ts:.1f} is {disk_ts - now_s:.1f}s in the future relative to now_s={now_s:.1f}",
+                    )
+                )
             elif disk_ts <= 0.0 or (h_ts - disk_ts) > sync_grace:
                 out.append(
                     CoherenceViolation(
@@ -574,6 +595,7 @@ def _evaluate_venue_coherence(
                 venue=v,
                 stream_name="filled_orders",
                 health_ts=fo_h_ts,
+                now_s=now_s,
                 items_map=ev.filled_items,
                 sym_ft_ts=ev.filled_sym_ft_ts,
                 configured_symbols=ev.configured_symbols,
@@ -591,7 +613,17 @@ def _evaluate_venue_coherence(
                 if is_primary_stream_venue(v)
                 else sync_grace
             )
-            if ev.trade_latest_ft_ts <= 0.0 or (tr_h_ts - ev.trade_latest_ft_ts) > tr_stream_grace:
+            tr_disk_lag = False
+            if now_s > 0.0 and ev.trade_latest_ft_ts > now_s + 60.0:
+                out.append(
+                    CoherenceViolation(
+                        venue=v,
+                        rule="health_disk_future_ts",
+                        detail=f"trades disk_ts={ev.trade_latest_ft_ts:.1f} is {ev.trade_latest_ft_ts - now_s:.1f}s in the future relative to now_s={now_s:.1f}",
+                    )
+                )
+            elif ev.trade_latest_ft_ts <= 0.0 or (tr_h_ts - ev.trade_latest_ft_ts) > tr_stream_grace:
+                tr_disk_lag = True
                 out.append(
                     CoherenceViolation(
                         venue=v,
@@ -599,12 +631,13 @@ def _evaluate_venue_coherence(
                         detail=f"health reports trades_sync_ts={tr_h_ts:.1f} ahead of disk_ts={ev.trade_latest_ft_ts:.1f} by {tr_h_ts - ev.trade_latest_ft_ts:.1f}s",
                     )
                 )
-            elif ev.trade_latest_ft_ts > 0.0:
+            if not tr_disk_lag and ev.trade_latest_ft_ts > 0.0:
                 _audit_stream_per_symbol_fetchtimes(
                     out,
                     venue=v,
                     stream_name="trades",
                     health_ts=tr_h_ts,
+                    now_s=now_s,
                     items_map=ev.trade_items,
                     sym_ft_ts=ev.trade_sym_ft_ts,
                     configured_symbols=ev.configured_symbols,

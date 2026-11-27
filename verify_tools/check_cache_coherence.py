@@ -137,7 +137,7 @@ def main() -> int:
         px = first_pos_float(e.get("current_price"), e.get("price"), default=None)
         px_ok = px is not None
         market_open = is_symbol_market_open(s, now)
-        ok = px_ok and (not market_open or (-5.0 <= age < SHORT_TREND_STALE_S))
+        ok = px_ok and age >= -60.0 and (not market_open or (-5.0 <= age < SHORT_TREND_STALE_S))
         if not ok:
             problems.append(f"short_trend {s} age={age:.1f}s px={px}")
         print(
@@ -183,7 +183,7 @@ def main() -> int:
         )
         if market_open:
             cp_open_ages.append((age, sym_stale_s))
-        ok = px_val > 0 and (not market_open or (-5.0 <= age < sym_stale_s))
+        ok = px_val > 0 and age >= -60.0 and (not market_open or (-5.0 <= age < sym_stale_s))
         if not ok:
             problems.append(f"currentprice {s} age={age:.2f}s>={sym_stale_s:.1f}s")
         print(f"   {s:10} age={age:6.2f}s price={px_val} -> {'OK' if ok else 'STALE'}")

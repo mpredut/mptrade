@@ -9,6 +9,7 @@ from botcore import (
     TimedQuote,
     clean_scale,
     coerce_dict_maps,
+    first_epoch_sec,
     normalize_epoch_sec,
     normalize_timestamp_ms,
     quote_spread_bps,
@@ -837,7 +838,7 @@ def compute_cross_venue_arb_metrics(
     if not isinstance(minfo, dict) or not isinstance(microstructure, dict):
         return
     prices_and_trends = prices_and_trends if isinstance(prices_and_trends, dict) else {}
-    own_ob_ts = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
+    own_ob_ts = first_epoch_sec(minfo.get("_ob_raw_ts"), minfo.get("_ob_ts"), default=None)
     own_ob_q = TimedQuote.from_raw(minfo.get("ob_mid_price"), own_ob_ts, source="ob_mid")
     own_spot_q = TimedQuote.from_raw(
         (p_match or {}).get("price") if isinstance(p_match, dict) else None,
@@ -869,7 +870,7 @@ def compute_cross_venue_arb_metrics(
         if peer_v == own_v:
             continue
         peer_p_dict = casefold_get(prices_and_trends, peer_sym)
-        peer_ob_ts = peer_m.get("_ob_raw_ts") if peer_m.get("_ob_raw_ts") is not None else peer_m.get("_ob_ts")
+        peer_ob_ts = first_epoch_sec(peer_m.get("_ob_raw_ts"), peer_m.get("_ob_ts"), default=None)
         peer_ob_q = TimedQuote.from_raw(peer_m.get("ob_mid_price"), peer_ob_ts, source="ob_mid")
         peer_spot_q = TimedQuote.from_raw(
             peer_p_dict.get("price") if isinstance(peer_p_dict, dict) else None,
@@ -1004,7 +1005,7 @@ def evaluate_microstructure_cycle_deltas(
             if not isinstance(x, dict):
                 continue
             ts_s = normalize_epoch_sec(x.get("ts"))
-            if ts_s is None or ts_s in seen_ts:
+            if ts_s is None or ts_s > eff_now + 60.0 or ts_s in seen_ts:
                 continue
             seen_ts.add(ts_s)
             items.append({**x, "ts": ts_s} if ts_s != x.get("ts") else x)
@@ -1815,29 +1816,29 @@ def reconcile_sibling_flow_and_liq_regimes(
                 same_perp_pre,
                 key=lambda kv: (
                     1 if (safe_pos_float(kv[1].get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0 else 0,
-                    safe_pos_float(kv[1].get("_deriv_ts"), default=0.0) or 0.0,
+                    normalize_epoch_sec(kv[1].get("_deriv_ts"), default=0.0) or 0.0,
                     1 if kv[0] == prim_sym else 0,
                 ),
             )
-            deriv_src_ts = safe_pos_float(deriv_src_m.get("_deriv_ts"), default=0.0) or 0.0
+            deriv_src_ts = normalize_epoch_sec(deriv_src_m.get("_deriv_ts"), default=0.0) or 0.0
             deriv_src_has_l1 = (safe_pos_float(deriv_src_m.get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0
             whale_cands = [
                 (s, m)
                 for s, m in same_perp_pre
-                if m.get("taker_buy_sell_ratio") is not None or (safe_pos_float(m.get("_whale_ts"), default=0.0) or 0.0) > 0.0
+                if m.get("taker_buy_sell_ratio") is not None or (normalize_epoch_sec(m.get("_whale_ts"), default=0.0) or 0.0) > 0.0
             ]
             whale_src_sym, whale_src_m = (
                 max(
                     whale_cands,
-                    key=lambda kv: (safe_pos_float(kv[1].get("_whale_ts"), default=0.0) or 0.0, 1 if kv[0] == prim_sym else 0),
+                    key=lambda kv: (normalize_epoch_sec(kv[1].get("_whale_ts"), default=0.0) or 0.0, 1 if kv[0] == prim_sym else 0),
                 )
                 if whale_cands
                 else (None, None)
             )
-            whale_src_ts = (safe_pos_float(whale_src_m.get("_whale_ts"), default=0.0) or 0.0) if isinstance(whale_src_m, dict) else 0.0
+            whale_src_ts = (normalize_epoch_sec(whale_src_m.get("_whale_ts"), default=0.0) or 0.0) if isinstance(whale_src_m, dict) else 0.0
             for s_k, m_s in same_perp_pre:
                 re_enrich_perp = False
-                own_deriv_ts = safe_pos_float(m_s.get("_deriv_ts"), default=0.0) or 0.0
+                own_deriv_ts = normalize_epoch_sec(m_s.get("_deriv_ts"), default=0.0) or 0.0
                 own_has_l1 = (safe_pos_float(m_s.get("native_l1_oi_usd"), default=0.0) or 0.0) > 0.0
                 if s_k != deriv_src_sym and (
                     (deriv_src_has_l1 and not own_has_l1)
@@ -1848,7 +1849,7 @@ def reconcile_sibling_flow_and_liq_regimes(
                             m_s[dk] = deriv_src_m[dk]
                     re_enrich_perp = True
                 if isinstance(whale_src_m, dict) and s_k != whale_src_sym:
-                    own_whale_ts = safe_pos_float(m_s.get("_whale_ts"), default=0.0) or 0.0
+                    own_whale_ts = normalize_epoch_sec(m_s.get("_whale_ts"), default=0.0) or 0.0
                     if (
                         (whale_src_ts > 0.0 and own_whale_ts != whale_src_ts)
                         or (
@@ -2074,7 +2075,7 @@ def select_reconciled_spot_or_ob_price(
     if ob_mid_px is None or ob_mid_px <= 0.0:
         return None
     if cur_px <= 0.0:
-        if ob_ts_sec > 0.0 and now_ts > 0.0 and (now_ts - ob_ts_sec) > 300.0:
+        if ob_ts_sec > 0.0 and now_ts > 0.0 and ((now_ts - ob_ts_sec) > 300.0 or ob_ts_sec > now_ts + 60.0):
             return None
         return ob_mid_px if (is_exact_ob_sym or allow_sibling_live_mid) else None
     ob_fresh_newer = is_ob_live_and_newer(
@@ -2115,7 +2116,7 @@ def should_rescale_usd_sibling_walls(
         return False
     if ob_ts > 0.0 and now_ts > 0.0:
         max_rescale_age = 60.0 if resolve_symbol_identity(sym_u).is_tokenized_equity else 600.0
-        if (now_ts - ob_ts) > max_rescale_age:
+        if (now_ts - ob_ts) > max_rescale_age or ob_ts > now_ts + 60.0:
             return False
     if 0.0 < ob_ts and last_pt is not None and (ob_ts * 1000.0 - last_pt[0]) > 60_000.0:
         return False
@@ -2184,7 +2185,7 @@ class SpotOrderbookPriceReconcilerEvaluator(MicrostructureEvaluatorBase):
             max_rescale_age = 60.0 if resolve_symbol_identity(symbol).is_tokenized_equity else 300.0
             if (
                 can_rescale_fiat_usd_walls
-                and (ob_age_s is None or ob_age_s <= max_rescale_age)
+                and (ob_age_s is None or (-60.0 <= ob_age_s <= max_rescale_age))
                 and cur_px > 0.0
                 and abs(cur_px - ob_mid_m) / max(cur_px, ob_mid_m) > 0.01
                 and not _prices_diverged(cur_px, ob_mid_m)

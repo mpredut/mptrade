@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from botcore import (
     _parse_bool_flag,
+    first_epoch_sec,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -532,14 +533,15 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
             elif is_usdc_pair(sym) and b_canon not in rendered_perp_by_base:
                 rendered_perp_by_base[b_canon] = (sym, tr_sig[0], tr_sig[1])
 
-            raw_ob_t = minfo.get("_ob_raw_ts") if minfo.get("_ob_raw_ts") is not None else minfo.get("_ob_ts")
-            ob_t = normalize_epoch_sec(raw_ob_t, default=0.0) or 0.0
+            ob_t = first_epoch_sec(minfo.get("_ob_raw_ts"), minfo.get("_ob_ts"), default=0.0) or 0.0
             ob_age_s = (ref_now - ob_t) if ob_t > 0.0 else None
             ob_is_frozen = bool(
                 not caps.suppress_frozen_ob_guard
                 and ob_age_s is not None
-                and ob_age_s > 600.0
-                and (now_ts is not None or ob_age_s <= 7.0 * 86400.0)
+                and (
+                    ob_age_s < -60.0
+                    or (ob_age_s > 600.0 and (now_ts is not None or ob_age_s <= 7.0 * 86400.0))
+                )
             )
             has_perp_cvd = minfo.get("cvd_15m_usd") is not None
             no_flow = bool(
