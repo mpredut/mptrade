@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from botcore import (
     _parse_bool_flag,
     first_epoch_sec,
+    normalize_timestamp_ms,
     fmt_signed,
     is_us_rth_open,
     normalize_epoch_sec,
@@ -2434,7 +2435,7 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
     open_lots_ro = oinfo.get("open_lots") if isinstance(oinfo.get("open_lots"), list) else []
 
     def _entry_ts_ms(entry_obj: Dict[str, Any]) -> int:
-        raw_ms = safe_pos_float(entry_obj.get("ts_ms"), default=None)
+        raw_ms = normalize_timestamp_ms(entry_obj.get("ts_ms"), default=None) or None
         if raw_ms is None:
             ts_s = first_epoch_sec(entry_obj.get("ts_ms"), entry_obj.get("ts"), default=None, allow_iso=True)
             raw_ms = (ts_s * 1000.0) if ts_s is not None else None
