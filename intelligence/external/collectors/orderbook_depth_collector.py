@@ -707,37 +707,61 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
         tick_step = max(0.001 if mid < 5.0 else 0.01, round(mid * 0.0015, 3 if mid < 5.0 else 2))
         b_cap = min(mid * 0.9985, mid - tick_step)
         a_floor = max(mid * 1.0015, mid + tick_step)
-        vol_bars = [
+        all_vol_bars = [
             b for b in bars if len(b) >= 6 and (safe_pos_float(b[5], default=0.0) or 0.0) > 0.0
-        ][-78:]
-        window_bars = vol_bars if vol_bars else bars[-78:]
-        n_wb = len(window_bars)
-        for idx, (_t, _o, h_px, l_px, c_px, vol) in enumerate(window_bars):
-            if vol <= 0.0 or c_px <= 0.0 or h_px < lo_band or l_px > hi_band:
-                continue
-            clv = (c_px - l_px) / (h_px - l_px) if h_px > l_px else 0.5
-            overlap_frac = (
-                max(0.05, min(1.0, (min(h_px, hi_band) - max(l_px, lo_band)) / (h_px - l_px)))
-                if h_px > l_px
-                else 1.0
-            )
-            recency_decay = 0.92 ** (n_wb - 1 - idx)
-            # Scale in-band 5m bar dollar volume to passive lit-book depth (~0.25% per level, capped against MOO/MOC cross spikes)
-            bar_passive_usd = min(vol * c_px * 0.0025, 1_500_000.0) * overlap_frac * recency_decay * session_scale
-            if l_px < mid:
-                eff_l = l_px if l_px >= lo_band else 0.5 * (lo_band + min(c_px, b_cap))
-                b_px = round(min(max(eff_l, lo_band), b_cap) / tick_step) * tick_step
-                if b_px >= mid:
-                    b_px = max(0.01, round(mid - tick_step, 4))
-                b_val = bar_passive_usd * max(0.15, clv)
-                bid_buckets[round(b_px, 4)] = bid_buckets.get(round(b_px, 4), 0.0) + b_val
-            if h_px > mid:
-                eff_h = h_px if h_px <= hi_band else 0.5 * (hi_band + max(c_px, a_floor))
-                a_px = round(max(min(eff_h, hi_band), a_floor) / tick_step) * tick_step
-                if a_px <= mid:
-                    a_px = round(mid + tick_step, 4)
-                a_val = bar_passive_usd * max(0.15, 1.0 - clv)
-                ask_buckets[round(a_px, 4)] = ask_buckets.get(round(a_px, 4), 0.0) + a_val
+        ]
+        recent_vol_bars = all_vol_bars[-78:]
+        window_bars = recent_vol_bars if recent_vol_bars else bars[-78:]
+
+        def _accumulate_bars(
+            src_bars: list,
+            *,
+            hist_scale: float = 1.0,
+            add_bid: bool = True,
+            add_ask: bool = True,
+        ) -> None:
+            n_src = len(src_bars)
+            for idx, (_t, _o, h_px, l_px, c_px, vol) in enumerate(src_bars):
+                if vol <= 0.0 or c_px <= 0.0 or h_px < lo_band or l_px > hi_band:
+                    continue
+                clv = (c_px - l_px) / (h_px - l_px) if h_px > l_px else 0.5
+                overlap_frac = (
+                    max(0.05, min(1.0, (min(h_px, hi_band) - max(l_px, lo_band)) / (h_px - l_px)))
+                    if h_px > l_px
+                    else 1.0
+                )
+                recency_decay = (0.92 ** (n_src - 1 - idx)) * hist_scale
+                # Scale in-band 5m bar dollar volume to passive lit-book depth (~0.25% per level, capped against MOO/MOC cross spikes)
+                bar_passive_usd = min(vol * c_px * 0.0025, 1_500_000.0) * overlap_frac * recency_decay * session_scale
+                if add_bid and l_px < mid:
+                    eff_l = l_px if l_px >= lo_band else 0.5 * (lo_band + min(c_px, b_cap))
+                    b_px = round(min(max(eff_l, lo_band), b_cap) / tick_step) * tick_step
+                    if b_px >= mid:
+                        b_px = max(0.01, round(mid - tick_step, 4))
+                    b_val = bar_passive_usd * max(0.15, clv)
+                    bid_buckets[round(b_px, 4)] = bid_buckets.get(round(b_px, 4), 0.0) + b_val
+                if add_ask and h_px > mid:
+                    eff_h = h_px if h_px <= hi_band else 0.5 * (hi_band + max(c_px, a_floor))
+                    a_px = round(max(min(eff_h, hi_band), a_floor) / tick_step) * tick_step
+                    if a_px <= mid:
+                        a_px = round(mid + tick_step, 4)
+                    a_val = bar_passive_usd * max(0.15, 1.0 - clv)
+                    ask_buckets[round(a_px, 4)] = ask_buckets.get(round(a_px, 4), 0.0) + a_val
+
+        _accumulate_bars(window_bars)
+        prior_vol_bars = all_vol_bars[:-78]
+        if prior_vol_bars and (not bid_buckets or not ask_buckets):
+            need_bid, need_ask = not bid_buckets, not ask_buckets
+            prior_in_band = [
+                b
+                for b in prior_vol_bars
+                if b[4] > 0.0
+                and b[2] >= lo_band
+                and b[3] <= hi_band
+                and ((need_bid and b[3] < mid) or (need_ask and b[2] > mid))
+            ][-78:]
+            if prior_in_band:
+                _accumulate_bars(prior_in_band, hist_scale=0.5, add_bid=need_bid, add_ask=need_ask)
 
         bar_bid_depth = sum(bid_buckets.values())
         bar_ask_depth = sum(ask_buckets.values())

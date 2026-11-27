@@ -675,6 +675,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             )
         )
         if not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")) or is_series_stale:
+            stale_15m_pruned = bool(is_series_stale and "chg_15m_pct" not in m24)
             for k_stale_s in (
                 "slope_90s",
                 "growth_90s",
@@ -685,8 +686,22 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
                 "gradient_recent_fast",
                 *(SHORT_KINEMATIC_METRIC_KEYS if include_kinematics else ()),
                 *(
-                    ("kalman_vel", "kalman_vel_std", "kalman_vel_z", "kalman_trend")
-                    if (is_series_stale and "chg_15m_pct" not in m24)
+                    (
+                        "slope_15m",
+                        "growth_15m",
+                        "trend_15m",
+                        "gradient_recent",
+                        "kalman_vel",
+                        "kalman_vel_std",
+                        "kalman_vel_z",
+                        "kalman_trend",
+                    )
+                    if stale_15m_pruned
+                    else ()
+                ),
+                *(
+                    ("slope_2_5h", "growth_2_5h", "trend_2_5h")
+                    if (stale_15m_pruned and "chg_3h_pct" not in m24)
                     else ()
                 ),
             ):

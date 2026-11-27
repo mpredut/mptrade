@@ -19265,7 +19265,7 @@ def test_cycle30_flat_equity_no_stale_kalman_vel_time_travel():
     assert entry_with_15m["kalman_vel"] == pytest.approx(-0.05)
 
 
-def test_cycle31_pretrade_stale_flat_equity_15m_and_shopping_deals_spam_filter(tmp_path):
+def test_cycle31_pretrade_stale_flat_equity_15m_and_shopping_deals_spam_filter(tmp_path, monkeypatch):
     """Cycle 31 live PROD audit fixes:
     1. collect_pretrade_telemetry prunes phantom chg_15m_pct on unchanged >20m stale equity tails (matching Section 3A).
     2. is_excluded_reference_news_item filters consumer Black Friday / Cyber Monday / Prime Day deals spam
@@ -19273,6 +19273,11 @@ def test_cycle31_pretrade_stale_flat_equity_15m_and_shopping_deals_spam_filter(t
     """
     from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
     from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+    from intelligence.sentiment.evaluators import price_series_evaluator as pse
+
+    # Force off-RTH session so the test is deterministic even when run during US RTH hours
+    monkeypatch.setattr(ptc, "is_symbol_market_open", lambda *_a, **_k: False)
+    monkeypatch.setattr(pse, "is_symbol_market_open", lambda *_a, **_k: False)
 
     # 1. Pretrade telemetry on RGNT_US_EQ flat at $0.937 for 42m omits phantom 15m=+1.30% while keeping 24h
     cdir = tmp_path / "cachedb_c31"
@@ -19304,6 +19309,148 @@ def test_cycle31_pretrade_stale_flat_equity_15m_and_shopping_deals_spam_filter(t
     assert is_excluded_reference_news_item("Best Cyber Monday laptop deals to shop right now") is True
     assert is_excluded_reference_news_item("Prime Day deals on smartwatches") is True
     assert is_excluded_reference_news_item("US Black Friday retail sales rise 4.1% YoY - Reuters") is False
+
+
+def test_cycle33_equity_ob_5d_gap_fallback_stale_pretrade_slopes_and_advice_news(tmp_path, monkeypatch):
+    """Cycle 33 live PROD audit fixes:
+    1. OrderbookDepthCollector._fetch_equity_orderbook falls back to prior 5-day in-band RTH volume bars
+       for missing bid/ask sides when an equity gaps >1.5% above/below the last 1-day RTH session.
+    2. _DiskBackedSymbolCollector._fetch_equity_market_context uses a 5.0s default timeout and preserves
+       previous daily_vol_sh across transient Nasdaq L1 failures.
+    3. EquityRthSessionPolicy.prune_stale_short_metrics & collect_pretrade_telemetry prune stale 15m/2.5h
+       slopes on flat stale equity tails without fabricating all-zero Dynamic Multi-Window Slopes.
+    4. is_excluded_reference_news_item filters first-person 401(k)/hypocrite advice columns while keeping
+       genuine corporate/market news.
+    """
+    import inspect
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from intelligence.macro.lexicon_ssot import is_excluded_reference_news_item
+    from intelligence.sentiment.collectors import pretrade_telemetry_collector as ptc
+    from intelligence.sentiment.evaluators import price_series_evaluator as pse
+
+    # Force off-RTH session so the test is deterministic regardless of wall-clock US RTH hours
+    monkeypatch.setattr(ptc, "is_symbol_market_open", lambda *_a, **_k: False)
+    monkeypatch.setattr(pse, "is_symbol_market_open", lambda *_a, **_k: False)
+    now_s = time.time()
+
+    # 1a. Full gap-up above prior 1-day RTH (78 bars at $148) with 5-day prior session bars inside [$152.1, $156.7]
+    col_ob = OrderbookDepthCollector(cache_dir=str(tmp_path / "ob_c33"), start_sync=False)
+    prior_5d_in_band = [
+        (now_s - 200_000.0 + i * 300.0, 154.0, 156.1, 152.8, 155.4, 300_000.0) for i in range(40)
+    ]
+    last_1d_below = [
+        (now_s - 70_000.0 + i * 300.0, 148.0, 149.5, 147.0, 148.5, 250_000.0) for i in range(78)
+    ]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {"best_bid": 0.0, "best_ask": 0.0, "bid_size_sh": 0.0, "ask_size_sh": 0.0, "daily_vol_sh": 5_000_000.0, "market_state": "PRE"},
+        prior_5d_in_band + last_1d_below,
+        154.60,
+    )
+    snap_nvda = col_ob._fetch_equity_orderbook("NVDA_US_EQ", now_s)
+    assert snap_nvda is not None
+    # Populated from real 5-day in-band volume bars (well above the flat $62.5k/$62.5k fallback and asymmetric)
+    assert snap_nvda.bid_depth_usd > 65_000.0 and snap_nvda.ask_depth_usd > 65_000.0
+    assert abs(snap_nvda.imbalance_ratio - 0.5) > 0.05
+    assert snap_nvda.largest_bid_wall_price < 154.4 and snap_nvda.largest_ask_wall_price > 154.8
+
+    # 1b. Asymmetric gap (recent 78 bars cover bids below mid only; prior 5-day bars fill missing ask side)
+    prior_5d_asks = [
+        (now_s - 200_000.0 + i * 300.0, 86.2, 87.0, 86.1, 86.5, 220_000.0) for i in range(30)
+    ]
+    last_1d_bids = [
+        (now_s - 70_000.0 + i * 300.0, 85.0, 85.9, 84.8, 85.6, 200_000.0) for i in range(78)
+    ]
+    col_ob._resolve_equity_context_bars_and_price = lambda sym, ts, include_options=False: (
+        {"best_bid": 85.95, "best_ask": 86.05, "bid_size_sh": 100.0, "ask_size_sh": 100.0, "daily_vol_sh": 3_000_000.0, "market_state": "PRE"},
+        prior_5d_asks + last_1d_bids,
+        86.00,
+    )
+    snap_ant = col_ob._fetch_equity_orderbook("ANT_US_EQ", now_s)
+    assert snap_ant is not None
+    assert snap_ant.ask_depth_usd > 65_000.0
+    assert snap_ant.largest_ask_wall_price > 86.2
+
+    # 2. _fetch_equity_market_context default timeout >= 5.0 and preserves daily_vol_sh on Nasdaq hiccup
+    sig_ctx = inspect.signature(col_ob._fetch_equity_market_context)
+    assert sig_ctx.parameters["timeout"].default >= 5.0
+    col_ob._EQUITY_CTX_MEMO.clear()
+    call_n = {"nasdaq": 0}
+
+    def _fake_fetch_json(url, label, sym_t, *, timeout=5.0, user_agent=""):
+        if label == "nasdaq_quote":
+            call_n["nasdaq"] += 1
+            if call_n["nasdaq"] == 1:
+                return {"data": {"primaryData": {"lastSalePrice": "$154.50", "bidPrice": "$154.45", "askPrice": "$154.55", "bidSize": "100", "askSize": "100", "volume": "6,100,000"}}}
+            raise TimeoutError("nasdaq slow")
+        return {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"regularMarketPrice": 149.30, "marketState": "PRE", "fulldayPrice": 154.50},
+                        "timestamp": [int(now_s - 600), int(now_s - 300)],
+                        "indicators": {"quote": [{"open": [154.0, 154.2], "high": [154.6, 154.7], "low": [153.9, 154.1], "close": [154.3, 154.5], "volume": [1000, 1000]}]},
+                    }
+                ]
+            }
+        }
+
+    col_ob._fetch_json_dict = _fake_fetch_json
+    ctx1 = col_ob._fetch_equity_market_context("NVDA_US_EQ", now_s, include_options=False)
+    assert ctx1 is not None and ctx1["daily_vol_sh"] == pytest.approx(6_100_000.0)
+    # After memo TTL expires, transient Nasdaq timeout still preserves previous daily_vol_sh
+    ctx2 = col_ob._fetch_equity_market_context("NVDA_US_EQ", now_s + 200.0, include_options=False)
+    assert ctx2 is not None and ctx2["daily_vol_sh"] == pytest.approx(6_100_000.0)
+
+    # 3. Stale flat equity slopes (15m & 2.5h) pruned without fabricating +0.00000
+    cdir = tmp_path / "cachedb_c33"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    tail_ms = int((now_s - 138.0 * 60.0) * 1000)
+    rgnt_bars = (
+        [[tail_ms - 24 * 3600_000, 0.925]]
+        + [[tail_ms - 18 * 3600_000 - (10 - i) * 900_000, round(0.915 - i * 0.001, 4)] for i in range(11)]
+        + [[tail_ms, 0.937]]
+        + [[tail_ms + k * 60_000, 0.937] for k in range(1, 138)]
+    )
+    (cdir / "prices" / "cache_24_price_RGNT_US_EQ.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": rgnt_bars}}),
+        encoding="utf-8",
+    )
+    (cdir / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"RGNT_US_EQ": [[int(now_s * 1000), 0.937]]}}),
+        encoding="utf-8",
+    )
+    (cdir / "cache_short_trend.json").write_text(
+        json.dumps(
+            {
+                "items": {
+                    "RGNT_US_EQ": {
+                        "ts": now_s - 5.0,
+                        "current_price": 0.937,
+                        "dynamic": {
+                            "222": {"n_samples": 10, "slope_full": 0.0},
+                            "900": {"n_samples": 15, "slope_full": 0.0},
+                            "9000": {"n_samples": 146, "slope_full": 3.15e-05},
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pt_rgnt = ptc.collect_pretrade_telemetry("RGNT_US_EQ", cachedb_dir=str(cdir), allow_network=False, now_ts=now_s)
+    evol_rgnt = pt_rgnt.get("24h Multi-Horizon Price Evolution", "")
+    assert "24h=+1.30%" in evol_rgnt
+    assert "15m=" not in evol_rgnt and "30m=" not in evol_rgnt
+    assert "Dynamic Multi-Window Slopes" not in pt_rgnt
+
+    # 4. Personal-finance 401(k)/advice-column headlines excluded; genuine corporate news kept
+    assert is_excluded_reference_news_item(
+        "I hate that Jensen Huang is back at Nvidia, but I love what it\u2019s done for my 401(k). Am I a hypocrite?"
+    ) is True
+    assert is_excluded_reference_news_item(
+        "President Trump Says 'Huang Is Happy to Return as Nvidia CEO'"
+    ) is False
+
 
 
 

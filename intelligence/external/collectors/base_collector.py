@@ -986,7 +986,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
         symbol: str,
         now: float,
         *,
-        timeout: float = 2.5,
+        timeout: float = 5.0,
         include_options: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Fetch and memoize zero-cost equity quote, intraday 5m OHLCV, and Cboe options OI for ``symbol``."""
@@ -1078,6 +1078,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
 
             # 2. Yahoo 5d/5m Intraday OHLCV + Extended-Hours Quote (reused within bars_memo_ttl while L1 quote refreshes faster)
             prev_ctx = cached_ctx[1] if (cached_ctx is not None and isinstance(cached_ctx[1], dict)) else None
+            if not nasdaq_ok and daily_vol_sh <= 0.0 and prev_ctx is not None:
+                daily_vol_sh = safe_pos_float(prev_ctx.get("daily_vol_sh"), default=0.0) or 0.0
             prev_bars_ts = safe_pos_float(prev_ctx.get("_bars_ts") if prev_ctx else None, default=0.0) or 0.0
             reuse_bars = bool(
                 prev_ctx is not None

@@ -1255,12 +1255,13 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             safe_float(m24.get(k), default=None) is not None
             for k in ("chg_15m_pct", "chg_30m_pct", "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct", "chg_24h_pct")
         )
+        synth_req = not has_any_m24_h and not ctx.is_eq_sym
         h_parts = [
             f"{lbl}={fmt_signed(m24.get(k))}%"
             for lbl, k, req in (
                 ("1m", "chg_1m_pct", False), ("3m", "chg_3m_pct", False), ("5m", "chg_5m_pct", False),
-                ("15m", "chg_15m_pct", not has_any_m24_h), ("30m", "chg_30m_pct", not has_any_m24_h),
-                ("1h", "chg_1h_pct", not has_any_m24_h), ("3h", "chg_3h_pct", not has_any_m24_h),
+                ("15m", "chg_15m_pct", synth_req), ("30m", "chg_30m_pct", synth_req),
+                ("1h", "chg_1h_pct", synth_req), ("3h", "chg_3h_pct", synth_req),
                 ("6h", "chg_6h_pct", False), ("12h", "chg_12h_pct", False), ("24h", "chg_24h_pct", False),
             )
             if req or safe_float(m24.get(k), default=None) is not None
@@ -1278,7 +1279,7 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
             rng_str += f" ({', '.join(geom_parts)})"
         if isinstance(m24.get("recent_tape_15m"), (list, tuple)) and m24["recent_tape_15m"]:
             rng_str += f", tape_15m=[{', '.join(str(x) for x in m24['recent_tape_15m'])}]"
-        telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}"
+        telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}" if h_parts else rng_str
 
         if m24.get("poc_px") is not None:
             sec_poc_val = m24.get("sec_poc_px") if m24.get("sec_poc_px") is not None else m24.get("hvn2_px")
@@ -1768,7 +1769,8 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
         )
         if ctx.t_entry:
             has_emitted_slopes = bool(
-                has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))
+                any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))
+                or (has_st_tinfo and not is_eq_sym)
             )
             ctx.record_pillar_source(
                 "short_slopes",
@@ -2085,7 +2087,8 @@ class PretradeDynamicSlopesFormatStage(PretradePillarCollectorBase):
 
     def evaluate(self, ctx: PretradeEvaluationContext) -> None:
         t_entry = ctx.t_entry
-        if not (ctx.has_st_tinfo or any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))):
+        has_any_slope = any(t_entry.get(k) is not None for k in ("slope_90s", "slope_3_7m", "slope_15m", "slope_2_5h"))
+        if not (has_any_slope or (ctx.has_st_tinfo and not ctx.is_eq_sym)):
             return
         ctx.telemetry["Dynamic Multi-Window Slopes"] = format_multi_window_slopes_core(t_entry, fallback_full=True)
         if kin_seg := format_kinematic_parts(t_entry, compact=False):
