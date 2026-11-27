@@ -6159,6 +6159,119 @@ def test_pass32_venue_prune_zero_fill_markers_future_ts_and_plan_bar_bounds():
     assert dg["last_eval_ts"] == 0.0
 
 
+def test_pass33_gateway_partial_fill_cancel_guard_and_xstock_cost_basis_future_filter(tmp_path):
+    """Pass #33 pure invariants + dependent cross-checks:
+    1. _mark_canceled_ai_intents does NOT overwrite a partially-filled intent with top-level filled_qty > 0 as zero-fill CANCELED.
+    2. resolve_kraken_trade_cache_position & AutonomousIntentGateway._resolve_tokenized_equity_cost_basis ignore far-future SELL rows
+       when now_ts is supplied, and cycle state cost_usd=0 does NOT shadow valid positive cost.
+    3. Dependent cross-check: KrakenXstocksCollector preserves live BUY alloc_price despite a corrupt far-future SELL row in cache_trade_kraken.json.
+    """
+    from pathlib import Path
+    from cachepaths import cycle_state_filename, resolve_cachedb_filepath
+    from intelligence.sentiment.collectors.portfolio_collector import KrakenXstocksCollector
+    from providers.portfolio_state_store import resolve_kraken_trade_cache_position
+    from state_stores.venue_balances_state import VenueBalancesStateStore
+
+    now_s = 1793660000.0
+    ws = tmp_path / "ws"
+    cdb = ws / "cachedb"
+    cdb.mkdir(parents=True)
+    kdir = ws / "kraken"
+    kdir.mkdir(parents=True)
+
+    gw = AutonomousIntentGateway(workspace_dir=str(ws), cache_dir="cachedb")
+
+    # 1. Pure invariant: top-level filled_qty > 0 blocks terminal zero-fill CANCELED overwrite
+    gw.save_all_intents(
+        [
+            {
+                "intent_id": "i_partial_top",
+                "status": "EXECUTED",
+                "filled_qty": 0.25,
+                "execution_payload": {"orderId": "OID_PARTIAL", "status": "NEW"},
+            },
+            {
+                "intent_id": "i_zero_fill",
+                "status": "EXECUTED",
+                "filled_qty": 0.0,
+                "execution_payload": {"orderId": "OID_ZERO", "status": "NEW"},
+            },
+        ]
+    )
+    updated = gw._mark_canceled_ai_intents(["OID_PARTIAL", "OID_ZERO"], now_ts=now_s)
+    assert updated == 1
+    after = {it["intent_id"]: it for it in load_durable_intents_state(gw.intents_file, read_only=True)}
+    assert after["i_partial_top"]["execution_payload"]["status"] == "NEW"
+    assert after["i_zero_fill"]["execution_payload"]["status"] == "CANCELED"
+
+    # 2. Pure invariant: far-future SELL row in cache_trade_kraken.json must not wipe SPCXxUSD cost basis
+    krk_trade_path = Path(resolve_cachedb_filepath(str(cdb / "cache_trade_kraken.json")))
+    krk_trade_path.parent.mkdir(parents=True, exist_ok=True)
+    krk_trade_path.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "SPCXxUSD": [
+                        {
+                            "id": "T_BUY_1",
+                            "timestamp": int((now_s - 3600.0) * 1000),
+                            "side": "buy",
+                            "price": 130.0,
+                            "qty": 10.0,
+                        },
+                        {
+                            "id": "T_FUTURE_SELL_CORRUPT",
+                            "timestamp": int((now_s + 30 * 86400.0) * 1000),
+                            "side": "sell",
+                            "price": 150.0,
+                            "qty": 10.0,
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    pos = resolve_kraken_trade_cache_position("SPCXxUSD", str(cdb), now_ts=now_s)
+    assert isinstance(pos, dict)
+    assert pos["net_fills_qty"] == pytest.approx(10.0)
+    assert pos["avg_cost_px"] == pytest.approx(130.0)
+    assert gw._resolve_tokenized_equity_cost_basis("kraken", "SPCXxUSD", now_ts=now_s) == pytest.approx(130.0)
+
+    # Pure invariant: cycle state cost_usd=0 must NOT shadow positive cost
+    (kdir / cycle_state_filename("NVDAxUSD", preserve_case=True)).write_text(
+        json.dumps({"qty": 2.0, "cost_usd": 0, "cost": 360.0}),
+        encoding="utf-8",
+    )
+    assert gw._resolve_tokenized_equity_cost_basis("kraken", "NVDAxUSD", now_ts=now_s) == pytest.approx(180.0)
+
+    # 3. Dependent cross-check: KrakenXstocksCollector preserves BUY cost basis when future SELL is present
+    bal_path = Path(VenueBalancesStateStore.resolve_path(str(cdb)))
+    bal_path.parent.mkdir(parents=True, exist_ok=True)
+    bal_path.write_text(
+        json.dumps(
+            {
+                "pos:kraken:SPCXxUSD": {
+                    "symbol": "SPCXxUSD",
+                    "base": "SPCXx.T",
+                    "free_base": 10.0,
+                    "locked_base_qty": 0.0,
+                    "ts": now_s - 5.0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    xs = KrakenXstocksCollector(start_sync=False).collect(
+        str(cdb),
+        kraken_dir=str(kdir),
+        prices_and_trends={"SPCXxUSD": {"price": 135.0}, "SPCX_US_EQ": {"price": 136.0}},
+        now_ts=now_s,
+    )
+    assert isinstance(xs, dict)
+    assert xs["alloc_price"] == pytest.approx(130.0)
+
+
 
 
 

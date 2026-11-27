@@ -484,3 +484,97 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
         self.assertEqual(self.manager.restart_backoff.get("clock_jump_bot"), 0)
         self.assertEqual(self.manager.restart_delays.get("clock_jump_bot"), 5.0)
 
+    async def test_start_bot_cleanup_race_preserves_replacement_and_fee_maintenance_logs_nonzero(self):
+        """Pass #33 pure invariant + cross-check: start_bot guards cleanup with starting/ownership checks and _fee_maintenance_loop warns on non-zero rc."""
+        import asyncio
+
+        drain_started = asyncio.Event()
+        drain_release = asyncio.Event()
+
+        class _SlowStdout:
+            def __init__(self):
+                self._sent = False
+
+            async def readline(self):
+                if not self._sent:
+                    self._sent = True
+                    drain_started.set()
+                    await drain_release.wait()
+                    return b"final line\n"
+                return b""
+
+        bot_entry = {
+            "name": "race_bot",
+            "dir": self.tmp,
+            "cmd": "python -c 'pass'",
+            "log_file": os.path.join(self.tmp, "race_bot.log"),
+            "hb_file": "",
+            "hb_stale_s": 0.0,
+        }
+        proc1 = MagicMock()
+        proc1.pid = 5001
+        proc1.stdout = _SlowStdout()
+        proc1.returncode = 0
+        proc1.wait = AsyncMock(return_value=0)
+
+        with patch("asyncio.create_subprocess_shell", new_callable=AsyncMock, return_value=proc1):
+            t1 = asyncio.create_task(self.manager.start_bot(bot_entry))
+            await drain_started.wait()
+            await asyncio.sleep(0.02)
+            # Pure invariant: while proc1's stdout is still draining in finally, race_bot stays guarded in starting
+            self.assertIn("race_bot", self.manager.starting)
+            log_fh1 = self.manager.log_files.get("race_bot")
+            self.assertIsNotNone(log_fh1)
+
+            # Simulate a replacement process already owning race_bot state before proc1 finishes draining
+            proc2 = MagicMock()
+            proc2.pid = 5002
+            proc2.returncode = None
+            log_fh2 = MagicMock()
+            self.manager.processes["race_bot"] = proc2
+            self.manager.log_files["race_bot"] = log_fh2
+            self.manager.process_start_times["race_bot"] = 2_000_000_123.0
+            self.manager.restart_backoff["race_bot"] = 2_000_000_999.0
+            self.manager.zombie_killing.add("race_bot")
+
+            drain_release.set()
+            await t1
+
+        # Old start_bot must close its own handle without clobbering proc2's state
+        self.assertTrue(log_fh1.closed)
+        self.assertIs(self.manager.log_files.get("race_bot"), log_fh2)
+        log_fh2.close.assert_not_called()
+        self.assertEqual(self.manager.process_start_times.get("race_bot"), 2_000_000_123.0)
+        self.assertEqual(self.manager.restart_backoff.get("race_bot"), 2_000_000_999.0)
+        self.assertIn("race_bot", self.manager.zombie_killing)
+        self.assertNotIn("race_bot", self.manager.starting)
+
+        # Dependent cross-check: _fee_maintenance_loop warns on non-zero returncode and still appends output
+        fee_proc = MagicMock()
+        fee_proc.returncode = 2
+        fee_proc.communicate = AsyncMock(return_value=(b"fee sync error\n", None))
+        sleep_calls = []
+
+        async def _fake_sleep(secs):
+            sleep_calls.append(secs)
+            if secs >= 900.0:
+                self.manager.running = False
+
+        self.manager.running = True
+        with (
+            patch("orchestratorTrade.orchestrator.ROOT_DIR", self.tmp),
+            patch("orchestratorTrade.orchestrator.os.path.isfile", return_value=True),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=fee_proc),
+            patch("asyncio.sleep", side_effect=_fake_sleep),
+            patch("orchestratorTrade.orchestrator.logging.warning") as mock_warn,
+        ):
+            await self.manager._fee_maintenance_loop()
+
+        self.assertTrue(
+            any("maintain_venue_fees.py exited with code 2" in str(c.args[0]) for c in mock_warn.call_args_list),
+            f"Expected non-zero exit warning, got {mock_warn.call_args_list}",
+        )
+        fee_log = os.path.join(self.tmp, "logs", "venue_fee_maintenance.log")
+        with open(fee_log, "r", encoding="utf-8") as lf:
+            self.assertIn("fee sync error", lf.read())
+

@@ -10376,6 +10376,105 @@ def test_pass29_ntfy_policy_future_blocked_until_self_heal_invariant_and_crossch
     assert payload_gate is not None
 
 
+def test_pass33_state_store_lookup_symmetry_and_balance_ts_future_clamp(tmp_path):
+    """Pass #33 pure invariants + cross-checks:
+    1. OrderRetryQueueStore.read_tail_records matches read_records across legacy candidate_paths even when statedb/orders exists.
+    2. sanitize_balance_state_payload strips far-future base_bal_ts/quote_bal_ts and bounds inherited timestamps to prev_ts.
+    3. VenueBalancesStateStore.upsert_locked durably heals corrupt future balance timestamps on disk.
+    """
+    from state_stores.order_retry_queue import OrderRetryQueueStore
+    from state_stores.venue_balances_state import VenueBalancesStateStore, sanitize_balance_state_payload
+
+    # 1. Pure invariant + cross-check: read_tail_records symmetry with read_records across legacy candidate_paths
+    cdb = tmp_path / "cachedb"
+    legacy_orders = cdb / "orders"
+    legacy_orders.mkdir(parents=True)
+    statedb_orders = tmp_path / "statedb" / "orders"
+    statedb_orders.mkdir(parents=True)
+    legacy_q = legacy_orders / "order_retry_queue.jsonl"
+    recs = [{"id": f"r{i}", "symbol": "BTCUSDC", "attempt": i} for i in (1, 2, 3)]
+    legacy_q.write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+
+    all_recs = OrderRetryQueueStore.read_records(str(cdb))
+    tail_recs = OrderRetryQueueStore.read_tail_records(str(cdb), limit=2)
+    assert all_recs == recs
+    assert tail_recs == recs[-2:]
+
+    # 2. Pure invariant: sanitize_balance_state_payload strips incoming & inherited far-future base_bal_ts/quote_bal_ts
+    t0 = 1793660000.0
+    t1 = t0 + 120.0
+    future_ts = t1 + 30 * 86400.0
+    san_incoming = sanitize_balance_state_payload(
+        {
+            "pos:binance:BTCUSDC": {
+                "ts": t1,
+                "free_base": 1.0,
+                "free_quote": 500.0,
+                "base_bal_ts": future_ts,
+                "quote_bal_ts": future_ts,
+            }
+        }
+    )
+    assert "base_bal_ts" not in san_incoming["pos:binance:BTCUSDC"]
+    assert "quote_bal_ts" not in san_incoming["pos:binance:BTCUSDC"]
+
+    san_inherited = sanitize_balance_state_payload(
+        {
+            "pos:binance:BTCUSDC": {
+                "ts": t1,
+                "free_base": 1.0,
+                "free_quote": 500.0,
+                "price": 71000.0,
+            }
+        },
+        prev_state={
+            "pos:binance:BTCUSDC": {
+                "ts": t0,
+                "free_base": 1.0,
+                "free_quote": 500.0,
+                "base_bal_ts": future_ts,
+                "quote_bal_ts": future_ts,
+            }
+        },
+    )
+    assert san_inherited["pos:binance:BTCUSDC"]["base_bal_ts"] == pytest.approx(t0)
+    assert san_inherited["pos:binance:BTCUSDC"]["quote_bal_ts"] == pytest.approx(t0)
+
+    # 3. Dependent cross-check: VenueBalancesStateStore.upsert_locked heals persisted far-future balance timestamps on disk
+    from pathlib import Path
+    bal_path = Path(VenueBalancesStateStore.resolve_path(str(cdb)))
+    bal_path.parent.mkdir(parents=True, exist_ok=True)
+    bal_path.write_text(
+        json.dumps(
+            {
+                "pos:binance:BTCUSDC": {
+                    "ts": t0,
+                    "free_base": 1.5,
+                    "free_quote": 800.0,
+                    "base_bal_ts": future_ts,
+                    "quote_bal_ts": future_ts,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrote = VenueBalancesStateStore.upsert_locked(
+        str(bal_path),
+        {
+            "pos:binance:BTCUSDC": {
+                "ts": t1,
+                "free_base": 1.5,
+                "free_quote": 800.0,
+                "price": 72000.0,
+            }
+        },
+    )
+    assert wrote is True
+    reloaded = VenueBalancesStateStore.load_dict(str(cdb))
+    assert reloaded["pos:binance:BTCUSDC"]["base_bal_ts"] == pytest.approx(t0)
+    assert reloaded["pos:binance:BTCUSDC"]["quote_bal_ts"] == pytest.approx(t0)
+
+
 
 
 

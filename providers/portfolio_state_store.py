@@ -201,6 +201,7 @@ def resolve_kraken_trade_cache_position(
     *,
     held_qty: Optional[float] = None,
     read_json_fn: Any = None,
+    now_ts: Optional[float] = None,
 ) -> Optional[dict[str, Any]]:
     """Resolve live Kraken position/cost-basis summary from ``cache_order_filled_kraken.json`` (with Stage-1 fallback to ``cache_trade_kraken.json``)."""
     sym_s = clean_scalar_str(symbol) or ""
@@ -237,5 +238,6 @@ def resolve_kraken_trade_cache_position(
             base_asset=base_asset or "",
             quote_asset=quote_asset or "",
             held_qty=held_qty,
+            now_ts=now_ts,
         )
     return None

@@ -72,7 +72,7 @@ class OrderRetryQueueStore(StateStoreBase):
         """Read-only tail accessor returning up to the last ``limit`` dict records from ``order_retry_queue.jsonl``."""
         if not cachedb_dir:
             return []
-        retry_q_path = cls.resolve_path(cachedb_dir)
-        if not os.path.exists(retry_q_path):
-            return []
-        return list(read_tail_jsonl_dicts(retry_q_path, limit=limit))
+        for cand in cls.candidate_paths(cachedb_dir):
+            if os.path.exists(cand):
+                return list(read_tail_jsonl_dicts(cand, limit=limit))
+        return []

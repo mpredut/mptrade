@@ -214,40 +214,50 @@ class BotManager:
             await self.stop_bot(name)
             raise
         finally:
-            self.process_start_times.pop(name, None)
-            self.zombie_killing.discard(name)
-            duration = max(0.0, time.monotonic() - start_mono)
-            logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
-
-            # Exponential backoff on rapid crash loop
-            if duration < 5:
-                prev_delay = self.restart_delays.get(name, 2.5)
-                new_delay = min(prev_delay * 2, 60.0)
-                self.restart_delays[name] = new_delay
-                self.restart_backoff[name] = time.time() + new_delay
-                logging.warning(f"Bot {name} rapid crash detected; backoff for {new_delay:.1f}s")
-            else:
-                self.restart_delays[name] = 5.0
-                self.restart_backoff[name] = 0
-
-            if task:
-                try:
-                    await asyncio.wait_for(task, timeout=2.0)
-                except (asyncio.TimeoutError, TimeoutError):
-                    task.cancel()
+            cleanup_guard_added = False
+            if self.processes.get(name) is process and name not in self.starting:
+                self.starting.add(name)
+                cleanup_guard_added = True
+            try:
+                if task:
                     try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
+                        await asyncio.wait_for(task, timeout=2.0)
+                    except (asyncio.TimeoutError, TimeoutError):
+                        task.cancel()
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                    except Exception:
                         pass
-                except Exception:
-                    pass
-            if log_fh:
-                try:
-                    log_fh.close()
-                except Exception:
-                    pass
-                self.log_files.pop(name, None)
-            _close_process_transport(process)
+
+                duration = max(0.0, time.monotonic() - start_mono)
+                logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
+
+                if self.processes.get(name) is process:
+                    self.process_start_times.pop(name, None)
+                    self.zombie_killing.discard(name)
+                    # Exponential backoff on rapid crash loop
+                    if duration < 5:
+                        prev_delay = self.restart_delays.get(name, 2.5)
+                        new_delay = min(prev_delay * 2, 60.0)
+                        self.restart_delays[name] = new_delay
+                        self.restart_backoff[name] = time.time() + new_delay
+                        logging.warning(f"Bot {name} rapid crash detected; backoff for {new_delay:.1f}s")
+                    else:
+                        self.restart_delays[name] = 5.0
+                        self.restart_backoff[name] = 0
+            finally:
+                if log_fh:
+                    try:
+                        log_fh.close()
+                    except Exception:
+                        pass
+                    if self.log_files.get(name) is log_fh:
+                        self.log_files.pop(name, None)
+                _close_process_transport(process)
+                if cleanup_guard_added:
+                    self.starting.discard(name)
 
     async def stop_bot(self, name: str, sig=signal.SIGTERM):
         if name in self.processes:
@@ -491,6 +501,8 @@ class BotManager:
                         decoded = out_bytes.decode("utf-8", errors="replace")
                         with open_append_text_file(log_path) as lf:
                             lf.write(decoded)
+                    if proc.returncode not in (0, None):
+                        logging.warning(f"maintain_venue_fees.py exited with code {proc.returncode}")
                 except asyncio.TimeoutError:
                     logging.warning("maintain_venue_fees.py timed out after 90s; terminating child.")
                     if proc is not None and proc.returncode is None:

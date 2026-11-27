@@ -1594,6 +1594,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
             ("", 0.0),
         )
         active_cycle_cost_px: Optional[float] = None
+        eff_now_ts = resolve_now_ts(kwargs.get("now_ts"))
         if primary_hold_qty > 1e-4:
             if eff_cachedb:
                 cache_pos = resolve_kraken_trade_cache_position(
@@ -1601,6 +1602,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                     eff_cachedb,
                     held_qty=primary_hold_qty,
                     read_json_fn=_rj,
+                    now_ts=eff_now_ts,
                 )
                 if isinstance(cache_pos, dict):
                     if listed_pair is None and (cache_pos.get("fills_count") or 0) > 0:
@@ -1617,7 +1619,7 @@ class KrakenXstocksCollector(PortfolioCacheCollectorBase):
                 st_pair_path = os.path.join(eff_k_dir, cycle_state_filename(primary_xpair))
                 if os.path.exists(st_pair_path) and isinstance(st_pair_d := _rj(st_pair_path), dict):
                     st_q = safe_nonneg_float(st_pair_d.get("qty"), default=0.0) or 0.0
-                    st_c = safe_nonneg_float(st_pair_d.get("cost"), default=0.0) or 0.0
+                    st_c = first_pos_float(st_pair_d.get("cost_usd"), st_pair_d.get("cost"), default=0.0) or 0.0
                     if st_q > 1e-4:
                         active_cycle_cost_px = first_pos_float(
                             (st_c / st_q) if st_c > 0.0 else None,

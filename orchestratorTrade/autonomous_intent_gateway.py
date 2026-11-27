@@ -355,7 +355,11 @@ class AutonomousIntentGateway:
                 if not isinstance(item, dict) or (clean_upper_scalar(item.get("status")) or "") != "EXECUTED":
                     continue
                 ep = item.get("execution_payload")
-                if not isinstance(ep, dict) or extract_executed_qty(ep, default=0.0) > 0.0:
+                if (
+                    not isinstance(ep, dict)
+                    or extract_executed_qty(ep, default=0.0) > 0.0
+                    or (safe_nonneg_float(item.get("filled_qty"), default=0.0) or 0.0) > 0.0
+                ):
                     continue
                 if (clean_upper_scalar(ep.get("status")) or "") in ("FILLED", "CLOSED", "CANCELED", "CANCELLED"):
                     continue
@@ -513,7 +517,9 @@ class AutonomousIntentGateway:
             min_notional_usd=self.min_notional_usd,
         )
 
-    def _resolve_tokenized_equity_cost_basis(self, venue: str, symbol: str) -> Optional[float]:
+    def _resolve_tokenized_equity_cost_basis(
+        self, venue: str, symbol: str, *, now_ts: Optional[float] = None
+    ) -> Optional[float]:
         """Resolve active unit cost basis for a tokenized equity from trade-cache fills, falling back to venue cycle state or config."""
         ven = normalize_venue_name(venue) or ""
         rel_dir = VENUE_RUNTIME_DIR_MAP.get(ven, ven)
@@ -527,7 +533,7 @@ class AutonomousIntentGateway:
             for cand_sym in cand_syms:
                 if not cand_sym:
                     continue
-                cache_pos = resolve_kraken_trade_cache_position(cand_sym, self.cache_dir)
+                cache_pos = resolve_kraken_trade_cache_position(cand_sym, self.cache_dir, now_ts=now_ts)
                 if (
                     isinstance(cache_pos, dict)
                     and (safe_nonneg_float(cache_pos.get("net_fills_qty"), default=0.0) or 0.0) > 1e-6
@@ -541,7 +547,7 @@ class AutonomousIntentGateway:
             if cachedb_exists(st_path, include_previous=True):
                 st_data = read_json_dict(st_path, default={}, recover_previous=True)
                 qty_f = safe_nonneg_float(st_data.get("qty"), default=0.0) or 0.0
-                cost_f = safe_nonneg_float(st_data.get("cost_usd") if st_data.get("cost_usd") is not None else st_data.get("cost"), default=0.0) or 0.0
+                cost_f = first_pos_float(st_data.get("cost_usd"), st_data.get("cost"), default=0.0) or 0.0
                 if qty_f > 1e-6:
                     px_v = first_pos_float(
                         (cost_f / qty_f) if cost_f > 0.0 else None,
@@ -936,7 +942,7 @@ class AutonomousIntentGateway:
             and ProviderVenueMetadataMixin.supports_tokenized_assets(venue)
             and resolve_symbol_identity(symbol, venue=venue).is_tokenized_equity
         ):
-            tok_cost_px = self._resolve_tokenized_equity_cost_basis(venue, symbol)
+            tok_cost_px = self._resolve_tokenized_equity_cost_basis(venue, symbol, now_ts=now_ts)
             xs_allowed, xs_reason, xs_metrics = evaluate_ai_tokenized_equity_sell_guard(
                 intent,
                 all_intents,
@@ -1412,7 +1418,8 @@ class AutonomousIntentGateway:
                 log=logger,
             )
             intent_ref[0] = res_intent
-            last_hist = (res_intent.get("history") or [{}])[-1] if isinstance(res_intent.get("history"), list) else {}
+            hist_list = res_intent.get("history")
+            last_hist = hist_list[-1] if isinstance(hist_list, list) and hist_list and isinstance(hist_list[-1], dict) else {}
             if res_intent.get("execution_payload"):
                 preempt_tx.commit()
                 self._commit_cycle_quote_spend(decision, effective_usd)
