@@ -247,19 +247,39 @@ def test_current_execution_policy_is_preserved(tmp_path):
     assert rebuys == {"BTCUSDC": "on", "TAOUSDC": "on", "ARBUSDC": "auto", "ADAUSDC": "auto"}
     assert set(registry.select_instruments(role="mt")) == {
         "BINANCE_BTC", "BINANCE_TAO", "BINANCE_ARB", "KRAKEN_HYPE"}
-    all_syms, nb_syms, nb_providers = registry.tracked_price_instruments()
+    all_syms, all_providers = registry.tracked_price_instruments()
     assert all_syms == [
-        "BTCUSDC", "TAOUSDC", "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC",
+        "BTCUSDC", "TAOUSDC",
         "HYPEUSDC", "HYPEUSD",
         "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ", "AMD_US_EQ",
+        "ARBUSDC", "ADAUSDC", "ETHUSDC", "SOLUSDC",
         "SPCXxUSD", "ANTxUSD",
     ]
-    assert nb_syms == [
-        "HYPEUSDC", "HYPEUSD",
-        "SPCX_US_EQ", "NVDA_US_EQ", "RGNT_US_EQ", "ANT_US_EQ", "AMD_US_EQ",
-        "SPCXxUSD", "ANTxUSD",
-    ]
-    assert nb_providers == {
+    assert set(all_providers) == set(all_syms)
+    # Pure invariant: symmetric conflict detection rejects conflicting venues regardless of whether Binance is involved
+    bad_conf = tmp_path / "conflict_instruments.conf"
+    bad_conf.write_text(
+        section("A", provider="binance", symbol="HYPEUSDC", base="HYPE", quote="USDC")
+        + section("B", provider="hyperliquid", symbol="HYPEUSDC", base="HYPE", quote="USDC"),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="conflicting providers"):
+        registry.tracked_price_instruments(path=bad_conf)
+    bad_sym_conf = tmp_path / "conflict_kr_hl.conf"
+    bad_sym_conf.write_text(
+        section("K", provider="kraken", symbol="XPAIRUSD", base="XPAIR", quote="USD")
+        + section("H", provider="hyperliquid", symbol="XPAIRUSD", base="XPAIR", quote="USD"),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="conflicting providers"):
+        registry.tracked_price_instruments(path=bad_sym_conf)
+    assert all_providers == {
+        "BTCUSDC": "binance",
+        "TAOUSDC": "binance",
+        "ARBUSDC": "binance",
+        "ADAUSDC": "binance",
+        "ETHUSDC": "binance",
+        "SOLUSDC": "binance",
         "HYPEUSDC": "hyperliquid",
         "HYPEUSD": "kraken",
         "SPCX_US_EQ": "t212",
@@ -270,10 +290,9 @@ def test_current_execution_policy_is_preserved(tmp_path):
         "SPCXxUSD": "kraken",
         "ANTxUSD": "kraken",
     }
-    arch_syms, arch_nb, arch_prov = registry.tracked_price_instruments(role="archive")
+    arch_syms, arch_prov = registry.tracked_price_instruments(role="archive")
     assert arch_syms == all_syms
-    assert arch_nb == nb_syms
-    assert arch_prov == nb_providers
+    assert arch_prov == all_providers
     krk_trails = {
         item.base: (item.symbol, item.number("trailing.pct"), item.rebuy_mode())
         for item in registry.select_instruments("kraken", "trailing").values()

@@ -43,9 +43,9 @@ from cachepaths import (
     has_crypto_quote_suffix,
     has_equity_suffix,
     is_fiat_quote_pair,
-    is_primary_stream_venue,
     is_usd_stablecoin_pair,
     normalize_venue_name,
+    symbol_quote_asset,
 )
 from instrument_registry import canonical_display_symbol, is_equity_symbol, resolve_kraken_tokenized_pair, venue_for_symbol
 import pricewindow as pw
@@ -1052,18 +1052,22 @@ class MarketApi:
                     return prov
             except Exception:
                 continue
-        if is_usd_stablecoin_pair(sym_u):
-            return next((p for p in crypto_provs if is_primary_stream_venue(p.name)), None)
-        if is_fiat_quote_pair(sym_u) or sym_u.startswith(("XX", "XZ")):
-            return next(
-                (
-                    p
-                    for p in crypto_provs
-                    if not is_primary_stream_venue(p.name)
-                    and MarketDataProvider.resolve_venue_default_quote(p.name) == "USD"
-                ),
-                None,
-            )
+        quote_u = (
+            symbol_quote_asset(sym_u)
+            if (is_usd_stablecoin_pair(sym_u) or is_fiat_quote_pair(sym_u))
+            else ("USD" if sym_u.startswith(("XX", "XZ")) else "")
+        )
+        if quote_u:
+            fallback_cands = [
+                p
+                for p in crypto_provs
+                if quote_u in (getattr(p, "_REFERENCE_FALLBACK_QUOTES", ()) or ())
+            ]
+            if fallback_cands:
+                return min(
+                    fallback_cands,
+                    key=lambda p: getattr(p, "_REFERENCE_FALLBACK_PRIORITY", 100),
+                )
         return None
 
     def infer_symbol_venue(

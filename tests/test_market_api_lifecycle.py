@@ -15,7 +15,6 @@ from cachepaths import (
     is_eur_pair,
     is_fiat_quote_pair,
     is_fiat_usd_pair,
-    is_primary_stream_venue,
     is_readonly_xstock_symbol,
     is_usd_compatible_pair,
     is_usd_stablecoin_pair,
@@ -26,6 +25,7 @@ from cachepaths import (
     strip_equity_suffix,
     symbol_quote_asset,
     uses_cycle_state_files,
+    venue_capabilities,
 )
 from collections import defaultdict
 from market_regime import ClosedPriceSeries, MarketRegimeService
@@ -898,10 +898,13 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     violations = audit_venue_string_branches_ast(root)
     assert violations == [], f"Forbidden venue string branch in venue-agnostic core module: {violations}"
 
-    assert is_primary_stream_venue("binance") is True
-    assert is_primary_stream_venue("", default_primary=True) is True
-    assert is_primary_stream_venue("", default_primary=False) is False
-    assert is_primary_stream_venue("kraken") is False
+    assert venue_capabilities("binance").strict_int_order_id is True
+    assert venue_capabilities("binance").dedicated_account_ws_manager is True
+    assert venue_capabilities("binance").account_stream_format == "jsonl"
+    assert venue_capabilities("kraken").strict_int_order_id is False
+    assert venue_capabilities("kraken").dedicated_account_ws_manager is False
+    assert venue_capabilities("kraken").account_stream_format == "json"
+    assert venue_capabilities("").dedicated_account_ws_manager is False
     assert uses_cycle_state_files("binance") is False
     assert uses_cycle_state_files("kraken") is True
     assert uses_cycle_state_files("hyperliquid") is True
@@ -1072,6 +1075,22 @@ def test_repo_wide_ssot_primitives_and_ast_purity(tmp_path, monkeypatch):
     assert api.resolve_crypto_ohlc_provider("XBTEUR").name == "Kraken"
     assert api.resolve_crypto_ohlc_provider("XXBTZUSD").name == "Kraken"
     assert api.resolve_crypto_ohlc_provider("SPCX_US_EQ") is None
+
+    # Pure invariant: legacy primary-venue symbols & non_binance helpers are removed from non-test prod code,
+    # and MarketApi.resolve_crypto_ohlc_provider uses declarative fallback metadata instead of primary hardcoding.
+    forbidden_tokens = ("is_primary_stream_venue", "PRIMARY_STREAM_VENUES", "non_binance_")
+    for py_path in root.rglob("*.py"):
+        rel = py_path.relative_to(root).as_posix()
+        if rel.startswith(("tests/", "offline/", "archive/", ".venv/", "myenv/")):
+            continue
+        text = py_path.read_text(encoding="utf-8", errors="ignore")
+        for tok in forbidden_tokens:
+            assert tok not in text, f"{rel} still references legacy {tok}"
+    bn_prov = next(p for p in api._providers if p.name == "Binance")
+    kr_prov = next(p for p in api._providers if p.name == "Kraken")
+    assert "USDC" in bn_prov._REFERENCE_FALLBACK_QUOTES
+    assert "USD" in kr_prov._REFERENCE_FALLBACK_QUOTES
+    assert bn_prov._REFERENCE_FALLBACK_PRIORITY < kr_prov._REFERENCE_FALLBACK_PRIORITY
 
     assert api.infer_symbol_venue("HYPEUSDC") == "hyperliquid"
     assert api.infer_symbol_venue("BTCUSDC") == "binance"

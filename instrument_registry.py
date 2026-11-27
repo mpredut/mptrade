@@ -50,11 +50,11 @@ from cachepaths import (
     is_equity_venue,
     is_equity_venue_or_suffix,
     is_kraken_tokenized_asset,
-    is_primary_stream_venue,
     is_readonly_xstock_symbol,
     normalize_venue_name,
     split_symbol_assets,
     strip_equity_suffix,
+    venue_capabilities,
 )
 
 DEFAULT_PATH = Path(__file__).resolve().with_name("instruments.conf")
@@ -306,7 +306,7 @@ def _load_registry_cached(path=None) -> tuple[tuple[str, int, int], dict]:
         if unknown_params:
             raise ValueError(f"instruments.conf [{name}]: unknown keys {sorted(unknown_params)}")
         spec = InstrumentSpec(name=name, params=params, **core)
-        if is_primary_stream_venue(spec.provider) and (
+        if venue_capabilities(spec.provider).requires_concatenated_symbol and (
             not _PRIMARY_STREAM_SYMBOL_RE.fullmatch(spec.symbol) or spec.symbol != spec.base + spec.quote
         ):
             raise ValueError(f"instruments.conf [{name}]: Binance symbol must equal uppercase base + quote")
@@ -849,33 +849,26 @@ def is_symbol_market_open(symbol: object, now_ts: float | None = None, *, path=N
     return bool(is_us_rth_open(now_ts)) if is_equity_symbol(symbol, path=path) else True
 
 
-def tracked_price_instruments(role=None, *, path=None):
-    """Return ``(all_symbols, non_binance_symbols, non_binance_providers)`` from instruments.conf."""
+def tracked_price_instruments(role=None, *, path=None) -> tuple[list[str], dict[str, str]]:
+    """Return ``(all_symbols, providers_by_symbol)`` from instruments.conf with explicit venue bindings."""
     specs = list(select_instruments(role=role, path=path, only_enabled=True).values())
-    binance_syms = list(dict.fromkeys(spec.symbol.strip() for spec in specs if is_primary_stream_venue(spec.provider)))
-    binance_keys = {s.upper() for s in binance_syms}
-
-    nb_syms: list[str] = []
-    nb_providers: dict[str, str] = {}
+    all_syms: list[str] = []
+    providers_by_symbol: dict[str, str] = {}
     for spec in specs:
         provider_name = spec.provider.strip()
         symbol = spec.symbol.strip()
         if not provider_name or not symbol:
             raise RuntimeError("configured provider and symbol must be non-empty")
-        if is_primary_stream_venue(provider_name):
-            continue
         key = symbol.upper()
-        if key in binance_keys:
-            raise RuntimeError(f"ambiguous current-price cache symbol {symbol}: Binance and {provider_name}")
-        previous = casefold_get(nb_providers, key)
-        if previous is not None and previous.lower() != provider_name.lower():
+        previous = casefold_get(providers_by_symbol, key)
+        if previous is not None and normalize_venue_name(previous, default="") != normalize_venue_name(provider_name, default=""):
             raise RuntimeError(f"conflicting providers for {symbol}: {previous} and {provider_name}")
-        if casefold_get(nb_providers, key) is None:
-            nb_providers[symbol] = provider_name
-        if symbol not in nb_syms:
-            nb_syms.append(symbol)
+        if previous is None:
+            providers_by_symbol[symbol] = provider_name
+        if symbol not in all_syms:
+            all_syms.append(symbol)
 
-    return list(dict.fromkeys(binance_syms + nb_syms)), nb_syms, nb_providers
+    return all_syms, providers_by_symbol
 
 
 # ---------------------------------------------------------------------------

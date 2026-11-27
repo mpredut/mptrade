@@ -12663,9 +12663,10 @@ def test_telemetry_audit_7_fixes_stale_ob_kinematics_rvol_us_open_ant_realized_l
     assert "us_cash_open_volatility_window" in sent_open_reason
 
     # 5. Official Nasdaq RTH ticker ANT_US_EQ remains tracked for market/bellwether analysis while blocked from live/AI trading
-    all_syms, _, nb_prov = tracked_price_instruments()
-    assert "ANT_US_EQ" in all_syms and nb_prov["ANT_US_EQ"] == "t212"
-    assert "ANTxUSD" in all_syms and nb_prov["ANTxUSD"] == "kraken"
+    all_syms, all_prov = tracked_price_instruments()
+    assert "BTCUSDC" in all_syms and all_prov["BTCUSDC"] == "binance"
+    assert "ANT_US_EQ" in all_syms and all_prov["ANT_US_EQ"] == "t212"
+    assert "ANTxUSD" in all_syms and all_prov["ANTxUSD"] == "kraken"
     assert is_equity_symbol("ANT_US_EQ") is True
     eq_tradable = discover_tradable_specs(asset_scope="equities", include_closed_rth=True)
     assert "T212_ANT" not in eq_tradable  # Non-tradable (config.ant.env.off + ai.tradable=no): price/bellwether telemetry only

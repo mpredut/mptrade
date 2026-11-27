@@ -1558,7 +1558,10 @@ class TestCacheFactory(TempDirTestCase):
         self.assertIs(r1, r2)
 
     def test_factory_default_symbols_use_ssot_price_tracking(self):
-        tracked = (["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"], ["HYPEUSD"], {"HYPEUSD": "kraken"})
+        tracked = (
+            ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"],
+            {"BTCUSDC": "binance", "TAOUSDC": "binance", "ARBUSDC": "binance", "HYPEUSD": "kraken"},
+        )
         with patch.object(cm, "tracked_price_instruments", return_value=tracked), \
              patch.object(cm.CacheCurrentPriceManager, "load_state", return_value=None), \
              patch.object(cm.CacheLongTrendManager, "load_state", return_value=None):
@@ -1567,7 +1570,8 @@ class TestCacheFactory(TempDirTestCase):
             cpm = cm.CacheFactory.get("CurrentPrice")
             plt = cm.CacheFactory.get("LongTrend")
             self.assertEqual(cpm.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
-            self.assertEqual(cpm._provider_names.get("HYPEUSD"), "kraken")
+            self.assertEqual(cpm.provider_name_for("BTCUSDC"), "binance")
+            self.assertEqual(cpm.provider_name_for("HYPEUSD"), "kraken")
             self.assertEqual(plt.symbols, ["BTCUSDC", "TAOUSDC", "ARBUSDC", "HYPEUSD"])
 
 
@@ -3156,25 +3160,26 @@ def test_cache_modules_delegate_venue_ws_protocols_to_providers():
 def test_daemon_main_mode_binds_single_producer_current_price_and_short_trend(monkeypatch, tmp_path):
     """Ensure __main__ execution never splits WS live_reader from 30s HTTP producer."""
     fake_ws = MagicMock()
+    from providers.binance_provider import BinanceProvider
     monkeypatch.setattr(
-        cacheprice._bn_price_prov_cls,
+        BinanceProvider,
         "get_default_price_ws_manager",
         classmethod(lambda _cls: fake_ws),
     )
     monkeypatch.setattr(
         cm,
         "tracked_price_instruments",
-        lambda role=None: (["BTCUSDC"], [], {}),
+        lambda role=None: (["BTCUSDC"], {"BTCUSDC": "binance"}),
     )
     monkeypatch.setattr(
         cacheprice,
         "tracked_price_instruments",
-        lambda role=None: (["BTCUSDC"], [], {}),
+        lambda role=None: (["BTCUSDC"], {"BTCUSDC": "binance"}),
     )
     monkeypatch.setattr(
         cachetrend,
         "tracked_price_instruments",
-        lambda role=None: (["BTCUSDC"], [], {}),
+        lambda role=None: (["BTCUSDC"], {"BTCUSDC": "binance"}),
     )
     cp_file = str(tmp_path / "cache_current_price.json")
     st_file = str(tmp_path / "cache_short_trend.json")

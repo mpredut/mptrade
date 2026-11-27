@@ -47,7 +47,6 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
-    is_primary_stream_venue,
     is_shadow_or_paper_state_payload,
     iter_venue_cycle_state_files,
     normalize_venue_name,
@@ -56,6 +55,7 @@ from cachepaths import (
     resolve_workspace_dir_from_cachedb,
     split_symbol_assets,
     symbol_quote_asset,
+    venue_capabilities,
 )
 from state_stores.assetguardian_state import AssetguardianStateStore
 from state_stores.mt_state import MtStateStore
@@ -111,6 +111,7 @@ from instrument_registry import (
     resolve_kraken_tokenized_pair,
     resolve_registered_symbol_case,
     resolve_symbol_market_session,
+    select_instruments,
     trailing_venues,
     venue_default_quote,
 )
@@ -2362,7 +2363,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 cache_symbol_variants(sym, include_original=True, include_base="USD" in sym_quotes, quotes=sym_quotes),
                 default={},
             )
-            if not t_state and is_primary_stream_venue(v_norm) and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
+            if not t_state and venue_capabilities(v_norm).uses_legacy_root_trailing_map and isinstance((val_b := casefold_get(trailing_map, sym)), dict):
                 t_state = val_b
             pos_entry: Dict[str, Any] = {
                 "venue": venue, "symbol": sym, "base": base, "quote": quote,
@@ -2947,10 +2948,10 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             canon_k = canonical_display_symbol(sym_k, venue=c_venue) or sym_k
             fills_d.setdefault("venue", c_venue)
             venue_recent_orders[c_venue][canon_k] = fills_d
-            if canon_k in recent_orders and not is_primary_stream_venue(c_venue):
+            if canon_k in recent_orders and normalize_venue_name(recent_orders[canon_k].get("venue")) != c_venue:
                 recent_orders[f"{c_venue}:{canon_k}"] = fills_d
             else:
-                recent_orders.setdefault(canon_k, fills_d)
+                recent_orders[canon_k] = fills_d
 
         def _scoped_sym_variants(raw_sym: Any, *, is_eq: bool) -> list[str]:
             s_u = str(raw_sym or "").strip().upper()
@@ -3253,10 +3254,18 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
 
         ag_state = AssetguardianStateStore.read_from_cachedb(cache_dir, read_json_fn=_rj)
         if isinstance(ag_state, dict) and isinstance(ag_state.get("symbols"), dict) and ag_state["symbols"]:
-            dust_binance_syms = {
+            ag_pairs = {
+                (normalize_venue_name(sp.provider), sp.symbol.upper())
+                for sp in select_instruments(role="assetguardian").values()
+            }
+            dust_ag_syms = {
                 str(pos.get("symbol") or "").upper()
                 for pos in (tradable_positions or ())
-                if isinstance(pos, dict) and is_primary_stream_venue(pos.get("venue"))
+                if isinstance(pos, dict)
+                and (
+                    not ag_pairs
+                    or (normalize_venue_name(pos.get("venue")), str(pos.get("symbol") or "").upper()) in ag_pairs
+                )
                 and (
                     (
                         0.0 <= safe_float(pos.get("value_usd"), -1.0)
@@ -3274,7 +3283,7 @@ class BotRuntimeStatesCollector(PortfolioCacheCollectorBase):
                 if not isinstance(ag_val, dict):
                     continue
                 sym_copy = dict(ag_val)
-                if str(ag_sym).upper() in dust_binance_syms and "sell" in sym_copy:
+                if str(ag_sym).upper() in dust_ag_syms and "sell" in sym_copy:
                     if not isinstance(sell_st := sym_copy.get("sell"), dict) or not sell_st.get("pending"):
                         sym_copy.pop("sell", None)
                 if isinstance(sell_d := sym_copy.get("sell"), dict):

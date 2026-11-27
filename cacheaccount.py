@@ -97,11 +97,11 @@ from cachepaths import (
     clean_scalar_str,
     clean_symbol_key,
     is_equity_venue,
-    is_primary_stream_venue,
     legacy_filenames_for,
     normalize_venue_name,
     resolve_cachedb_filepath,
     split_symbol_assets,
+    venue_capabilities,
 )
 import instrument_registry as sym
 from instrument_registry import canonical_balance_asset_key, casefold_get, is_symbol_market_open
@@ -2506,7 +2506,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         )
 
     def _requires_int_order_id(self) -> bool:
-        return bool(is_primary_stream_venue(getattr(self, "venue", "binance")))
+        return bool(venue_capabilities(getattr(self, "venue", "binance")).strict_int_order_id)
 
     def _is_canonical_account_cache(self):
         return self._requires_int_order_id() and super()._is_canonical_account_cache()
@@ -2982,7 +2982,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
         """
         if not isinstance(fills, (list, tuple)):
             return []
-        strict_int = bool(is_primary_stream_venue(venue)) if venue else False
+        strict_int = bool(venue_capabilities(venue).strict_int_order_id) if venue else False
         grouped: dict[str, dict[str, Any]] = {}
         order_sequence: list[str] = []
         for raw in fills:
@@ -3087,7 +3087,7 @@ class CacheOrderFilledManager(CacheAccountManagerBase):
             missing_out.clear()
         target_path = str(cache_file)
         eff_now_ms = resolve_now_ms(now_ms)
-        strict_int = bool(is_primary_stream_venue(venue)) if venue else False
+        strict_int = bool(venue_capabilities(venue).strict_int_order_id) if venue else False
         is_snapshot_b = _parse_bool_flag(is_snapshot, False)
         touch_create_b = _parse_bool_flag(touch_create_missing, False)
         force_save_b = _parse_bool_flag(force_save, False)
@@ -4651,10 +4651,13 @@ class CacheAssetValueManager(CacheAccountManagerBase):
         try:
             cache_root = cachedb_root_for_file(os.path.abspath(str(self.filename or "")))
             bal_caches = load_venue_balance_caches(cache_root, use_cache=True)
-            non_primary_venues = {v for v in CacheBalanceManager.VENUE_FILENAMES if not is_primary_stream_venue(v)}
+            rest_sync_venues = {
+                v for v in CacheBalanceManager.VENUE_FILENAMES
+                if not venue_capabilities(v).dedicated_account_ws_manager
+            }
             vb_data = (
                 {}
-                if non_primary_venues.issubset(set(bal_caches))
+                if rest_sync_venues.issubset(set(bal_caches))
                 else load_venue_balances_state_dict(cache_root, use_cache=True)
             )
             if bal_caches or (isinstance(vb_data, dict) and vb_data):
@@ -6190,7 +6193,7 @@ class _VenueOpenOrdersBridge(_MultiVenueNonBlockingBridgeBase):
     def start(self) -> bool:
         venues = [
             v for v in CacheOrderOpenManager.VENUE_FILENAMES
-            if not is_primary_stream_venue(v)
+            if not venue_capabilities(v).dedicated_account_ws_manager
         ]
         if not venues:
             return False
@@ -6327,7 +6330,11 @@ def request_venue_account_refresh(
         bal_bridge = _venue_balances_bridge
     with _venue_open_orders_bridge_lock:
         oo_bridge = _venue_open_orders_bridge
-    want_oo = bool(include_open_orders and not is_primary_stream_venue(v_norm) and oo_bridge is not None)
+    want_oo = bool(
+        include_open_orders
+        and not venue_capabilities(v_norm).dedicated_account_ws_manager
+        and oo_bridge is not None
+    )
     if bal_bridge is None and not want_oo:
         return False
     def _run_bal() -> None:
@@ -6609,18 +6616,18 @@ def _get_venue_order_cache_manager(
     cache_name = name_map.get(v_norm or "")
     if cache_name is None:
         raise ValueError(f"Unsupported {err_label} cache venue: {venue!r}")
-    is_non_primary = not is_primary_stream_venue(v_norm)
+    uses_dedicated_ws = venue_capabilities(v_norm).dedicated_account_ws_manager
     default_fname = cache_cls.disk_filename(v_norm)
     eff_filename = default_fname if filename is None else filename
     delegated, res, resolved_mode, save_state_flag, start_periodic, eff_symbols = (
         CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
             cache_name,
             symbols=symbols,
-            default_symbols=None if is_non_primary else (lambda: list(sym.symbols)),
+            default_symbols=(lambda: list(sym.symbols)) if uses_dedicated_ws else None,
             data_sync_mode=data_sync_mode,
             filename=eff_filename,
             default_filename=default_fname,
-            config_read_only=is_non_primary,
+            config_read_only=not uses_dedicated_ws,
             cm_getter_name=cm_getter_name,
             getter_tag=getter_tag,
         )
@@ -6637,7 +6644,7 @@ def _get_venue_order_cache_manager(
             sync_ts=sync_interval_sec,
             filename=eff_filename,
             symbols=eff_symbols,
-            read_only=(is_non_primary or is_readonly),
+            read_only=(not uses_dedicated_ws or is_readonly),
             data_sync_mode=resolved_mode,
             venue=v_norm,
         ),
@@ -6766,7 +6773,8 @@ def get_trade_manager(
     cache_name = _VENUE_TRADE_CACHE_NAMES.get(v_norm or "")
     if cache_name is None:
         raise ValueError(f"Unsupported trade cache venue: {venue!r}")
-    is_non_binance = not is_primary_stream_venue(v_norm)
+    caps = venue_capabilities(v_norm)
+    uses_dedicated_ws = caps.dedicated_account_ws_manager
     (
         delegated,
         res,
@@ -6777,9 +6785,9 @@ def get_trade_manager(
     ) = CacheManagerInterface._delegate_or_resolve_sync_and_symbols(
         cache_name,
         symbols=symbols,
-        default_symbols=None if is_non_binance else list(sym.symbols),
+        default_symbols=list(sym.symbols) if uses_dedicated_ws else None,
         data_sync_mode=data_sync_mode,
-        config_read_only=is_non_binance,
+        config_read_only=not uses_dedicated_ws,
     )
     if delegated:
         return res
@@ -6792,10 +6800,10 @@ def get_trade_manager(
             sync_ts=TRADE_SYNC_INTERVAL_SEC,
             filename=CacheTradeManager.disk_filename(v_norm),
             symbols=eff_symbols,
-            read_only=(is_non_binance or is_readonly),
+            read_only=(not uses_dedicated_ws or is_readonly),
             data_sync_mode=resolved_mode,
             venue=v_norm,
-            stream_format="json" if is_non_binance else "jsonl",
+            stream_format=caps.account_stream_format,
         ),
         resync_existing=True,
     )

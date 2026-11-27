@@ -81,6 +81,7 @@ class BinancePriceStream(PublicPriceStreamBase):
         get_all_prices(), subscribe(sub)/unsubscribe(sub), running_symbols.
     """
 
+    _VENUE_NAME = "binance"
     _MAX_STREAMS = WS_MAX_STREAMS
 
     def __init__(self, symbols: Optional[list] = None, *, stale_reconnect_sec: float = 120.0):

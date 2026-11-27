@@ -29,9 +29,9 @@ from botcore import (
 )
 from cachepaths import (  # noqa: E402
     ensure_quote_suffix,
-    is_primary_stream_venue,
     normalize_venue_name,
     split_symbol_assets,
+    venue_capabilities,
 )
 from providers.quantity import resolve_assets  # noqa: E402
 from state_io import encode_json_payload  # noqa: E402
@@ -150,14 +150,14 @@ def _fleet_role_instruments(root: Path) -> dict[str, list[tuple[str, str, str, s
             continue
         base = vals.get("base", "").strip()
         quote = vals.get("quote", "").strip()
-        primary_venue = is_primary_stream_venue(venue)
-        for owner_id, role_key, primary_only in role_specs:
-            if primary_only and not primary_venue:
+        default_roles = venue_capabilities(venue).has_legacy_default_roles
+        for owner_id, role_key, legacy_only in role_specs:
+            if legacy_only and not default_roles:
                 continue
             raw_flag = vals.get(role_key)
             if raw_flag is not None:
                 enabled_for_role = _parse_bool_flag(raw_flag)
-            elif primary_venue:
+            elif default_roles:
                 enabled_for_role = (sym == "TAOUSDC") if owner_id == "rtrade" else True
             else:
                 enabled_for_role = False
@@ -310,9 +310,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
                 symbol=symbol,
                 base=values.get("base", "").strip(),
                 quote=values.get("quote", "").strip(), role="primary",
-                coordination=(
-                    "binance-order-pipeline" if is_primary_stream_venue(venue) else "market-api"
-                ),
+                coordination=venue_capabilities(venue).order_coordination,
                 pattern=monitor_pattern, configured=monitor_configured,
                 enabled=enabled,
                 source=f"instruments.conf[{section}]", commands=commands,
@@ -355,9 +353,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
                 base=base,
                 quote=quote,
                 role=role,
-                coordination=(
-                    "binance-order-pipeline" if is_primary_stream_venue(venue) else "market-api"
-                ),
+                coordination=venue_capabilities(venue).order_coordination,
                 pattern=process,
                 configured=configured,
                 enabled=True,
@@ -383,7 +379,8 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             trailing_venues_present.add(pat_venue)
 
     for venue, symbol, base, quote in trailing_entries:
-        rel_dir = "binance_api" if is_primary_stream_venue(venue) else venue
+        caps = venue_capabilities(venue)
+        rel_dir = caps.code_dir or venue
         process = f"{rel_dir}/trailing_stop.py"
         owner_id = f"{venue}-trailing"
         env = venue_envs.get(venue, {})
@@ -397,7 +394,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
         enabled = _parse_bool_flag(t_env.get(enabled_key))
         acct_ref = (
             _account_ref(env, venue)
-            if is_primary_stream_venue(venue)
+            if caps.shared_account_ref_for_trailing
             else _account_ref(env, venue, owner_id)
         )
         owners.append(_record(
@@ -408,9 +405,7 @@ def build_inventory(root: Path = ROOT, commands: list[str] | None = None) -> lis
             base=base,
             quote=quote,
             role="protective",
-            coordination=(
-                "binance-order-pipeline" if is_primary_stream_venue(venue) else "free-balance-only"
-            ),
+            coordination=caps.trailing_coordination,
             pattern=process,
             configured=process in patterns,
             enabled=enabled,

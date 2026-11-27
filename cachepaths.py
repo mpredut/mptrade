@@ -1365,9 +1365,57 @@ _VENUE_ALIASES: dict[str, str] = {
     "trading212": "t212", "trading_212": "t212", "212trading": "t212", "212": "t212",
 }
 EQUITY_VENUES: frozenset[str] = frozenset({"t212"})
-PRIMARY_STREAM_VENUES: frozenset[str] = frozenset({"binance"})
 CYCLE_STATE_VENUES: frozenset[str] = frozenset({"kraken", "hyperliquid", "t212"})
 USDC_DEFAULT_VENUES: frozenset[str] = frozenset({"binance", "hyperliquid"})
+
+
+@dataclass(frozen=True)
+class VenueCapabilities:
+    """Declarative per-venue capability flags and runtime layout (SSOT)."""
+
+    strict_int_order_id: bool = False
+    dedicated_account_ws_manager: bool = False
+    account_stream_format: str = "json"
+    legacy_unscoped_health_keys: bool = False
+    requires_concatenated_symbol: bool = False
+    uses_legacy_root_trailing_map: bool = False
+    has_legacy_default_roles: bool = False
+    runtime_state_dir: str = ""
+    code_dir: str = ""
+    order_coordination: str = "market-api"
+    trailing_coordination: str = "free-balance-only"
+    shared_account_ref_for_trailing: bool = False
+
+
+VENUE_CAPABILITIES: dict[str, VenueCapabilities] = {
+    "binance": VenueCapabilities(
+        strict_int_order_id=True,
+        dedicated_account_ws_manager=True,
+        account_stream_format="jsonl",
+        legacy_unscoped_health_keys=True,
+        requires_concatenated_symbol=True,
+        uses_legacy_root_trailing_map=True,
+        has_legacy_default_roles=True,
+        runtime_state_dir="cachedb",
+        code_dir="binance_api",
+        order_coordination="binance-order-pipeline",
+        trailing_coordination="binance-order-pipeline",
+        shared_account_ref_for_trailing=True,
+    ),
+    "kraken": VenueCapabilities(
+        runtime_state_dir="kraken",
+        code_dir="kraken",
+    ),
+    "hyperliquid": VenueCapabilities(
+        runtime_state_dir="hyperliquid",
+        code_dir="hyperliquid",
+    ),
+    "t212": VenueCapabilities(
+        runtime_state_dir="212trading",
+        code_dir="212trading",
+    ),
+}
+_DEFAULT_VENUE_CAPABILITIES = VenueCapabilities()
 DEFAULT_USD_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD")
 _USD_FAMILY_QUOTES: tuple[str, ...] = ("USDC", "USDT", "USD", "FDUSD", "TUSD", "BUSD")
 _USD_STABLECOIN_QUOTES: tuple[str, ...] = ("USDC", "USDT", "FDUSD", "TUSD", "BUSD")
@@ -1620,12 +1668,10 @@ def matches_asset_scope(symbol: object, venue: object = None, scope: object = "a
     return not is_equity_venue(v_norm) and not is_eq_sym
 
 
-def is_primary_stream_venue(venue: object, *, default_primary: bool = False) -> bool:
-    """Return True if ``venue`` resolves to the primary shared-registry/multiplex venue (``binance``)."""
-    v_norm = normalize_venue_name(venue, default=None)
-    if not v_norm:
-        return bool(default_primary)
-    return v_norm in PRIMARY_STREAM_VENUES
+def venue_capabilities(venue: object) -> VenueCapabilities:
+    """Return declarative SSOT capabilities for ``venue``."""
+    v_norm = normalize_venue_name(venue, default="") or ""
+    return VENUE_CAPABILITIES.get(v_norm, _DEFAULT_VENUE_CAPABILITIES)
 
 
 def uses_cycle_state_files(venue: object) -> bool:
@@ -2017,14 +2063,15 @@ def resolve_venue_runtime_dir(
     v_norm = normalize_venue_name(venue, default="binance") or "binance"
     c_dir = _clean_path_str(cache_dir)
     ws_dir = _clean_path_str(workspace_dir)
-    if is_primary_stream_venue(v_norm):
+    caps = venue_capabilities(v_norm)
+    rel_dir = caps.runtime_state_dir or VENUE_RUNTIME_DIR_MAP.get(v_norm, v_norm)
+    if rel_dir == "cachedb":
         if c_dir:
             return c_dir
         if ws_dir:
             return os.path.join(ws_dir, "cachedb")
         return get_cachedb_dir()
     base_ws = ws_dir or _ROOT
-    rel_dir = VENUE_RUNTIME_DIR_MAP.get(v_norm, v_norm)
     return os.path.join(base_ws, rel_dir)
 
 

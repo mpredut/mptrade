@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import asyncio
 import builtins
 import concurrent.futures as _futures
+from dataclasses import dataclass
 import time
 from typing import Any, Callable, Optional
 import websockets as _websockets
@@ -38,39 +39,79 @@ __all__ = [
     "HyperliquidPriceStream",
     "KrakenPriceStream",
     "VenuePriceStreamBase",
+    "VenuePriceStreamSpec",
     "_VenuePriceStreamBase",
     "_fetch_price_with_deadline",
     "fetch_price_with_deadline",
 ]
 
 
+@dataclass(frozen=True)
+class VenuePriceStreamSpec:
+    """Declarative registration spec for one venue's public WebSocket price stream."""
+
+    venue: str
+    ws_thread_name: str
+    builder: Callable[..., Any]
+    owned: bool = True
+    default_ws_getter: Optional[Callable[[], Any]] = None
+    request_stop_hook: Optional[Callable[[], None]] = None
+    stop_hook: Optional[Callable[[float], None]] = None
+
+
 class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
-    """Shared public WebSocket price stream base for non-Binance venues."""
+    """Shared public WebSocket price stream base for multi-venue streams."""
 
     MIN_SAME_PRICE_EMIT_MS = 1000
     _stream_init_hooks: list[Callable[..., None]] = []
-    _VENUE_STREAM_SPECS: dict[str, tuple[str, Callable[..., "VenuePriceStreamBase"]]] = {}
+    _VENUE_STREAM_SPECS: dict[str, VenuePriceStreamSpec] = {}
 
     @classmethod
     def register_venue_stream(
         cls,
         venue: str,
         ws_thread_name: str,
-        builder: Callable[..., "VenuePriceStreamBase"],
+        builder: Callable[..., Any],
+        *,
+        owned: bool = True,
+        default_ws_getter: Optional[Callable[[], Any]] = None,
+        request_stop_hook: Optional[Callable[[], None]] = None,
+        stop_hook: Optional[Callable[[float], None]] = None,
     ) -> None:
-        """Declaratively register a public WebSocket stream builder for ``venue``."""
+        """Declaratively register a public WebSocket stream builder and lifecycle hooks for ``venue``."""
         v_key = normalize_venue_name(venue, default="")
         if v_key:
-            cls._VENUE_STREAM_SPECS[v_key] = (str(ws_thread_name), builder)
+            cls._VENUE_STREAM_SPECS[v_key] = VenuePriceStreamSpec(
+                venue=v_key,
+                ws_thread_name=str(ws_thread_name),
+                builder=builder,
+                owned=_parse_bool_flag(owned, default=True),
+                default_ws_getter=default_ws_getter,
+                request_stop_hook=request_stop_hook,
+                stop_hook=stop_hook,
+            )
+
+    @classmethod
+    def get_registered_venue_stream_spec(
+        cls, venue: object
+    ) -> Optional[VenuePriceStreamSpec]:
+        """Return the registered ``VenuePriceStreamSpec`` for ``venue``, or ``None``."""
+        v_key = normalize_venue_name(venue, default="")
+        return cls._VENUE_STREAM_SPECS.get(v_key) if v_key else None
+
+    @classmethod
+    def iter_registered_venue_stream_specs(cls) -> tuple[VenuePriceStreamSpec, ...]:
+        """Return all registered ``VenuePriceStreamSpec`` entries in registration order."""
+        return tuple(cls._VENUE_STREAM_SPECS.values())
 
     @classmethod
     def iter_registered_venue_streams(
         cls,
-    ) -> tuple[tuple[str, str, Callable[..., "VenuePriceStreamBase"]], ...]:
+    ) -> tuple[tuple[str, str, Callable[..., Any]], ...]:
         """Return ``(venue_key, ws_thread_name, builder)`` for all registered venue price streams."""
         return tuple(
-            (v_key, ws_name, builder)
-            for v_key, (ws_name, builder) in cls._VENUE_STREAM_SPECS.items()
+            (spec.venue, spec.ws_thread_name, spec.builder)
+            for spec in cls._VENUE_STREAM_SPECS.values()
         )
 
     _VENUE_NAME: str = ""

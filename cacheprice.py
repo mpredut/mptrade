@@ -92,7 +92,6 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
-    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cache_dir_path,
     resolve_cachedb_filepath,
@@ -162,7 +161,15 @@ for _name, _value in (
         raise ValueError(f"{_name} must be positive")
 
 
-_bn_price_prov_cls = MarketDataProvider.resolve_venue_provider_class("binance")
+def _resolve_default_price_api_client():
+    for spec in _VenuePriceStreamBase.iter_registered_venue_stream_specs():
+        if not spec.owned:
+            prov_cls = MarketDataProvider.resolve_venue_provider_class(spec.venue)
+            if prov_cls is not None and callable(getattr(prov_cls, "resolve_default_api_client", None)):
+                return prov_cls.resolve_default_api_client()
+    return None
+
+
 _ORIG_READ_JSON_DICT = read_json_dict
 _ORIG_READ_JSON_DICT_CACHED = read_json_dict_cached
 _ORIG_READ_JSON_DICT_RECOVERING = read_json_dict_recovering
@@ -209,11 +216,7 @@ class CachePriceManagerBase(CacheManagerInterface, ABC):
     """Abstract base contract (Level 2) for price-series caches."""
 
     cls_name = "CachePriceManagerBase"
-    _default_api_client = (
-        _bn_price_prov_cls.resolve_default_api_client()
-        if _bn_price_prov_cls is not None
-        else None
-    )
+    _default_api_client = _resolve_default_price_api_client()
     _default_current_price_getter: Optional[Callable[..., Any]] = None
 
     @classmethod
@@ -2226,9 +2229,11 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         read_only=False,
         *,
         data_sync_mode: Optional[str] = None,
+        require_providers: bool = False,
     ):
         self._ws_manager = ws_manager
         self._ws_managers = [ws_manager] if ws_manager is not None else []
+        self._ws_by_venue: dict[str, Any] = {}
         self._owned_ws_streams: list[Any] = []
         self._attached_ws_venues: set[str] = set()
         self._ws_startup_grace_until_mono: dict[str, float] = {}
@@ -2272,8 +2277,15 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                 else _market_api.api
             )
         )
+        self._require_providers = _parse_bool_flag(require_providers, default=False)
         self._provider_names = {}
         self.bind_providers(provider_names)
+        if self._require_providers:
+            missing_provs = [s for s in _coerce_symbol_list(symbols) if not self.provider_name_for(s)]
+            if missing_provs:
+                raise ValueError(
+                    f"[{self.cls_name}] missing explicit provider_name for symbol(s): {missing_provs}"
+                )
         resolved_init_path = cache_path(filename) if filename else ""
         file_existed_before_init = bool(
             resolved_init_path
@@ -3256,13 +3268,22 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         entry = self.get_price(symbol)
         return entry[1] if entry else None
 
-    def attach_ws_manager(self, ws_manager) -> None:
+    def attach_ws_manager(self, ws_manager, *, venue: Optional[str] = None) -> None:
         if ws_manager is None:
             return
         if self._ws_manager is None:
             self._ws_manager = ws_manager
         if ws_manager not in self._ws_managers:
             self._ws_managers.append(ws_manager)
+        ws_venue = normalize_venue_name(
+            venue or getattr(ws_manager, "_VENUE_NAME", None), default=""
+        )
+        if ws_venue:
+            ws_by_venue = getattr(self, "_ws_by_venue", None)
+            if not isinstance(ws_by_venue, dict):
+                ws_by_venue = {}
+                self._ws_by_venue = ws_by_venue
+            ws_by_venue[ws_venue] = ws_manager
         if (
             not self.save_state
             and getattr(self, "data_sync_mode", None) == self.MODE_DISK_READER
@@ -3271,7 +3292,11 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         ws_manager.subscribe(self)
 
     def start_venue_ws_streams(
-        self, *, start_ws: Optional[bool] = None, startup_grace_sec: float = 2.0
+        self,
+        *,
+        start_ws: Optional[bool] = None,
+        startup_grace_sec: float = 2.0,
+        require_providers: Optional[bool] = None,
     ) -> list[Any]:
         """Start and attach all registered public price WebSocket streams matching ``self.symbols``."""
         if start_ws is None:
@@ -3283,6 +3308,20 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             enable_ws = _parse_bool_flag(start_ws, default=False)
         if not enable_ws:
             return []
+        enforce_providers = (
+            _parse_bool_flag(require_providers, default=False)
+            if require_providers is not None
+            else bool(getattr(self, "_require_providers", False))
+        )
+        unmapped = [s for s in list(self.symbols) if not self.provider_name_for(s)]
+        if unmapped:
+            msg = (
+                f"[{self.cls_name}] symbol(s) missing explicit provider_name "
+                f"(skipping WS stream binding): {unmapped}"
+            )
+            if enforce_providers:
+                raise ValueError(msg)
+            builtins.print(msg)
         attached_venues = getattr(self, "_attached_ws_venues", None)
         if not isinstance(attached_venues, set):
             attached_venues = set()
@@ -3291,6 +3330,10 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         if not isinstance(owned, list):
             owned = []
             self._owned_ws_streams = owned
+        ws_by_venue = getattr(self, "_ws_by_venue", None)
+        if not isinstance(ws_by_venue, dict):
+            ws_by_venue = {}
+            self._ws_by_venue = ws_by_venue
         grace_map = getattr(self, "_ws_startup_grace_until_mono", None)
         if not isinstance(grace_map, dict):
             grace_map = {}
@@ -3303,28 +3346,33 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             v_syms = [
                 s
                 for s in list(self.symbols)
-                if (
-                    (raw_prov := self.provider_name_for(s))
-                    and normalize_venue_name(raw_prov, default="") == venue_key
-                )
-                or (not raw_prov and is_primary_stream_venue(venue_key))
+                if (raw_prov := self.provider_name_for(s))
+                and normalize_venue_name(raw_prov, default="") == venue_key
             ]
             if not v_syms or venue_key in attached_venues:
                 continue
-            is_primary = is_primary_stream_venue(venue_key)
-            if is_primary and any(ws not in owned for ws in self._ws_managers):
+            spec = _VenuePriceStreamBase.get_registered_venue_stream_spec(venue_key)
+            is_owned = bool(spec.owned) if spec is not None else True
+            assigned_ws_objs = set(ws_by_venue.values())
+            has_unassigned_external_ws = any(
+                ws not in owned and ws not in assigned_ws_objs for ws in self._ws_managers
+            )
+            if ws_by_venue.get(venue_key) is not None or (
+                not is_owned and has_unassigned_external_ws
+            ):
                 attached_venues.add(venue_key)
                 continue
             ws_inst = None
             attached_here = False
             prev_ws_mgr = self._ws_manager
+            prev_venue_ws = ws_by_venue.get(venue_key)
             try:
                 ws_inst = build_ws(v_syms, cpm=self)
                 if ws_inst is None:
                     continue
-                self.attach_ws_manager(ws_inst)
+                self.attach_ws_manager(ws_inst, venue=venue_key)
                 attached_here = True
-                if is_primary:
+                if not is_owned:
                     self._ws_manager = ws_inst
                 if not getattr(ws_inst, "is_running", False):
                     ws_inst.start(name=ws_name, daemon=True)
@@ -3338,6 +3386,10 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                             pass
                     if ws_inst in self._ws_managers:
                         self._ws_managers.remove(ws_inst)
+                    if prev_venue_ws is not None:
+                        ws_by_venue[venue_key] = prev_venue_ws
+                    elif ws_by_venue.get(venue_key) is ws_inst:
+                        ws_by_venue.pop(venue_key, None)
                     if self._ws_manager is ws_inst:
                         self._ws_manager = (
                             prev_ws_mgr
@@ -3349,7 +3401,7 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                 )
                 continue
             attached_venues.add(venue_key)
-            if not is_primary and ws_inst not in owned:
+            if is_owned and ws_inst not in owned:
                 owned.append(ws_inst)
             if eff_grace > 0.0:
                 grace_until = _monotonic_time() + eff_grace
@@ -3379,6 +3431,8 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             eff_timeout = 2.0
         ws_deadline = _monotonic_time() + min(2.0, eff_timeout)
         stopped_owned = list(owned)
+        ws_by_venue = getattr(self, "_ws_by_venue", None)
+        attached = getattr(self, "_attached_ws_venues", None)
         for ws in stopped_owned:
             try:
                 rem = (
@@ -3397,13 +3451,23 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                     pass
             if ws in self._ws_managers:
                 self._ws_managers.remove(ws)
+            if isinstance(ws_by_venue, dict):
+                for v_k in [k for k, v_ws in list(ws_by_venue.items()) if v_ws is ws]:
+                    ws_by_venue.pop(v_k, None)
+                    if isinstance(attached, set):
+                        attached.discard(v_k)
             if self._ws_manager is ws:
                 self._ws_manager = self._ws_managers[0] if self._ws_managers else None
         owned.clear()
-        if isinstance(attached := getattr(self, "_attached_ws_venues", None), set):
+        if isinstance(attached, set):
             if self._ws_managers:
                 attached.difference_update(
-                    {v for v in list(attached) if not is_primary_stream_venue(v)}
+                    {
+                        v
+                        for v in list(attached)
+                        if (sp := _VenuePriceStreamBase.get_registered_venue_stream_spec(v)) is None
+                        or sp.owned
+                    }
                 )
             else:
                 attached.clear()
@@ -3969,14 +4033,29 @@ def attach_default_price_ws_stream(
     *,
     sync_ts: float = PRICE_STREAM_POLL_INTERVAL_SEC,
     data_sync_mode: str = CacheManagerInterface.MODE_DISK_READER,
+    venue: Optional[str] = None,
 ) -> Optional[CacheCurrentPriceManager]:
-    """Attach the default venue price WebSocket manager to ``CacheCurrentPriceManager``."""
+    """Attach a registered shared external WebSocket manager to ``CacheCurrentPriceManager``."""
     default_getter = CachePriceManagerBase._default_current_price_getter
     getter = cpm_getter or _cm_override("get_current_price_manager", default_getter)
-    if not callable(getter) or _bn_price_prov_cls is None:
+    if not callable(getter):
+        return None
+    spec = (
+        _VenuePriceStreamBase.get_registered_venue_stream_spec(venue)
+        if venue
+        else next(
+            (
+                sp
+                for sp in _VenuePriceStreamBase.iter_registered_venue_stream_specs()
+                if callable(sp.default_ws_getter)
+            ),
+            None,
+        )
+    )
+    if spec is None or not callable(spec.default_ws_getter):
         return None
     return getter(
-        ws_manager=_bn_price_prov_cls.get_default_price_ws_manager(),
+        ws_manager=spec.default_ws_getter(),
         sync_ts=sync_ts,
         data_sync_mode=data_sync_mode,
     )
@@ -3984,24 +4063,30 @@ def attach_default_price_ws_stream(
 
 def request_stop_price_ws_streams() -> None:
     """Signal all attached venue price WebSocket streams to stop."""
-    if _bn_price_prov_cls is not None:
-        _bn_price_prov_cls.request_stop_price_ws_manager()
+    for spec in _VenuePriceStreamBase.iter_registered_venue_stream_specs():
+        if callable(spec.request_stop_hook):
+            try:
+                spec.request_stop_hook()
+            except Exception:
+                pass
     active_cpm = CacheManagerInterface.resolve_active_instance("CurrentPrice")
     if active_cpm is not None and hasattr(active_cpm, "_request_stop_owned_ws_streams"):
         active_cpm._request_stop_owned_ws_streams()
 
 
 def stop_price_ws_streams(shutdown_deadline: float) -> None:
-    """Stop all venue price WebSocket streams and the Binance periodic clock resync thread."""
+    """Stop all venue price WebSocket streams and registered external transport hooks."""
     active_cpm = CacheManagerInterface.resolve_active_instance("CurrentPrice")
     if active_cpm is not None and hasattr(active_cpm, "_stop_owned_ws_streams"):
         active_cpm._stop_owned_ws_streams(
             min(1.0, max(0.05, shutdown_deadline - _monotonic_time()))
         )
-    if _bn_price_prov_cls is not None:
-        _bn_price_prov_cls.stop_price_ws_manager(
-            timeout=min(1.0, max(0.35, shutdown_deadline - _monotonic_time()))
-        )
+    for spec in _VenuePriceStreamBase.iter_registered_venue_stream_specs():
+        if callable(spec.stop_hook):
+            try:
+                spec.stop_hook(min(1.0, max(0.35, shutdown_deadline - _monotonic_time())))
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -4078,7 +4163,7 @@ def get_current_price_manager(
             elif getattr(inst, "data_sync_mode", None) == CacheManagerInterface.MODE_DISK_READER:
                 CacheManagerInterface._resync_readonly_reader(inst)
             return inst
-        default_symbols, _, default_providers = tracked_price_instruments()
+        default_symbols, default_providers = tracked_price_instruments()
         eff_symbols = (
             default_symbols
             if symbols is None

@@ -375,7 +375,7 @@ class CacheFactory:
                     if name == "AssetValue":
                         symbols = ["TOTAL"]
                     elif name in _PRICE_TREND_CACHES:
-                        symbols, _, _default_providers = tracked_price_instruments()
+                        symbols, _default_providers = tracked_price_instruments()
                         if (
                             name == "CurrentPrice"
                             and provider_names is None
@@ -759,21 +759,22 @@ if __name__ == "__main__":
     threads = []
     _trend_mgr = None
 
-    _trend_syms, _nb_syms, _ = tracked_price_instruments()
-    if _nb_syms:
+    _trend_syms, _trend_providers = tracked_price_instruments()
+    if _trend_syms:
         builtins.print(
-            f"[cacheManager] tracking multi-venue instruments uniformly in CurrentPrice: {_nb_syms}"
+            f"[cacheManager] tracking multi-venue instruments uniformly in CurrentPrice: {_trend_syms}"
         )
 
     def _attach_producer_price_ws():
         cpm = CacheFactory.get(
             "CurrentPrice",
             sync_ts=CURRENT_PRICE_SYNC_INTERVAL_SEC,
+            provider_names=_trend_providers or None,
             data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
             start_periodic_sync=False,
         )
         if cpm is not None:
-            cpm.start_venue_ws_streams()
+            cpm.start_venue_ws_streams(require_providers=True)
         return cpm
 
     def _start_producer_short_trend(cpm, *, start_24_sync: bool = True):

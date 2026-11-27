@@ -35,9 +35,9 @@ from cacheintegrity import AccountCacheNotReady
 from cachepaths import (
     CACHE_ACCOUNT_HEALTH_FILENAME,
     cache_path,
-    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cachedb_filepath,
+    venue_capabilities,
 )
 from state_io import atomic_write_json, parse_proc_stat_fields, read_json_dict, read_text_file, read_text_lines
 
@@ -520,8 +520,8 @@ def _evaluate_venue_health(
                 raise ValueError(f"invalid {v_norm}.{stream}_version")
             ver_by_stream[stream] = clean_scalar_str(raw_ver) or ""
 
-        # Backward compatibility with primary-venue snapshots written before ``venues`` existed.
-        if is_primary_stream_venue(v_norm):
+        # Backward compatibility with legacy snapshots written before ``venues`` existed.
+        if venue_capabilities(v_norm).legacy_unscoped_health_keys:
             if sync_ms_by_stream["filled_orders"] == 0:
                 legacy_order_ms = require_int(state.get("order_sync_at_ms", 0), "order_sync_at_ms", min_value=0)
                 if legacy_order_ms > 0:

@@ -797,7 +797,12 @@ class TestFetchDeadline(TempDirTestCase):
             sync_ts=0.2,
             symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD", "NVDA_US_EQ"],
             filename=self._empty_cp_file("cpm_unified_ws.json"),
-            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "NVDA_US_EQ": "t212"},
+            provider_names={
+                "BTCUSDC": "binance",
+                "HYPEUSDC": "hyperliquid",
+                "HYPEUSD": "kraken",
+                "NVDA_US_EQ": "t212",
+            },
             read_only=False,
             data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
@@ -1345,7 +1350,7 @@ class TestFetchDeadline(TempDirTestCase):
             sync_ts=0.2,
             symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD"],
             filename=self._empty_cp_file("cpm_p37_order.json"),
-            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
+            provider_names={"BTCUSDC": "binance", "HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
             read_only=False,
             data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
@@ -1357,12 +1362,12 @@ class TestFetchDeadline(TempDirTestCase):
                 self.assertEqual(getattr(cpm_order._ws_manager, "label", None), "binance")
         finally:
             cpm_order.shutdown(timeout=1.0)
-        # Shutdown detaches stopped owned streams from _ws_managers while leaving primary intact
+        # Shutdown detaches stopped owned streams from _ws_managers while leaving external binance singleton intact
         self.assertEqual({lbl for lbl in stopped_calls}, {"hyperliquid", "kraken"})
         self.assertEqual([getattr(w, "label", None) for w in cpm_order._ws_managers], ["binance"])
 
         # 3. Dependent cross-check: failing venue start rolls back attachment and does NOT block sibling venues;
-        #    pre-attached external primary ws_manager still suppresses duplicate binance WS spawn.
+        #    pre-attached external non-owned ws_manager still suppresses duplicate binance WS spawn.
         started_calls.clear()
         unsub_calls.clear()
         ext_binance = _FakeWs("ext_binance", ["BTCUSDC"])
@@ -1376,7 +1381,7 @@ class TestFetchDeadline(TempDirTestCase):
             symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD"],
             filename=self._empty_cp_file("cpm_p37_iso.json"),
             ws_manager=ext_binance,
-            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
+            provider_names={"BTCUSDC": "binance", "HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
             read_only=False,
             data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
@@ -1390,6 +1395,106 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             cpm_iso.shutdown(timeout=1.0)
         self.assertEqual([getattr(w, "label", None) for w in cpm_iso._ws_managers], ["ext_binance"])
+
+    def test_symmetric_explicit_provider_ws_and_fail_closed_invariants(self):
+        """Pure invariants + dependent cross-checks for symmetric explicit-provider architecture:
+        1. Symbols missing explicit provider_name fail closed under require_providers=True and never
+           silently bind to Binance in start_venue_ws_streams().
+        2. VenuePriceStreamBase registry specs declaratively declare owned=False + lifecycle hooks for
+           external shared WS singletons (binance) vs owned=True for per-manager streams (kraken, hyperliquid).
+        3. attach_ws_manager populates _ws_by_venue by venue cleanly, and stop_price_ws_streams dispatches
+           through registered hooks without venue-specific special cases.
+        """
+        from unittest.mock import patch
+
+        # 1. Pure invariant: require_providers=True fails closed when any symbol has no provider
+        with self.assertRaisesRegex(ValueError, "missing explicit provider_name"):
+            cm.CacheCurrentPriceManager(
+                sync_ts=1.0,
+                symbols=["BTCUSDC", "ORPHANUSDC"],
+                filename=self._empty_cp_file("cpm_req_prov.json"),
+                provider_names={"BTCUSDC": "binance"},
+                read_only=True,
+                require_providers=True,
+            )
+
+        # 2. Pure invariant: unmapped symbol must never implicitly launch BinancePriceWS
+        spawned_syms: list[tuple[str, tuple[str, ...]]] = []
+
+        class _StubWs:
+            def __init__(self, label, syms):
+                self.label = label
+                self.syms = tuple(syms)
+                self.is_running = False
+                self._VENUE_NAME = label
+
+            def subscribe(self, _sub):
+                pass
+
+            def start(self, name=None, daemon=True):
+                self.is_running = True
+                spawned_syms.append((self.label, self.syms))
+
+            def stop(self, timeout=None):
+                self.is_running = False
+
+        cpm_unmapped = cm.CacheCurrentPriceManager(
+            sync_ts=1.0,
+            symbols=["UNMAPPED_SYM"],
+            filename=self._empty_cp_file("cpm_unmapped.json"),
+            provider_names={},
+            read_only=False,
+        )
+        fake_specs = (
+            ("binance", "BinancePriceWS", lambda syms, cpm=None: _StubWs("binance", syms)),
+            ("kraken", "KrakenPriceWS", lambda syms, cpm=None: _StubWs("kraken", syms)),
+        )
+        try:
+            with patch.object(VenuePriceStreamBase, "iter_registered_venue_streams", return_value=fake_specs):
+                started = cpm_unmapped.start_venue_ws_streams(start_ws=True, startup_grace_sec=0.0)
+                self.assertEqual(started, [])
+                self.assertEqual(spawned_syms, [])
+                with self.assertRaisesRegex(ValueError, "missing explicit provider_name"):
+                    cpm_unmapped.start_venue_ws_streams(
+                        start_ws=True, startup_grace_sec=0.0, require_providers=True
+                    )
+        finally:
+            cpm_unmapped.shutdown(timeout=1.0)
+
+        # 3. Pure invariant: VenuePriceStreamBase declares owned + hooks without is_primary hardcoding
+        bn_spec = VenuePriceStreamBase.get_registered_venue_stream_spec("binance")
+        kr_spec = VenuePriceStreamBase.get_registered_venue_stream_spec("kraken")
+        hl_spec = VenuePriceStreamBase.get_registered_venue_stream_spec("hyperliquid")
+        self.assertIsNotNone(bn_spec)
+        self.assertFalse(bn_spec.owned)
+        self.assertTrue(callable(bn_spec.default_ws_getter))
+        self.assertTrue(callable(bn_spec.request_stop_hook))
+        self.assertTrue(callable(bn_spec.stop_hook))
+        self.assertIsNotNone(kr_spec)
+        self.assertTrue(kr_spec.owned)
+        self.assertIsNotNone(hl_spec)
+        self.assertTrue(hl_spec.owned)
+
+        # 4. Dependent cross-check: _ws_by_venue prevents duplicate spawn for same venue even with multiple streams
+        cpm_multi = cm.CacheCurrentPriceManager(
+            sync_ts=1.0,
+            symbols=["BTCUSDC", "HYPEUSD"],
+            filename=self._empty_cp_file("cpm_by_venue.json"),
+            provider_names={"BTCUSDC": "binance", "HYPEUSD": "kraken"},
+            read_only=False,
+        )
+        ext_kr = _StubWs("kraken", ["HYPEUSD"])
+        cpm_multi.attach_ws_manager(ext_kr)
+        self.assertIs(cpm_multi._ws_by_venue.get("kraken"), ext_kr)
+        try:
+            with patch.object(VenuePriceStreamBase, "iter_registered_venue_streams", return_value=fake_specs):
+                started = cpm_multi.start_venue_ws_streams(start_ws=True, startup_grace_sec=0.0)
+                self.assertEqual([(s.label, s.syms) for s in started], [("binance", ("BTCUSDC",))])
+                self.assertIs(cpm_multi._ws_by_venue.get("kraken"), ext_kr)
+                self.assertEqual(cpm_multi._ws_by_venue["binance"].label, "binance")
+        finally:
+            cpm_multi.shutdown(timeout=1.0)
+
 
     def test_account_trade_poll_loop_and_event_refresh_hard_timeout_and_dedup(self):
         """_run_account_trade_poll_loop evicts wedged polls on hard_timeout and stops promptly on shutdown;

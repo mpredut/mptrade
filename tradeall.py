@@ -22,7 +22,7 @@ from instrument_registry import (
     tracked_price_instruments,
 )
 import order_lifecycle
-from cachepaths import clean_symbol_key, is_primary_stream_venue, split_symbol_assets
+from cachepaths import clean_symbol_key, split_symbol_assets
 from providers.market_api import (
     api as mkt,  # Single guarded proxy (Instrument.place).
     resolve_runtime_market_regime_snapshot,
@@ -200,7 +200,7 @@ KALMAN_BYPASS_SELL_REASONS = frozenset({"accel_plunge_down", "small_window_plung
 
 def _provider_kw(symbol) -> dict:
     prov = casefold_get(PROVIDER_BY_SYMBOL, str(symbol or "").strip().upper())
-    if prov and not is_primary_stream_venue(prov):
+    if prov:
         return {"provider_name": prov}
     return {}
 
@@ -1167,7 +1167,7 @@ class TrendCoordinator:
 
 
 if __name__ == "__main__":
-    _main_symbols, _, _nb_providers = tracked_price_instruments()
+    _main_symbols, _main_providers = tracked_price_instruments()
     _first_sym = _main_symbols[0] if _main_symbols else "BTCUSDC"
     trades = mkt.get_trades(_first_sym, 86400.0, **_provider_kw(_first_sym))
     print(f" --------- {len(trades)}")
@@ -1178,7 +1178,7 @@ if __name__ == "__main__":
     current_price_mgr = cm.get_current_price_manager(
         symbols=_main_symbols,
         sync_ts=TIME_SLEEP_GET_PRICE,
-        provider_names=_nb_providers or None,
+        provider_names=_main_providers or None,
         data_sync_mode=cm.CacheManagerInterface.MODE_LIVE_READER,
     )
     current_price_mgr.start_local_tick_stream()

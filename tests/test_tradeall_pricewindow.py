@@ -1385,7 +1385,12 @@ def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clea
     cancelled_oids = []
     monkeypatch.setattr(ta, "TRADEALL_FIRE_SYMBOLS", {"BTCUSDC"})
     monkeypatch.setitem(ta.KALMAN_MODES, "BTCUSDC", "off")
-    monkeypatch.setattr(ta.mkt, "cancel_order", lambda sym, oid: cancelled_oids.append((sym, oid)))
+    cancel_kwargs = []
+    monkeypatch.setattr(
+        ta.mkt,
+        "cancel_order",
+        lambda sym, oid, **kw: (cancelled_oids.append((sym, oid)), cancel_kwargs.append(kw)),
+    )
     monkeypatch.setattr(ta.api, "cancel_expired_orders", lambda *a, **kw: None)
     monkeypatch.setattr(ta, "_fire_order", lambda sym, act, px, reason, **kw: {"orderId": 444.0})
     monkeypatch.setattr(order_retry, "get_accepted_order_ids_for_owner", lambda sym, owner: ["333", "0"])
@@ -1393,6 +1398,7 @@ def test_tradeall_track_and_place_order_deduplicates_ids_ignores_and_stores_clea
     tracked = ["333.0", "0", "nan"]
     out_ids = ta.track_and_place_order("BUY", "BTCUSDC", 1, 60000.0, 60100.0, order_ids=tracked)
     assert cancelled_oids == [("BTCUSDC", "333")]
+    assert cancel_kwargs == [{"provider_name": "binance"}]
     assert out_ids == ["444"]
 
 def test_pricetrendanalyzer_linear_regression_trend_and_instant_trend_from_prices_edge_cases_iter166_s1():

@@ -50,10 +50,10 @@ from cachepaths import (
     ORDER_LEDGER_ACTIVE_FILENAME,
     get_cachedb_dir,
     is_equity_venue,
-    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cachedb_filepath,
     split_symbol_assets,
+    venue_capabilities,
 )
 from instrument_registry import canonical_balance_asset_key, select_instruments
 from order_ledger_reconciler_worker import derive_reconcile_grace_sec
@@ -670,7 +670,7 @@ def _evaluate_venue_coherence(
                 configured_symbols=ev.configured_symbols,
                 per_sym_lag_grace=(
                     (ORDER_SYNC_INTERVAL_SEC + sync_grace)
-                    if is_primary_stream_venue(v)
+                    if venue_capabilities(v).dedicated_account_ws_manager
                     else sync_grace
                 ),
             )
@@ -679,7 +679,7 @@ def _evaluate_venue_coherence(
         if tr_h_ts > 0.0 and ev.trade_file_exists and ev.trade_has_fetchtime_surface:
             tr_stream_grace = (
                 (TRADE_SYNC_INTERVAL_SEC + sync_grace)
-                if is_primary_stream_venue(v)
+                if venue_capabilities(v).dedicated_account_ws_manager
                 else sync_grace
             )
             tr_disk_lag = False

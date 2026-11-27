@@ -128,6 +128,8 @@ class BinanceProvider(MarketDataProvider):
     _DEFAULT_FEE_SPEC = ("VIP0", 10.0, 10.0, 5.0)
     _USES_SHARED_REGISTRY_SYMBOLS = True
     _HISTORICAL_OHLC_PRIORITY = 1
+    _REFERENCE_FALLBACK_QUOTES: tuple[str, ...] = ("USDC", "USDT", "FDUSD", "TUSD", "BUSD")
+    _REFERENCE_FALLBACK_PRIORITY: int = 10
     _QUOTE_ISOLATED_TELEMETRY_VENUE = False
     _USES_SHARED_TRAILING_MAP = True
     _REQUIRES_CACHE_PERMIT: bool = True
@@ -962,5 +964,9 @@ VenuePriceStreamBase.register_venue_stream(
     "binance",
     "BinancePriceWS",
     lambda _syms, cpm=None: BinanceProvider.get_default_price_ws_manager(),
+    owned=False,
+    default_ws_getter=lambda: BinanceProvider.get_default_price_ws_manager(),
+    request_stop_hook=lambda: BinanceProvider.request_stop_price_ws_manager(),
+    stop_hook=lambda timeout: BinanceProvider.stop_price_ws_manager(timeout=timeout),
 )
 

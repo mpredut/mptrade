@@ -62,6 +62,8 @@ class ProviderVenueMetadataMixin:
     _PREFER_STATIC_PRECISION: bool = False
     _USES_SHARED_REGISTRY_SYMBOLS: bool = False
     _HISTORICAL_OHLC_PRIORITY: Optional[int] = None
+    _REFERENCE_FALLBACK_QUOTES: tuple[str, ...] = ()
+    _REFERENCE_FALLBACK_PRIORITY: int = 100
     _PUBLIC_ORDERBOOK_HOST: str = ""
     _ORDERBOOK_L2_INFO_BOOK: bool = False
     _EXACT_TELEMETRY_CACHE_SYMBOL: bool = False

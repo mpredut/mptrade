@@ -175,7 +175,7 @@ def detect_active_binance_symbols(
 
     if include_kraken_cache:
         try:
-            all_syms, _, _ = tracked_price_instruments()
+            all_syms, _ = tracked_price_instruments()
             for s in all_syms:
                 _add_sym(s, skip_eq=False)
         except Exception:

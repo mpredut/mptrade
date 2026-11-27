@@ -34,7 +34,6 @@ from cachepaths import (  # noqa: E402
     get_cachedb_dir,
     has_equity_suffix,
     is_equity_venue,
-    is_primary_stream_venue,
 )
 from instrument_registry import casefold_get, is_symbol_market_open, monitored_order_symbols, symbols_for  # noqa: E402
 from state_io import read_json_dict  # noqa: E402

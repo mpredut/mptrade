@@ -669,8 +669,8 @@ def _run_price_analysis_daemon_step(
 if __name__ == "__main__":
     import psutil
     _ensure_min_niceness(PRICEANALYSIS_TARGET_NICE)
-    symbols, _nb_syms, _nb_providers = tracked_price_instruments()
-    build_price_cache_manager(symbols=symbols, provider_names=_nb_providers or None)
+    symbols, _providers = tracked_price_instruments()
+    build_price_cache_manager(symbols=symbols, provider_names=_providers or None)
     touch_module_heartbeat(
         "priceAnalysis",
         interval_sec=30.0,
