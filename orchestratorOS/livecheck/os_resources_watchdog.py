@@ -87,7 +87,7 @@ def _restart_allowed(state, script, now):
         and safe_float(stamp, default=None) is not None
         and cutoff <= stamp <= now
     ]
-    if history and now - history[-1] < RESTART_COOLDOWN_MIN * 60:
+    if history and now - max(history) < RESTART_COOLDOWN_MIN * 60:
         return False
     return len(history) < RESTART_MAX
 

@@ -1689,27 +1689,33 @@ def _resolve_heartbeat_entry(
     prefer_mtime_when_stale: bool = False,
 ) -> Optional[Dict[str, Any]]:
     has_dict = isinstance(data, dict) and bool(data)
+    has_explicit_ts = has_dict and (
+        data.get("ts") is not None or data.get("timestamp") is not None
+    )
     hb_ts = first_epoch_sec(data.get("ts"), data.get("timestamp"), allow_iso=True) if has_dict else None
+    valid_hb_ts = hb_ts if (hb_ts is not None and 0.0 < hb_ts <= now_ts + 60.0) else None
+    can_use_mtime = allow_mtime_fallback or (has_dict and not has_explicit_ts)
     mtime: Optional[float] = None
-    if allow_mtime_fallback and os.path.exists(hb_path):
+    if can_use_mtime and os.path.exists(hb_path):
         try:
             mtime = os.path.getmtime(hb_path)
         except OSError:
             mtime = None
+    valid_mtime = mtime if (mtime is not None and 0.0 < mtime <= now_ts + 60.0) else None
     if has_dict:
-        if prefer_mtime_when_stale and mtime is not None and mtime <= now_ts + 60.0 and (hb_ts is None or hb_ts < mtime - 60.0 or hb_ts > now_ts + 60.0):
-            age_sec = max(0.0, now_ts - mtime)
-        elif hb_ts is not None and hb_ts <= now_ts + 60.0:
-            age_sec = max(0.0, now_ts - hb_ts)
-        elif mtime is not None:
-            age_sec = max(0.0, now_ts - mtime)
+        if prefer_mtime_when_stale and valid_mtime is not None and (valid_hb_ts is None or valid_hb_ts < valid_mtime - 60.0):
+            age_sec = max(0.0, now_ts - valid_mtime)
+        elif valid_hb_ts is not None:
+            age_sec = max(0.0, now_ts - valid_hb_ts)
+        elif valid_mtime is not None:
+            age_sec = max(0.0, now_ts - valid_mtime)
         else:
-            return dict(data)
+            return None
         return {**data, "age_seconds": round(age_sec, 1)} if age_sec <= max_age else None
-    if mtime is not None:
-        age_sec = max(0.0, now_ts - mtime)
+    if allow_mtime_fallback and valid_mtime is not None:
+        age_sec = max(0.0, now_ts - valid_mtime)
         if age_sec <= max_age:
-            return build_heartbeat_payload({"ts": mtime}, extra={"age_seconds": round(age_sec, 1)})
+            return build_heartbeat_payload({"ts": valid_mtime}, extra={"age_seconds": round(age_sec, 1)})
     return None
 
 

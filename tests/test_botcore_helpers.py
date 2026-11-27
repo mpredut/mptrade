@@ -1425,3 +1425,146 @@ def test_profit_diff_pct_sell_denominator_matches_pnl_and_guard_probe():
     assert "e-05" not in micro_g_prof[0]["reason"].lower()
 
 
+def test_heartbeat_freshness_and_fleet_health_invariants_and_crosschecks(tmp_path, monkeypatch):
+    """Pure invariants + dependent cross-checks for heartbeat freshness, resolver, and FleetHealthMonitor."""
+    from orchestratorOS.lib import technical_repair_ssot as tr_ssot
+    from orchestratorOS.livecheck.fleet_health_monitor import FleetHealthMonitor
+
+    now_ts = 1_800_000_000.0
+    hb_good = tmp_path / "good.heartbeat"
+    hb_future = tmp_path / "future.heartbeat"
+    hb_zero = tmp_path / "zero.heartbeat"
+    for p in (hb_good, hb_future, hb_zero):
+        p.write_text(json.dumps({"status": "alive", "ts": now_ts - 5.0}), encoding="utf-8")
+    os.utime(str(hb_good), (now_ts - 5.0, now_ts - 5.0))
+    os.utime(str(hb_future), (now_ts + 7200.0, now_ts + 7200.0))
+
+    # 1. Pure invariants on evaluate_heartbeat_files_freshness:
+    #    - future-corrupted mtime (> now + 60s) must fail closed even alongside a fresh sibling
+    fresh_f, _, stale_dur_f, stale_path_f = botcore.evaluate_heartbeat_files_freshness(
+        [str(hb_good), str(hb_future)], 60.0, now_ts, fallback_start_ts=now_ts - 120.0
+    )
+    assert fresh_f is False
+    assert stale_path_f == str(hb_future)
+    assert stale_dur_f == pytest.approx(120.0)
+
+    #    - non-positive mtime (0.0) or OSError on getmtime must fail closed AND identify the broken file
+    real_getmtime = os.path.getmtime
+    monkeypatch.setattr(
+        os.path,
+        "getmtime",
+        lambda p: 0.0 if str(p) == str(hb_zero) else real_getmtime(p),
+    )
+    fresh_z, _, stale_dur_z, stale_path_z = botcore.evaluate_heartbeat_files_freshness(
+        [str(hb_good), str(hb_zero)], 60.0, now_ts, fallback_start_ts=now_ts - 90.0
+    )
+    assert fresh_z is False
+    assert stale_path_z == str(hb_zero)
+    assert stale_dur_z == pytest.approx(90.0)
+
+    def _boom_getmtime(p):
+        if str(p) == str(hb_zero):
+            raise OSError("transient stat race")
+        return real_getmtime(p)
+
+    monkeypatch.setattr(os.path, "getmtime", _boom_getmtime)
+    fresh_e, _, stale_dur_e, stale_path_e = botcore.evaluate_heartbeat_files_freshness(
+        [str(hb_good), str(hb_zero)], 60.0, now_ts, fallback_start_ts=now_ts - 75.0
+    )
+    assert fresh_e is False
+    assert stale_path_e == str(hb_zero)
+    assert stale_dur_e == pytest.approx(75.0)
+    monkeypatch.setattr(os.path, "getmtime", real_getmtime)
+
+    # 2. Pure invariants on _resolve_heartbeat_entry:
+    #    - explicit zero/corrupt/future ts with allow_mtime_fallback=False must return None even on a fresh file
+    for bad_payload in (
+        {"status": "alive", "ts": 0},
+        {"status": "alive", "ts": "0", "timestamp": "bad"},
+        {"status": "alive", "ts": now_ts + 7200.0},
+    ):
+        assert (
+            tr_ssot._resolve_heartbeat_entry(
+                str(hb_good),
+                bad_payload,
+                now_ts,
+                max_age=300.0,
+                allow_mtime_fallback=False,
+            )
+            is None
+        )
+    #    - untimestamped dict uses file mtime age (fresh passes with age_seconds; stale/missing/future returns None)
+    hb_stale = tmp_path / "stale_no_ts.heartbeat"
+    hb_stale.write_text(json.dumps({"status": "alive"}), encoding="utf-8")
+    os.utime(str(hb_stale), (now_ts - 600.0, now_ts - 600.0))
+    ok_no_ts = tr_ssot._resolve_heartbeat_entry(
+        str(hb_good), {"status": "alive"}, now_ts, max_age=300.0, allow_mtime_fallback=False
+    )
+    assert ok_no_ts is not None and ok_no_ts["age_seconds"] == pytest.approx(5.0)
+    assert (
+        tr_ssot._resolve_heartbeat_entry(
+            str(hb_stale), {"status": "alive"}, now_ts, max_age=300.0, allow_mtime_fallback=False
+        )
+        is None
+    )
+    assert (
+        tr_ssot._resolve_heartbeat_entry(
+            str(tmp_path / "missing_no_ts.heartbeat"), {"status": "alive"}, now_ts, max_age=300.0, allow_mtime_fallback=False
+        )
+        is None
+    )
+    #    - future-corrupted mtime must NOT rescue an untimestamped or empty heartbeat file
+    assert (
+        tr_ssot._resolve_heartbeat_entry(
+            str(hb_future),
+            {"status": "alive", "ts": 0},
+            now_ts,
+            max_age=300.0,
+            allow_mtime_fallback=True,
+        )
+        is None
+    )
+    assert (
+        tr_ssot._resolve_heartbeat_entry(
+            str(hb_future),
+            None,
+            now_ts,
+            max_age=300.0,
+            allow_mtime_fallback=True,
+        )
+        is None
+    )
+
+    # 3. Dependent cross-check: harvest_heartbeats_and_state_files excludes corrupt core & future mtime heartbeats
+    cdb = tmp_path / "cachedb"
+    hb_dir = cdb / "system" / "heartbeat"
+    hb_dir.mkdir(parents=True, exist_ok=True)
+    (hb_dir / "macro_analyzer.heartbeat").write_text(json.dumps({"status": "alive", "ts": 0}), encoding="utf-8")
+    (hb_dir / "globaltelemetry_collector.heartbeat").write_text(
+        json.dumps({"status": "alive", "ts": now_ts + 3600.0}), encoding="utf-8"
+    )
+    fut_rtrade = hb_dir / "rtrade.heartbeat"
+    fut_rtrade.write_text("", encoding="utf-8")
+    os.utime(str(fut_rtrade), (now_ts + 3600.0, now_ts + 3600.0))
+    ok_bot = hb_dir / "tradeall.heartbeat"
+    ok_bot.write_text(json.dumps({"status": "alive", "ts": now_ts - 10.0}), encoding="utf-8")
+    os.utime(str(ok_bot), (now_ts - 10.0, now_ts - 10.0))
+
+    active_hb, _ = tr_ssot.harvest_heartbeats_and_state_files(str(cdb), str(tmp_path), now_ts)
+    assert "macro_analyzer.heartbeat" not in active_hb
+    assert "globaltelemetry_collector.heartbeat" not in active_hb
+    assert "rtrade.heartbeat" not in active_hb
+    assert "tradeall.heartbeat" in active_hb and active_hb["tradeall.heartbeat"]["age_seconds"] == pytest.approx(10.0)
+
+    # 4. Dependent cross-check: FleetHealthMonitor.run_cycle reports fleet_healthy=False when procs.conf is missing/empty
+    empty_ws = tmp_path / "empty_ws"
+    empty_ws.mkdir()
+    (empty_ws / "order_guard.conf").write_text("supervisor_mode = shadow\n", encoding="utf-8")
+    mon = FleetHealthMonitor(workspace_dir=str(empty_ws))
+    monkeypatch.setattr(mon, "check_dev_backtest_progress", lambda: {"reachable": False, "running": False})
+    rep = mon.run_cycle(persist=False)
+    assert rep.total_processes == 0
+    assert rep.fleet_healthy is False
+
+
+

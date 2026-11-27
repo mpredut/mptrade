@@ -10004,6 +10004,204 @@ def test_quota_probe_load_assist_timeout_and_monitor_llm_models_fail_closed(tmp_
     assert "gemini-4-neon-high" in json.loads(q_path.read_text(encoding="utf-8")).get("latency_demoted_models", {})
 
 
+def test_pass9_balance_state_valuation_ntfy_and_watchdog_invariants_and_crosschecks(tmp_path, monkeypatch):
+    """Pass #9 pure invariants + dependent cross-checks:
+    1. sanitize_balance_state_payload tracks locked_base_qty / locked_quote_usd changes and strips corrupt *_bal_ts.
+    2. extract_balance_observations_from_caches ignores truthy string '0' verified_ts; compose_unified_portfolio_state
+       never lets an untimestamped cache clobber a timestamped position (consistent with merge_balance_observation).
+    3. _is_ntfy_channel_blocked clears corrupt/non-positive blocked_until instead of black-holing ntfy forever.
+    4. os_resources_watchdog._restart_allowed uses max(history) so unsorted timestamps cannot bypass restart cooldown.
+    """
+    from notify_engine import ntfypolicy as npol
+    from orchestratorOS.livecheck import os_resources_watchdog as orw
+    from providers.portfolio_valuation import (
+        compose_unified_portfolio_state,
+        extract_balance_observations_from_caches,
+        merge_balance_observation,
+    )
+    from state_stores.portfolio_positions_state import PortfolioPositionsStateStore
+    from state_stores.venue_balances_state import sanitize_balance_state_payload
+
+    t0 = 1_800_000_000.0
+    t1 = t0 + 300.0
+
+    # 1. Pure invariant + store cross-check on sanitize_balance_state_payload
+    prev = {
+        "pos:t212:SPCX_US_EQ": {
+            "venue": "t212",
+            "symbol": "SPCX_US_EQ",
+            "free_base": 0.0,
+            "locked_base_qty": 2.0,
+            "locked_base_usd": 240.0,
+            "free_quote": 0.0,
+            "locked_quote_usd": 500.0,
+            "price": 120.0,
+            "ts": t0,
+        }
+    }
+    # Price-only bump (free_base & locked_base_qty & free_quote & locked_quote_usd unchanged; locked_base_usd repriced)
+    price_only = {
+        "pos:t212:SPCX_US_EQ": {
+            **prev["pos:t212:SPCX_US_EQ"],
+            "price": 130.0,
+            "locked_base_usd": 260.0,
+            "ts": t1,
+            "base_bal_ts": "0",  # corrupt non-positive timestamp must be stripped and replaced by prev t0
+            "quote_bal_ts": 0,
+        }
+    }
+    cleaned_po = sanitize_balance_state_payload(price_only, prev_state=prev)["pos:t212:SPCX_US_EQ"]
+    assert cleaned_po["base_bal_ts"] == pytest.approx(t0)
+    assert cleaned_po["quote_bal_ts"] == pytest.approx(t0)
+
+    # Partial fill on locked orders while free_base & free_quote remain 0.0 MUST NOT pin stale base_bal_ts/quote_bal_ts
+    partial_fill = {
+        "pos:t212:SPCX_US_EQ": {
+            **prev["pos:t212:SPCX_US_EQ"],
+            "locked_base_qty": 1.0,
+            "locked_base_usd": 120.0,
+            "locked_quote_usd": 250.0,
+            "ts": t1,
+        }
+    }
+    cleaned_pf = sanitize_balance_state_payload(partial_fill, prev_state=prev)["pos:t212:SPCX_US_EQ"]
+    assert "base_bal_ts" not in cleaned_pf
+    assert "quote_bal_ts" not in cleaned_pf
+
+    # Dependent cross-check through PortfolioPositionsStateStore.upsert_locked
+    pos_path = tmp_path / "portfolio_positions_state.json"
+    assert PortfolioPositionsStateStore.upsert_locked(str(pos_path), prev) is True
+    assert PortfolioPositionsStateStore.upsert_locked(str(pos_path), partial_fill) is True
+    persisted_pos = json.loads(pos_path.read_text(encoding="utf-8"))["pos:t212:SPCX_US_EQ"]
+    assert persisted_pos["locked_base_qty"] == pytest.approx(1.0)
+    assert "base_bal_ts" not in persisted_pos
+    assert "quote_bal_ts" not in persisted_pos
+
+    # 2. Pure invariant + cross-check on extract_balance_observations_from_caches & compose_unified_portfolio_state
+    obs_str0, _ = extract_balance_observations_from_caches(
+        {
+            "kraken": {
+                "venue": "kraken",
+                "verified_ts": "0",
+                "ts": t1,
+                "items": {"HYPE": {"free": 5.0, "locked": 1.0}},
+            }
+        }
+    )
+    assert obs_str0[("kraken", "HYPE")].ts == pytest.approx(t1)
+
+    untimestamped_cache = {
+        "kraken": {
+            "venue": "kraken",
+            "verified_ts": "0",
+            "ts": 0,
+            "items": {
+                "HYPE": {"free": 0.1, "locked": 0.0},
+                "USD": {"free": 1.0, "locked": 0.0},
+            },
+        }
+    }
+    timestamped_pos = {
+        "pos:kraken:HYPEUSD": {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "base": "HYPE",
+            "quote": "USD",
+            "free_base": 8.0,
+            "locked_base_qty": 2.0,
+            "free_quote": 500.0,
+            "price": 50.0,
+            "ts": t1,
+            "base_bal_ts": t1,
+            "quote_bal_ts": t1,
+        }
+    }
+    composed = compose_unified_portfolio_state(untimestamped_cache, timestamped_pos)
+    # Cross-check against merge_balance_observation invariant: timestamped observation beats untimestamped one
+    merged_inv = merge_balance_observation(
+        merge_balance_observation(None, 8.0, t1, 1, reflected_locked=2.0),
+        0.1,
+        None,
+        3,
+        reflected_locked=0.0,
+    )
+    assert merged_inv is not None and merged_inv.free == pytest.approx(8.0)
+    assert composed["pos:kraken:HYPEUSD"]["free_base"] == pytest.approx(8.0)
+    assert composed["pos:kraken:HYPEUSD"]["locked_base_qty"] == pytest.approx(2.0)
+    assert composed["pos:kraken:HYPEUSD"]["free_quote"] == pytest.approx(500.0)
+
+    # Untimestamped position still accepts untimestamped Layer 3 cache
+    untimestamped_pos = {
+        "pos:kraken:HYPEUSD": {
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "base": "HYPE",
+            "quote": "USD",
+            "free_base": 8.0,
+            "free_quote": 500.0,
+        }
+    }
+    composed_unts = compose_unified_portfolio_state(untimestamped_cache, untimestamped_pos)
+    assert composed_unts["pos:kraken:HYPEUSD"]["free_base"] == pytest.approx(0.1)
+    assert composed_unts["pos:kraken:HYPEUSD"]["free_quote"] == pytest.approx(1.0)
+
+    # 3. Pure invariant + dependent pop_due_bulk_batch cross-check on _is_ntfy_channel_blocked
+    for bad_until in (0, 0.0, -10.0, None, "corrupt", float("nan")):
+        st = {"blocked": True, "blocked_until": bad_until}
+        assert npol._is_ntfy_channel_blocked("ntfy", st, t1) is False
+        assert st["blocked"] is False
+        assert st["blocked_until"] == 0.0
+
+    # Active future block remains blocked until expiry
+    st_active = {"blocked": True, "blocked_until": t1 + 300.0}
+    assert npol._is_ntfy_channel_blocked("ntfy", st_active, t1) is True
+    assert npol._is_ntfy_channel_blocked("ntfy", st_active, t1 + 300.0) is False
+    assert st_active["blocked"] is False
+
+    # Dependent cross-check: pop_due_bulk_batch unblocks corrupt blocked_until=0 and delivers buffered alert
+    from datetime import datetime, timezone
+
+    ntfy_state_file = tmp_path / "notification_delivery_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(ntfy_state_file))
+    today_utc = datetime.fromtimestamp(t1, timezone.utc).date().isoformat()
+    ntfy_state_file.write_text(
+        json.dumps(
+            {
+                "date": today_utc,
+                "channels": {
+                    "ntfy": {
+                        "blocked": True,
+                        "blocked_until": 0,
+                        "sent": 1,
+                        "last_gate_ts": t1 - 600.0,
+                        "topic_last_ts": {},
+                        "pending_bulk": [
+                            {
+                                "title": "Recovered Alert",
+                                "body": "Delivered after corrupt blocked_until cleared",
+                                "priority": "high",
+                                "topic": "ntfy-server",
+                                "ts": t1 - 60.0,
+                                "count": 1,
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    popped = npol.pop_due_bulk_batch("ntfy", now=t1)
+    assert popped is not None and "Recovered Alert" in popped[0]
+
+    # 4. Pure invariant on os_resources_watchdog._restart_allowed with unsorted history timestamps
+    unsorted_st = {"restart_history": {"bot.py": [t1 - 10.0, t1 - 3000.0]}}
+    assert orw._restart_allowed(unsorted_st, "bot.py", t1) is False
+    cooled_st = {"restart_history": {"bot.py": [t1 - (orw.RESTART_COOLDOWN_MIN * 60.0 + 5.0), t1 - 3000.0]}}
+    assert orw._restart_allowed(cooled_st, "bot.py", t1) is True
+
+
+
 
 
 

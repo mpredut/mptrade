@@ -24,6 +24,7 @@ from core.math_coercion import first_pos_float
 from core.time_market import (
     extract_current_price_item,
     extract_current_price_timestamp_sec,
+    first_epoch_sec,
     normalize_epoch_sec,
 )
 from instrument_registry import canonical_balance_asset_key, canonical_display_symbol
@@ -231,7 +232,7 @@ def extract_balance_observations_from_caches(
         v_n = normalize_venue_name(doc.get("venue") or raw_v)
         if not v_n:
             continue
-        doc_ts = normalize_epoch_sec(doc.get("verified_ts") or doc.get("ts"), default=None)
+        doc_ts = first_epoch_sec(doc.get("verified_ts"), doc.get("ts"), default=None)
         raw_items = doc.get("items")
         if isinstance(raw_items, Mapping):
             for raw_a, entry in raw_items.items():
@@ -352,7 +353,7 @@ def compose_unified_portfolio_state(
             pos_ts = normalize_epoch_sec(entry.get("ts"), default=0.0) or 0.0
             if base_k and (b_obs := cache_obs.get((v_n, base_k))) is not None:
                 cur_bts = normalize_epoch_sec(entry.get("base_bal_ts"), default=0.0) or pos_ts
-                if b_obs.ts is None or b_obs.ts >= cur_bts - 1e-6:
+                if (b_obs.ts is None and cur_bts <= 0.0) or (b_obs.ts is not None and b_obs.ts >= cur_bts - 1e-6):
                     entry["free_base"] = round(b_obs.free, 6)
                     if b_obs.ts is not None:
                         entry["base_bal_ts"] = round(b_obs.ts, 3)
@@ -366,7 +367,7 @@ def compose_unified_portfolio_state(
                         reprice_position_balance_fields(entry, px_v)
             if quote_u and (q_obs := cache_obs.get((v_n, quote_u))) is not None:
                 cur_qts = normalize_epoch_sec(entry.get("quote_bal_ts"), default=0.0) or pos_ts
-                if q_obs.ts is None or q_obs.ts >= cur_qts - 1e-6:
+                if (q_obs.ts is None and cur_qts <= 0.0) or (q_obs.ts is not None and q_obs.ts >= cur_qts - 1e-6):
                     entry["free_quote"] = round(q_obs.free, 2)
                     if q_obs.ts is not None:
                         entry["quote_bal_ts"] = round(q_obs.ts, 3)

@@ -208,7 +208,7 @@ class FleetHealthMonitor:
         proc_health = self.check_processes(now=now)
         running_cnt = sum(1 for p in proc_health if p.is_running)
         stale_cnt = sum(1 for p in proc_health if p.is_running and not p.heartbeat_fresh)
-        healthy = (running_cnt == len(proc_health)) and (stale_cnt == 0)
+        healthy = bool(proc_health) and (running_cnt == len(proc_health)) and (stale_cnt == 0)
 
         sensors = self.gather_sensor_status()
         modes = self.get_autonomous_modes()

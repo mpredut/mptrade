@@ -187,22 +187,29 @@ def evaluate_heartbeat_files_freshness(
     missing_any, stale_file, max_stale_duration = False, "", 0.0
     start_ts = fallback_start_ts if fallback_start_ts is not None else now_ts
 
+    def _mark_missing_or_invalid(hbp: str) -> None:
+        nonlocal missing_any, max_stale_duration, stale_file
+        missing_any = True
+        dur = max(0.0, now_ts - start_ts)
+        if stale_threshold_s > 0 and (not stale_file or dur >= max_stale_duration):
+            max_stale_duration, stale_file = dur, hbp
+
     for raw_hbp in effective_paths:
         hbp = str(resolve_cachedb_filepath(raw_hbp))
         if os.path.exists(hbp):
             try:
-                mt = os.path.getmtime(hbp)
+                mt = safe_pos_float(os.path.getmtime(hbp), default=None)
+                if mt is None or mt > now_ts + 60.0:
+                    _mark_missing_or_invalid(hbp)
+                    continue
                 mtimes.append(mt)
                 dur = now_ts - mt
                 if stale_threshold_s > 0 and dur > stale_threshold_s and dur > max_stale_duration:
                     max_stale_duration, stale_file = dur, hbp
             except Exception:
-                missing_any = True
+                _mark_missing_or_invalid(hbp)
         else:
-            missing_any = True
-            dur = max(0.0, now_ts - start_ts)
-            if stale_threshold_s > 0 and dur >= max_stale_duration:
-                max_stale_duration, stale_file = dur, hbp
+            _mark_missing_or_invalid(hbp)
 
     age_sec = max(0.0, now_ts - min(mtimes)) if mtimes else 0.0
     fresh = not (stale_threshold_s > 0 and (missing_any or not mtimes or age_sec > stale_threshold_s))
