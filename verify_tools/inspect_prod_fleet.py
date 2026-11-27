@@ -29,6 +29,7 @@ from botcore import (
     extract_order_price,
     extract_order_side,
     is_live_network_backfill_enabled,
+    normalize_epoch_sec,
     safe_float,
 )
 from cacheaccount import CacheOrderOpenManager
@@ -282,8 +283,13 @@ def inspect_fleet(json_output: bool = False):
             "summary": sentiment_data.get("summary"),
         }
     if health_data:
-        h_ts = safe_float(health_data.get("ts"), default=None)
-        h_age_sec = round(max(0.0, time.time() - h_ts), 1) if h_ts else None
+        now_h = time.time()
+        h_ts = normalize_epoch_sec(health_data.get("ts"), default=None)
+        h_age_sec = (
+            round(max(0.0, now_h - h_ts), 1)
+            if (h_ts is not None and 0.0 < h_ts <= now_h + 60.0)
+            else None
+        )
         h_stale = bool(h_age_sec is None or h_age_sec > 1800.0)
         result["fleet_health"] = {
             "fleet_healthy": health_data.get("fleet_healthy"),

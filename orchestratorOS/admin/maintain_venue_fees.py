@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     errors = result.get("errors") or {}
     venues_out = result.get("venues") or {}
-    if errors and venues_out and len(errors) >= len(venues_out):
+    if errors and (not venues_out or len(errors) >= len(venues_out)):
         return 1
     return 0
 

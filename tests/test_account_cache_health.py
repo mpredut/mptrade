@@ -902,6 +902,48 @@ def test_record_successful_sync_and_persisted_version_are_monotonic(tmp_path):
         health.disable_writer()
 
 
+def test_inspect_prod_fleet_rejects_corrupt_negative_and_future_health_ts(monkeypatch):
+    """Pure invariant + cross-check: inspect_prod_fleet normalizes epoch-ms and rejects negative/far-future fleet_health ts as stale."""
+    from verify_tools import inspect_prod_fleet
+
+    now_s = 1_900_000_000.0
+    monkeypatch.setattr(inspect_prod_fleet.time, "time", lambda: now_s)
+
+    def _run_with_ts(raw_ts):
+        health_doc = {
+            "ts": raw_ts,
+            "fleet_healthy": True,
+            "running_processes": 17,
+            "total_processes": 17,
+            "stale_processes": 0,
+        }
+        monkeypatch.setattr(
+            inspect_prod_fleet,
+            "ssh_cat",
+            lambda p: health_doc if "fleet_health_status.json" in str(p) else {},
+        )
+        return inspect_prod_fleet.inspect_fleet(json_output=True)["fleet_health"]
+
+    # Pure invariant: corrupt far-future and negative timestamps must NEVER clamp to age=0 / stale=False
+    fh_future = _run_with_ts(now_s + 3600.0)
+    assert fh_future["age_sec"] is None
+    assert fh_future["stale"] is True
+
+    fh_neg = _run_with_ts(-500.0)
+    assert fh_neg["age_sec"] is None
+    assert fh_neg["stale"] is True
+
+    # Dependent cross-check: valid epoch-ms timestamp normalizes cleanly and reports exact age
+    fh_ms_fresh = _run_with_ts((now_s - 45.0) * 1000.0)
+    assert fh_ms_fresh["age_sec"] == pytest.approx(45.0)
+    assert fh_ms_fresh["stale"] is False
+
+    fh_ms_stale = _run_with_ts((now_s - 3600.0) * 1000.0)
+    assert fh_ms_stale["age_sec"] == pytest.approx(3600.0)
+    assert fh_ms_stale["stale"] is True
+
+
+
 
 
 

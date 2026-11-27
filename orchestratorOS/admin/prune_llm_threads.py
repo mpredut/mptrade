@@ -148,7 +148,7 @@ def _has_active_wal_or_lock(cli_base: Optional[str], cid: str, now_ts: float) ->
     try:
         if os.path.exists(wal_path):
             st = os.stat(wal_path)
-            if st.st_size >= _SQLITE_WAL_HEADER_BYTES and (now_ts - st.st_mtime) < _ACTIVE_WAL_GRACE_SEC:
+            if st.st_size >= _SQLITE_WAL_HEADER_BYTES and -60.0 <= (now_ts - st.st_mtime) < _ACTIVE_WAL_GRACE_SEC:
                 with open_binary_read_file(wal_path) as fh:
                     if fh.read(4) in _SQLITE_WAL_MAGIC:
                         return True

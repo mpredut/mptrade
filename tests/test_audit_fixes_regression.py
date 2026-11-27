@@ -10201,6 +10201,77 @@ def test_pass9_balance_state_valuation_ntfy_and_watchdog_invariants_and_crossche
     assert orw._restart_allowed(cooled_st, "bot.py", t1) is True
 
 
+def test_pass16_macro_bar_ts_normalization_and_llm_quota_case_ms_invariants(tmp_path, monkeypatch):
+    """Pure invariants + dependent cross-checks for macro benchmark bar timestamps and LLM quota router case/ms hygiene."""
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        compute_futures_premarket_lead,
+        format_macro_benchmarks_summary_line,
+    )
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from intelligence.sentiment.llm_quota_router import (
+        _active_latency_demotions,
+        _is_model_runtime_exhausted,
+    )
+
+    now_s = 1_795_800_000.0
+
+    # 1. Macro futures lead + summary line: mixed epoch-ms/sec last_bar_ts normalizes cleanly; far-future bar_ts is NOT clamped to 0.0m
+    mixed_ms_mb = {
+        "ts": now_s,
+        "items": {
+            "SPY": {"price": 650.0, "chg_24h_pct": -1.0, "market_state": "CLOSED", "last_bar_ts": int((now_s - 7200.0) * 1000)},
+            "QQQ": {"price": 560.0, "chg_24h_pct": -1.2, "market_state": "CLOSED", "last_bar_ts": int((now_s - 7200.0) * 1000)},
+            "ES=F": {"price": 6560.0, "chg_24h_pct": -0.2, "globex_session_chg_pct": 0.65, "last_bar_ts": now_s - 60.0},
+            "NQ=F": {"price": 23200.0, "chg_24h_pct": -0.1, "globex_session_chg_pct": 0.90, "last_bar_ts": now_s - 60.0},
+        },
+    }
+    lead = compute_futures_premarket_lead(mixed_ms_mb)
+    assert lead.get("futures_lead_regime") == "FUTURES_PREMARKET_GAP_UP"
+    assert lead.get("nq_qqq_lead_pct") == pytest.approx(0.90)
+
+    future_bar_mb = {
+        "ts": now_s,
+        "items": {
+            "SPY": {"price": 650.0, "chg_24h_pct": 0.5, "market_state": "REGULAR", "last_bar_ts": now_s + 3600.0},
+            "QQQ": {"price": 560.0, "chg_24h_pct": 0.4, "market_state": "REGULAR", "last_bar_ts": int((now_s - 1200.0) * 1000)},
+        },
+    }
+    summary = format_macro_benchmarks_summary_line(future_bar_mb, include_crypto=False)
+    assert "QQQ=$560.00" in summary and "delayed=20m" in summary
+    assert "bar_age=0m" not in summary
+
+    # 2. LLM quota router pure invariants: expired epoch-ms timestamps expire cleanly; mixed-case keys match lowercase runtime_exhausted
+    expired_ms = (now_s - 120.0) * 1000.0
+    active_ms = (now_s + 300.0) * 1000.0
+    assert _is_model_runtime_exhausted({"gemini-4-neon-high": expired_ms}, "Gemini-4-Neon-High", now_s) is False
+    assert _is_model_runtime_exhausted({"gemini-4-neon-high": active_ms}, "Gemini-4-Neon-High", now_s) is True
+    assert _active_latency_demotions(
+        {"latency_demoted_models": {"gemini-4-neon-high": {"fallback_model": "gemini-4-neon-medium", "restore_after_ts": expired_ms}}},
+        now_s,
+    ) == {}
+
+    # 3. Dependent cross-checks: filter_models_with_confirmed_credits & get_compact_model_candidates respect mixed-case + expired ms
+    monkeypatch.setattr("intelligence.sentiment.llm_quota_router.time.time", lambda: now_s)
+    snap = {
+        "available_credits": 0.0,
+        "buckets": {"gemini-4-neon-high": 1.0, "claude-sonnet-5-5-medium": 1.0},
+        "runtime_exhausted": {"gemini-4-neon-high": active_ms, "claude-sonnet-5-5-medium": expired_ms},
+    }
+    filtered = GeminiClient.filter_models_with_confirmed_credits(
+        ["Gemini-4-Neon-High", "Claude-Sonnet-5-5-Medium"], snap
+    )
+    assert filtered == ["Claude-Sonnet-5-5-Medium"]
+
+    cli_inst = GeminiClient(model="Gemini-4-Neon-High", fallback_models=("Claude-Sonnet-5-5-Medium",))
+    cli_inst._custom_fallbacks = False
+    monkeypatch.setenv("LLM_COMPACT_MODEL", "")
+    compact_list = cli_inst.get_compact_model_candidates(
+        ["Gemini-4-Neon-High", "Claude-Sonnet-5-5-Medium"], attempt_idx=0, quota_snapshot=snap
+    )
+    assert compact_list[0] == "Claude-Sonnet-5-5-Medium"
+
+
+
 
 
 

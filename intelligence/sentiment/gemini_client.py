@@ -38,6 +38,7 @@ from intelligence.sentiment.llm_quota_router import (
     LOAD_ASSIST_API_URL,  # noqa: F401
     QUOTA_API_URL,  # noqa: F401
     GeminiQuotaRouterMixin,
+    _is_model_runtime_exhausted,
     canonical_rest_model,
     is_degraded_trading_model,
     resolve_configured_openai_compat_model,
@@ -947,8 +948,8 @@ class GeminiClient(GeminiQuotaRouterMixin):
                         else {}
                     )
                     now_iter = time.time()
-                    if safe_float(rt_ex.get(model_candidate), 0.0) > now_iter and any(
-                        safe_float(rt_ex.get(rem_m), 0.0) <= now_iter
+                    if _is_model_runtime_exhausted(rt_ex, model_candidate, now_iter) and any(
+                        not _is_model_runtime_exhausted(rt_ex, rem_m, now_iter)
                         and rem_m.strip().lower() not in exhausted_in_call
                         for rem_m in models_to_try[attempt_idx + 1:]
                     ):

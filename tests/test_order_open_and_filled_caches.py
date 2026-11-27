@@ -1072,3 +1072,99 @@ def test_cross_venue_event_refresh_balance_update_ws_fetchtime_and_immediate_fil
     ) is True
 
 
+def test_portfolio_collector_multi_venue_remaining_qty_and_future_ts_invariants(tmp_path):
+    """Pure invariants + dependent cross-checks on stale-lock detection, audit order dedup, and runtime balance views."""
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        TradablePositionsAndOrdersCollector,
+        _merge_audit_orders,
+        _venue_balance_cache_has_stale_order_lock,
+        derive_runtime_portfolio_view,
+    )
+    from providers.portfolio_valuation import BalanceObservation
+
+    t0 = 1_795_720_000.0
+    t_open = t0 + 15.0
+
+    # 1. Pure invariant: Kraken vol/vol_exec and Hyperliquid origSz/sz are honored accurately in stale-lock check
+    obs_kr = {("kraken", "HYPE"): BalanceObservation(free=1.0, ts=t0, priority=2, reflected_locked=10.0)}
+    # Order partially filled (vol=10, vol_exec=6 -> remaining=4 < reflected_locked=10) -> stale lock detected!
+    open_kr_partial = {
+        ("kraken", "HYPEUSD"): [{"orderId": "KR-1", "side": "SELL", "price": 60.0, "vol": "10.0", "vol_exec": "6.0"}]
+    }
+    assert _venue_balance_cache_has_stale_order_lock(
+        "kraken", t0, obs_kr, open_kr_partial, {"kraken": t_open}, {}, now_ts=t_open + 1.0
+    ) is True
+    # Order completely unfilled (vol=10, vol_exec=0 -> remaining=10 == reflected_locked=10) -> NOT stale!
+    open_kr_full = {
+        ("kraken", "HYPEUSD"): [{"orderId": "KR-1", "side": "SELL", "price": 60.0, "vol": "10.0", "vol_exec": "0.0"}]
+    }
+    assert _venue_balance_cache_has_stale_order_lock(
+        "kraken", t0, obs_kr, open_kr_full, {"kraken": t_open}, {}, now_ts=t_open + 1.0
+    ) is False
+
+    # 2. Pure invariant: epoch-ms open_orders ts normalizes cleanly, and corrupt far-future bal_verified_ts fails closed (True)
+    assert _venue_balance_cache_has_stale_order_lock(
+        "kraken", t0, obs_kr, open_kr_partial, {"kraken": t_open * 1000.0}, {}, now_ts=t_open + 1.0
+    ) is True
+    assert _venue_balance_cache_has_stale_order_lock(
+        "kraken", t_open + 3600.0, obs_kr, open_kr_full, {"kraken": t_open}, {}, now_ts=t_open + 1.0
+    ) is True
+
+    # 3. Pure invariant: _merge_audit_orders deduplicates Kraken vol_exec fills against audit executedQty without double-counting
+    kr_primary = [{"orderId": "K-PRIMARY", "side": "BUY", "vol_exec": "4.25", "time": int(t0 * 1000)}]
+    kr_audit = [{"orderId": "K-AUDIT-ALT", "side": "BUY", "executedQty": "4.25", "timestamp": int((t0 + 2.0) * 1000)}]
+    merged = _merge_audit_orders(kr_primary, kr_audit)
+    assert len(merged) == 1
+
+    # 4. Dependent cross-check: corrupt far-future _balance_ts on cash/pos does not disable synthetic lock or persist future ts
+    positions = [
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "price": 60000.0,
+            "free_base": 0.0,
+            "free_quote": 2000.0,
+            "_balance_ts": t_open + 9999.0,
+        }
+    ]
+    venue_cash = {
+        "binance:USDC": {
+            "venue": "binance",
+            "asset": "USDC",
+            "free": 2000.0,
+            "_balance_ts": t_open + 9999.0,
+        }
+    }
+    updated_bals = {
+        "cash:binance:USDC": {"venue": "binance", "asset": "USDC", "free": 2000.0, "ts": t_open + 9999.0},
+        "pos:binance:BTCUSDC": {"venue": "binance", "symbol": "BTCUSDC", "base": "BTC", "quote": "USDC", "free_base": 0.0, "free_quote": 2000.0, "ts": t_open + 9999.0},
+    }
+    derive_runtime_portfolio_view(
+        [{"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 60000.0, "remaining_qty": 0.01, "created_ts": t_open * 1000.0}],
+        positions,
+        venue_cash,
+        {},
+        {"BTCUSDC": {"price": 60000.0}},
+        updated_bals,
+        {},
+        now_ts_oo=t_open + 5.0,
+        gateway_max_usd=2000.0,
+    )
+    assert venue_cash["binance:USDC"]["locked_quote_usd"] == pytest.approx(600.0)
+    orders_dir = tmp_path / "orders"
+    orders_dir.mkdir(exist_ok=True)
+    TradablePositionsAndOrdersCollector._persist_venue_balances_locked(
+        str(tmp_path),
+        {},
+        updated_bals,
+        set(),
+        now_ts=t_open + 5.0,
+        rj_bals=lambda _p, **_k: {},
+    )
+    saved_bal = json.loads((orders_dir / "cache_balance_binance.json").read_text(encoding="utf-8"))
+    assert saved_bal["items"]["USDC"]["ts"] <= t_open + 5.0 + 1.0
+
+
+

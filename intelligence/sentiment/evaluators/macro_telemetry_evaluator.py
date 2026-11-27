@@ -350,8 +350,8 @@ class FuturesPremarketLeadEvaluator(MacroTelemetryEvaluatorBase):
             fut_globex = safe_float(fut.get("globex_session_chg_pct"), default=None)
             fut_1h, cash_1h = safe_float(fut.get("chg_1h_pct"), default=None), safe_float(cash.get("chg_1h_pct"), default=None)
             cash_15m = safe_float(cash.get("chg_15m_pct"), default=None)
-            fut_ts = safe_pos_float(fut.get("last_bar_ts"), default=None)
-            cash_ts = safe_pos_float(cash.get("last_bar_ts"), default=None)
+            fut_ts = normalize_epoch_sec(fut.get("last_bar_ts"), default=None)
+            cash_ts = normalize_epoch_sec(cash.get("last_bar_ts"), default=None)
             fut_state = str(fut.get("market_state") or "").strip().upper()
             cash_state = str(cash.get("market_state") or "").strip().upper()
             if fut_state == "CLOSED" or (
@@ -1175,7 +1175,7 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
     ordered_keys = [k for k, _, _ in specs if k in items and k not in meta_skip] + [
         k for k in items if k not in {s[0] for s in specs} and k not in meta_skip
     ]
-    data_ts = safe_pos_float(data.get("ts"), default=None)
+    data_ts = normalize_epoch_sec(data.get("ts"), default=None)
     parts: List[str] = []
     for sym in ordered_keys:
         entry = items.get(sym)
@@ -1188,7 +1188,12 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             else (f"{px:.2f}" if (sym in ("DXY", "VIX") or unit_kind == "index") else f"${px:,.2f}")
         )
         bar_age_min = safe_nonneg_float(entry.get("bar_age_min"), default=None)
-        if bar_age_min is None and data_ts is not None and (b_ts := safe_pos_float(entry.get("last_bar_ts"), default=None)) is not None:
+        if (
+            bar_age_min is None
+            and data_ts is not None
+            and (b_ts := normalize_epoch_sec(entry.get("last_bar_ts"), default=None)) is not None
+            and b_ts <= data_ts + 60.0
+        ):
             bar_age_min = round(max(0.0, data_ts - b_ts) / 60.0, 1)
         m_state = str(entry.get("market_state") or "").strip().upper()
         if not m_state and bar_age_min is not None and bar_age_min > 45.0:

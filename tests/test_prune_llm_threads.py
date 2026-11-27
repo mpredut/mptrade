@@ -457,3 +457,37 @@ class TestPruneCliThreads:
         ma2 = MacroAnalyzer(cache_dir=str(tmp_path))
         assert abs(ma2._last_thread_prune_ts - saved_ts) < 1.0
 
+    def test_corrupt_future_wal_mtime_does_not_shield_expired_thread_forever(self, tmp_path):
+        """Pure invariant + cross-check: far-future .db-wal mtime must not permanently block pruning while fresh WAL still protects."""
+        from orchestratorOS.admin.prune_llm_threads import _has_active_wal_or_lock
+
+        now = datetime.now(timezone.utc)
+        now_ts = now.timestamp()
+        ts_old = (now - timedelta(days=5)).isoformat()
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("future-wal-thread", "Automated reasoning", "run", ts_old, AUTONOMOUS_PROJECT_UUID),
+                ("fresh-wal-thread", "Automated reasoning", "run", ts_old, AUTONOMOUS_PROJECT_UUID),
+            ],
+            create_files=True,
+        )
+        for cid, mtime_val in (
+            ("future-wal-thread", now_ts + 7200.0),
+            ("fresh-wal-thread", now_ts - 30.0),
+        ):
+            wal_p = os.path.join(cli_base, "conversations", f"{cid}.db-wal")
+            with open(wal_p, "wb") as fh:
+                fh.write(b"\x37\x7f\x06\x82" + b"\x00" * 32)
+            os.utime(wal_p, (mtime_val, mtime_val))
+
+        # Pure invariant on _has_active_wal_or_lock
+        assert _has_active_wal_or_lock(cli_base, "future-wal-thread", now_ts) is False
+        assert _has_active_wal_or_lock(cli_base, "fresh-wal-thread", now_ts) is True
+
+        # Dependent cross-check via full prune_old_cli_threads
+        pruned, _ = prune_old_cli_threads(cli_base=cli_base, retention_days=1.0, dry_run=False)
+        assert pruned == 1
+        assert _remaining_cids(db_path) == {"fresh-wal-thread"}
+
+

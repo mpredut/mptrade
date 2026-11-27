@@ -211,6 +211,11 @@ def resolve_latency_demotion_ttl_sec(default: float = 14400.0) -> float:
     return max(300.0, val if val is not None else default)
 
 
+def _normalize_expiry_ts(raw_val: Any) -> Optional[float]:
+    """Normalize an expiry epoch timestamp (seconds or milliseconds) to finite positive epoch seconds."""
+    return normalize_epoch_sec(raw_val, default=None)
+
+
 def _active_latency_demotions(
     quota_snapshot: Optional[Mapping[str, Any]],
     now_ts: float,
@@ -225,7 +230,7 @@ def _active_latency_demotions(
         if not isinstance(model_k, str) or not model_k.strip() or not isinstance(info, Mapping):
             continue
         fb = str(info.get("fallback_model") or "").strip()
-        restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+        restore_ts = _normalize_expiry_ts(info.get("restore_after_ts")) or 0.0
         if fb and restore_ts > now_ts:
             active[model_k.strip().lower()] = dict(info)
     return active
@@ -247,7 +252,8 @@ def _lookup_bucket_remaining(buckets: Mapping[str, Any], model_name: str) -> Opt
 def _is_model_runtime_exhausted(rt_exhausted: Mapping[str, Any], model_name: str, now_ts: float) -> bool:
     if not isinstance(rt_exhausted, Mapping) or not model_name:
         return False
-    exp = _lookup_bucket_remaining(rt_exhausted, model_name)
+    exp_raw = _lookup_bucket_remaining(rt_exhausted, model_name)
+    exp = _normalize_expiry_ts(exp_raw)
     return exp is not None and exp > now_ts
 
 
@@ -605,7 +611,7 @@ class GeminiQuotaRouterMixin:
             avail_cred = safe_float(snap.get("available_credits"), 0.0)
             rt_ex = snap.get("runtime_exhausted") if isinstance(snap.get("runtime_exhausted"), dict) else None
             if isinstance(rt_ex, dict) and rt_ex and avail_cred <= 0.0:
-                non_exhausted = [m for m in compact_chain if safe_float(rt_ex.get(m), 0.0) <= now]
+                non_exhausted = [m for m in compact_chain if not _is_model_runtime_exhausted(rt_ex, m, now)]
                 if non_exhausted:
                     compact_chain = non_exhausted
         return compact_chain or remaining
@@ -836,7 +842,7 @@ class GeminiQuotaRouterMixin:
             prev_exhausted = prev.get("runtime_exhausted")
             if same_oauth_account and isinstance(prev_exhausted, dict) and available_credits <= 0.0:
                 for m_name, exp_val in prev_exhausted.items():
-                    exp_ts = safe_float(exp_val, 0.0)
+                    exp_ts = _normalize_expiry_ts(exp_val) or 0.0
                     if exp_ts > now:
                         runtime_exhausted[str(m_name)] = exp_ts
 
@@ -848,7 +854,7 @@ class GeminiQuotaRouterMixin:
                 for m_name, info in prev_demoted.items():
                     if not isinstance(m_name, str) or not isinstance(info, dict):
                         continue
-                    restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+                    restore_ts = _normalize_expiry_ts(info.get("restore_after_ts")) or 0.0
                     if restore_ts > now or not _parse_bool_flag(restore_expired_demotions, True):
                         latency_demoted[m_name] = dict(info)
                     else:
@@ -864,6 +870,9 @@ class GeminiQuotaRouterMixin:
                         else:
                             latency_demoted[m_name] = dict(info)
 
+            prev_alert_ts = normalize_epoch_sec(prev.get("last_alert_ts"), default=0.0) if same_oauth_account else 0.0
+            if prev_alert_ts is None or prev_alert_ts > now + 60.0:
+                prev_alert_ts = 0.0
             snapshot: Dict[str, Any] = {
                 "checked_ts": now,
                 "oauth_token_fp": token_fp,
@@ -871,7 +880,7 @@ class GeminiQuotaRouterMixin:
                 "available_credits": available_credits,
                 "buckets": buckets,
                 "runtime_exhausted": runtime_exhausted,
-                "last_alert_ts": safe_float(prev.get("last_alert_ts"), 0.0) if same_oauth_account else 0.0,
+                "last_alert_ts": prev_alert_ts,
                 "last_alert_tier": str(prev.get("last_alert_tier") or "ok") if same_oauth_account else "ok",
             }
             if latency_demoted:
@@ -979,20 +988,19 @@ class GeminiQuotaRouterMixin:
 
         confirmed: list[str] = []
         for m in ordered:
-            if safe_float(runtime_unrecognized.get(m), 0.0) > now:
+            if _is_model_runtime_exhausted(runtime_unrecognized, m, now):
                 continue
-            exp_ts = safe_float(runtime_exhausted.get(m), 0.0)
-            if exp_ts > now and available_credits <= 0.0:
+            if _is_model_runtime_exhausted(runtime_exhausted, m, now) and available_credits <= 0.0:
                 continue
-            if available_credits > 0.0 or safe_float(buckets.get(m), 0.0) > 0.0:
+            if available_credits > 0.0 or (_lookup_bucket_remaining(buckets, m) or 0.0) > 0.0:
                 confirmed.append(m)
         if confirmed:
             return confirmed
         non_exhausted = [
             m
             for m in ordered
-            if safe_float(runtime_unrecognized.get(m), 0.0) <= now
-            and safe_float(runtime_exhausted.get(m), 0.0) <= now
+            if not _is_model_runtime_exhausted(runtime_unrecognized, m, now)
+            and not _is_model_runtime_exhausted(runtime_exhausted, m, now)
         ]
         return non_exhausted or ordered
 
@@ -1063,7 +1071,7 @@ class GeminiQuotaRouterMixin:
             if (
                 isinstance(existing, dict)
                 and str(existing.get("fallback_model") or "").strip().lower() == clean_fb.lower()
-                and (safe_float(existing.get("restore_after_ts"), 0.0) or 0.0) > now
+                and (_normalize_expiry_ts(existing.get("restore_after_ts")) or 0.0) > now
             ):
                 already_active = True
             demoted[clean_slow] = {
@@ -1164,7 +1172,7 @@ class GeminiQuotaRouterMixin:
             for m_name, info in demoted.items():
                 if not isinstance(m_name, str) or not isinstance(info, dict):
                     continue
-                restore_ts = safe_float(info.get("restore_after_ts"), 0.0) or 0.0
+                restore_ts = _normalize_expiry_ts(info.get("restore_after_ts")) or 0.0
                 due = bool(force) or restore_ts <= now
                 is_avail = avail_set is None or m_name.strip().lower() in avail_set
                 not_exhausted = not _is_model_runtime_exhausted(rt_ex, m_name, now)

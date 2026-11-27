@@ -127,7 +127,7 @@ from providers.ai_circuit_breaker import (
 from providers.base import MarketDataProvider
 from providers.execution_audit import _extract_audit_fill_metrics
 from providers.order_id_context import derive_venue_128bit_client_order_id, resolve_order_origin
-from providers.order_ohlc_utils import normalize_open_order
+from providers.order_ohlc_utils import extract_executed_qty, extract_remaining_qty, normalize_open_order
 from providers.intent_state import (
     collect_known_ai_order_ids,
     intent_venue_client_order_ids,
@@ -623,16 +623,28 @@ def _venue_balance_cache_has_stale_order_lock(
     cached_open_sym_verified_ts: Dict[Tuple[str, str], float],
     *,
     cached_open_latest_ts: Optional[Dict[str, float]] = None,
+    now_ts: Optional[float] = None,
 ) -> bool:
     """Return True when ``open_orders`` is strictly newer than ``bal_verified_ts`` and shows fewer locked funds/coins than ``cache_balance_<venue>``."""
+    eff_now = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
+    bal_ver_ts = normalize_epoch_sec(bal_verified_ts, default=None)
+    if bal_ver_ts is None or (eff_now is not None and bal_ver_ts > eff_now + 60.0):
+        return True
+
+    def _valid_open_ts(raw_ts: Any) -> float:
+        ts_s = normalize_epoch_sec(raw_ts, default=None)
+        if ts_s is None or (eff_now is not None and ts_s > eff_now + 60.0):
+            return 0.0
+        return ts_s
+
     open_ver_ts = max(
-        safe_pos_float(cached_open_verified_ts.get(venue_norm), default=0.0) or 0.0,
-        safe_pos_float((cached_open_latest_ts or {}).get(venue_norm), default=0.0) or 0.0,
+        _valid_open_ts(cached_open_verified_ts.get(venue_norm)),
+        _valid_open_ts((cached_open_latest_ts or {}).get(venue_norm)),
     )
     for (ov, _), sts in cached_open_sym_verified_ts.items():
-        if ov == venue_norm and (sf := safe_pos_float(sts, default=0.0) or 0.0) > open_ver_ts:
+        if ov == venue_norm and (sf := _valid_open_ts(sts)) > open_ver_ts:
             open_ver_ts = sf
-    if open_ver_ts <= bal_verified_ts + 0.5:
+    if open_ver_ts <= bal_ver_ts + 0.5:
         return False
     open_quote_locked: Dict[str, float] = {}
     open_base_locked: Dict[str, float] = {}
@@ -646,11 +658,7 @@ def _venue_balance_cache_has_stale_order_lock(
             if not isinstance(row, dict):
                 continue
             side_u = extract_order_side(row)
-            orig_q = safe_pos_float(row.get("origQty") if row.get("origQty") is not None else row.get("qty"), default=0.0) or 0.0
-            exec_q = safe_nonneg_float(row.get("executedQty") if row.get("executedQty") is not None else row.get("filled_qty"), default=0.0) or 0.0
-            rem_q = safe_pos_float(row.get("remaining_qty"), default=None)
-            if rem_q is None:
-                rem_q = max(0.0, orig_q - exec_q)
+            rem_q = extract_remaining_qty(row, default=0.0)
             if rem_q <= 1e-12:
                 continue
             if side_u == "BUY":
@@ -927,6 +935,10 @@ def derive_runtime_portfolio_view(
         (pv, ps): pos_item for pos_item, pv, ps in _iter_valid_tradable_positions(tradable_positions)
     }
 
+    def _valid_obs_ts(raw_ts: Any) -> Optional[float]:
+        ts_s = normalize_epoch_sec(raw_ts, default=None)
+        return ts_s if (ts_s is not None and ts_s <= now_ts_oo + 60.0) else None
+
     shared_obs_by_va: Dict[tuple[str, str], BalanceObservation] = {}
     for cash_val in venue_quote_cash.values():
         if isinstance(cash_val, dict):
@@ -934,7 +946,7 @@ def derive_runtime_portfolio_view(
             cq_u = str(cash_val.get("asset") or "").strip().upper()
             if cv_n and cq_u:
                 c_free = safe_nonneg_float(cash_val.get("free"), default=None)
-                c_ts = safe_pos_float(cash_val.get("_balance_ts"), default=None)
+                c_ts = _valid_obs_ts(cash_val.get("_balance_ts"))
                 c_prev_lq = safe_nonneg_float(cash_val.get("_prev_locked_quote_usd"), default=None)
                 if (
                     m_c := merge_balance_observation(
@@ -946,10 +958,10 @@ def derive_runtime_portfolio_view(
         p_res_b, p_res_q = resolve_assets(ps, pos_item.get("base"), pos_item.get("quote"))
         p_b_u = canonical_balance_asset_key(p_res_b, venue=pv)
         p_q_u = str(p_res_q or pos_item.get("quote_asset") or "").strip().upper()
-        fallback_ts = safe_pos_float(pos_item.get("_balance_ts"), default=None)
+        fallback_ts = _valid_obs_ts(pos_item.get("_balance_ts"))
         if p_b_u:
             fb_v = safe_nonneg_float(pos_item.get("free_base"), default=None)
-            b_ts = safe_pos_float(pos_item.get("_base_balance_ts"), default=None) or fallback_ts
+            b_ts = _valid_obs_ts(pos_item.get("_base_balance_ts")) or fallback_ts
             p_prev_lb = safe_nonneg_float(pos_item.get("_prev_locked_base_qty"), default=None)
             if (
                 m_b := merge_balance_observation(
@@ -959,7 +971,7 @@ def derive_runtime_portfolio_view(
                 shared_obs_by_va[(pv, p_b_u)] = m_b
         if p_q_u:
             fq_v = safe_nonneg_float(pos_item.get("free_quote"), default=None)
-            q_ts = safe_pos_float(pos_item.get("_quote_balance_ts"), default=None) or fallback_ts
+            q_ts = _valid_obs_ts(pos_item.get("_quote_balance_ts")) or fallback_ts
             p_prev_lq = safe_nonneg_float(pos_item.get("_prev_locked_quote_usd"), default=None)
             if (
                 m_q := merge_balance_observation(
@@ -984,7 +996,7 @@ def derive_runtime_portfolio_view(
         oo_side = str(oo_item.get("side") or "").strip().upper()
         oo_px = safe_pos_float(oo_item.get("price"), default=0.0) or 0.0
         oo_rem = safe_pos_float(oo_item.get("remaining_qty"), default=None) or safe_pos_float(oo_item.get("qty"), default=0.0) or 0.0
-        explicit_oo_ts = safe_pos_float(oo_item.get("created_ts"), default=None)
+        explicit_oo_ts = _valid_obs_ts(oo_item.get("created_ts"))
         if oo_item.get("created_ts") is None:
             oo_item["created_ts"] = round(now_ts_oo, 3)
             oo_item["age_min"] = 0.0
@@ -1222,7 +1234,7 @@ def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, An
             or normalize_timestamp_ms(ar.get("time"), default=0)
             or 0
         )
-        a_qty = first_pos_float(ar.get("executedQty"), ar.get("qty"), default=0.0) or 0.0
+        a_qty = extract_executed_qty(ar, default=0.0) or 0.0
         if a_ts > 0 and a_qty > 0.0 and any(
             extract_order_side(br) == a_side
             and abs(
@@ -1233,7 +1245,7 @@ def _merge_audit_orders(primary_list: Any, audit_list: Any) -> List[Dict[str, An
                 )
                 - a_ts
             ) <= 60000
-            and abs((first_pos_float(br.get("executedQty"), br.get("qty"), default=0.0) or 0.0) - a_qty) <= max(1e-5, a_qty * 0.01)
+            and abs((extract_executed_qty(br, default=0.0) or 0.0) - a_qty) <= max(1e-5, a_qty * 0.01)
             for br in base_rows
         ):
             continue
@@ -1801,6 +1813,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
             eff_now = resolve_now_ts(now_ts)
             read_disk = rj_bals in (_default_read_json_cached, read_json_recovering, read_json_cached)
 
+            def _bounded_ts(raw_ts: Any, fallback: float) -> float:
+                ts_s = normalize_epoch_sec(raw_ts, default=None)
+                return ts_s if (ts_s is not None and ts_s <= eff_now + 60.0) else fallback
+
             # 1. Layer 3 raw account balances -> cachedb/orders/cache_balance_<venue>.json (CacheBalanceManager)
             per_venue_assets: Dict[str, Dict[str, Dict[str, Any]]] = {}
             per_venue_bd: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -1814,7 +1830,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     free_v = safe_nonneg_float(v.get("free"), default=None)
                     if v_n and a_u and free_v is not None:
                         locked_q = safe_nonneg_float(v.get("locked_quote_usd"), default=0.0) or 0.0
-                        c_ts = normalize_epoch_sec(v.get("ts"), default=None) or eff_now
+                        c_ts = _bounded_ts(v.get("ts"), eff_now)
                         per_venue_assets.setdefault(v_n, {})[a_u] = {
                             "free": free_v,
                             "locked": locked_q,
@@ -1835,11 +1851,11 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     res_b, res_q = resolve_assets(p_sym, v.get("base"), v.get("quote"))
                     b_k = canonical_balance_asset_key(res_b, venue=v_n)
                     q_u = str(res_q or "").strip().upper()
-                    pos_ts = normalize_epoch_sec(v.get("ts"), default=None) or eff_now
+                    pos_ts = _bounded_ts(v.get("ts"), eff_now)
                     fb_v = safe_nonneg_float(v.get("free_base"), default=None)
                     if b_k and fb_v is not None:
                         lb_v = safe_nonneg_float(v.get("locked_base_qty"), default=0.0) or 0.0
-                        b_ts = normalize_epoch_sec(v.get("base_bal_ts"), default=None) or pos_ts
+                        b_ts = _bounded_ts(v.get("base_bal_ts"), pos_ts)
                         per_venue_assets.setdefault(v_n, {})[b_k] = {
                             "free": fb_v,
                             "locked": lb_v,
@@ -1847,7 +1863,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                         }
                     fq_v = safe_nonneg_float(v.get("free_quote"), default=None)
                     if q_u and fq_v is not None and q_u not in per_venue_assets.get(v_n, {}):
-                        q_ts = normalize_epoch_sec(v.get("quote_bal_ts"), default=None) or pos_ts
+                        q_ts = _bounded_ts(v.get("quote_bal_ts"), pos_ts)
                         lq_v = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
                         per_venue_assets.setdefault(v_n, {})[q_u] = {
                             "free": fq_v,
@@ -1925,12 +1941,16 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
         seen_rec_vs: set[tuple[str, str]] = set()
         cached_obs_by_va = _build_cached_balance_observations(cached_bals)
         non_tradable_rec_syms = _resolve_non_tradable_registry_symbols(cache_dir)
+        def _valid_rec_ts(raw_ts: Any) -> Optional[float]:
+            ts_s = normalize_epoch_sec(raw_ts, default=None)
+            return ts_s if (ts_s is not None and ts_s <= now_ts_oo + 60.0) else None
+
         for k, v in cached_bals.items():
             if k.startswith("pos:") and isinstance(v, dict):
                 rec_pos = dict(v)
-                pos_bal_ts = safe_pos_float(v.get("ts"), default=None)
-                pos_base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_bal_ts
-                pos_quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_bal_ts
+                pos_bal_ts = _valid_rec_ts(v.get("ts"))
+                pos_base_ts = _valid_rec_ts(v.get("base_bal_ts")) or pos_bal_ts
+                pos_quote_ts = _valid_rec_ts(v.get("quote_bal_ts")) or pos_bal_ts
                 prev_pos_lb = safe_nonneg_float(v.get("locked_base_qty"), default=None)
                 prev_pos_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
                 for stale_k in ("locked_quote_usd", "replace_max_buy_usd", "locked_base_qty", "locked_base_usd", "replace_max_sell_usd", "ts", "base_bal_ts", "quote_bal_ts"):
@@ -2053,7 +2073,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                     c_v_norm = normalize_venue_name(c_venue)
                     rec_cash = dict(v)
                     prev_cash_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
-                    raw_c_ts = safe_pos_float(v.get("ts"), default=None)
+                    raw_c_ts = _valid_rec_ts(v.get("ts"))
                     rec_cash.pop("locked_quote_usd", None)
                     rec_cash.pop("ts", None)
                     cash_ref_locked: Optional[float] = None
@@ -2565,6 +2585,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             cached_open_verified_ts,
                             cached_open_sym_verified_ts,
                             cached_open_latest_ts=cached_open_latest_ts,
+                            now_ts=now_ts_oo,
                         )
                     ):
                         continue

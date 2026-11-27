@@ -627,3 +627,43 @@ def test_fee_maintenance_partial_error_shortens_retry_and_rejects_corrupt_venue_
     assert read_persisted_venue_fee_spec("binance", "BTCUSDC", cache_dir=str(tmp_path), now_ts=now_ts + 3605.0) == {}
 
 
+def test_maintain_venue_fees_cli_nonzero_exit_when_all_venues_fail_with_empty_venues(monkeypatch):
+    """Pure invariant + cross-check: maintain_venue_fees.main returns exit 1 when errors is non-empty and venues is empty."""
+    from orchestratorOS.admin import maintain_venue_fees as mvf
+
+    monkeypatch.setattr(mvf.botcore, "load_env_stack", lambda: None)
+
+    # All venues failed before populating result["venues"] -> must exit 1 (never 0)
+    monkeypatch.setattr(
+        mvf,
+        "run_venue_fee_maintenance",
+        lambda **_kw: {"status": "error", "venues": {}, "errors": {"binance": "timeout"}},
+    )
+    assert mvf.main(["--json"]) == 1
+
+    # Partial failure (1 error out of 2 venues populated) -> exits 0
+    monkeypatch.setattr(
+        mvf,
+        "run_venue_fee_maintenance",
+        lambda **_kw: {
+            "status": "partial_error",
+            "venues": {"binance": {"fee_spec": {}}, "t212": {"fee_spec": {}}},
+            "errors": {"binance": "timeout"},
+        },
+    )
+    assert mvf.main(["--json"]) == 0
+
+    # All populated venues errored -> exits 1
+    monkeypatch.setattr(
+        mvf,
+        "run_venue_fee_maintenance",
+        lambda **_kw: {
+            "status": "error",
+            "venues": {"binance": {}},
+            "errors": {"binance": "timeout"},
+        },
+    )
+    assert mvf.main(["--json"]) == 1
+
+
+
