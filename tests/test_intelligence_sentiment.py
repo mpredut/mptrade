@@ -19208,6 +19208,63 @@ def test_cycle29_yahoo_pre_ext_px_stale_reg_chg_and_equity_cross_gap_kinematics(
     assert "chg_24h_pct" in m24_live
 
 
+def test_cycle30_flat_equity_no_stale_kalman_vel_time_travel():
+    """Cycle 30 live PROD audit fix:
+    1. apply_24h_series_enrichment never overwrites a fresher converged kalman_vel=0.0 (_short_trend_ts > series tail by >60s)
+       with a stale series-derived kalman_vel spike (e.g. RGNT_US_EQ flat at $0.937 for 22.7m after a +1.3% tick).
+    2. EquityRthSessionPolicy.prune_stale_short_metrics prunes stale kalman_vel when series tail is >20m stale and chg_15m_pct
+       has already been stripped (unchanged flat tail), while preserving kalman_vel when chg_15m_pct is present.
+    """
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_24h_series_enrichment,
+        compute_24h_price_metrics,
+    )
+
+    now_s = 1_795_772_699.0
+    tail_ms = (now_s - 22.7 * 60.0) * 1000.0  # 22.7m old stripped flat tail ending on 0.925 -> 0.937 tick
+    rgnt_series = [[tail_ms - (12 - i) * 60_000.0, 0.925] for i in range(12)] + [[tail_ms, 0.937]]
+
+    # 1. Fresh converged kalman_vel=0.0 from cache_short_trend (1m old) is NOT overwritten by 22.7m-older +0.4037 spike
+    entry_live_flat = {
+        "price": 0.937,
+        "kalman_vel": 0.0,
+        "kalman_vel_std": 0.11818,
+        "kalman_trend": 0,
+        "_short_trend_ts": now_s - 60.0,
+    }
+    m24_flat = {"chg_24h_pct": 1.30}
+    apply_24h_series_enrichment("RGNT_US_EQ", entry_live_flat, m24_flat, rgnt_series, None)
+    assert entry_live_flat["kalman_vel"] == pytest.approx(0.0)
+    assert entry_live_flat["kalman_vel_std"] == pytest.approx(0.11818)
+
+    # Cold unseeded kalman (std >= 5.99) still upgrades from series when _short_trend_ts is absent/matching
+    entry_cold = {
+        "price": 0.937,
+        "kalman_vel": 0.0,
+        "kalman_vel_std": 6.0,
+        "kalman_trend": 0,
+    }
+    apply_24h_series_enrichment("RGNT_US_EQ", entry_cold, compute_24h_price_metrics(rgnt_series, is_equity=True), rgnt_series, None)
+    assert entry_cold["kalman_vel"] > 0.1
+
+    # 2. EquityRthSessionPolicy prunes stale kalman_vel when >20m stale & chg_15m_pct absent (even without _short_trend_ts)
+    eq_pol = resolve_asset_session_policy("RGNT_US_EQ")
+    entry_no_st = {"price": 0.937, "quote_age_min": 0.4}
+    apply_24h_series_enrichment("RGNT_US_EQ", entry_no_st, {"chg_24h_pct": 1.30}, rgnt_series, None)
+    assert entry_no_st.get("kalman_vel", 0.0) > 0.1
+    eq_pol.prune_stale_short_metrics(entry_no_st, {"chg_24h_pct": 1.30}, rgnt_series, now_s, include_kinematics=True)
+    assert "kalman_vel" not in entry_no_st
+    assert "kalman_vel_z" not in entry_no_st
+
+    # Cross-check: when chg_15m_pct IS present (same-day RTH/POST closing window), kalman_vel is preserved
+    entry_with_15m = {"price": 0.937, "kalman_vel": -0.05, "kalman_vel_std": 0.12, "kalman_trend": -1}
+    eq_pol.prune_stale_short_metrics(
+        entry_with_15m, {"chg_15m_pct": -0.35, "chg_24h_pct": 1.30}, rgnt_series, now_s, include_kinematics=True
+    )
+    assert entry_with_15m["kalman_vel"] == pytest.approx(-0.05)
+
+
 
 
 

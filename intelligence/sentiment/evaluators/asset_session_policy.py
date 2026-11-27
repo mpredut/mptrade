@@ -684,6 +684,11 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
                 "trend_3_7m",
                 "gradient_recent_fast",
                 *(SHORT_KINEMATIC_METRIC_KEYS if include_kinematics else ()),
+                *(
+                    ("kalman_vel", "kalman_vel_std", "kalman_vel_z", "kalman_trend")
+                    if (is_series_stale and "chg_15m_pct" not in m24)
+                    else ()
+                ),
             ):
                 entry.pop(k_stale_s, None)
 

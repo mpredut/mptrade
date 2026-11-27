@@ -2388,23 +2388,33 @@ def apply_24h_series_enrichment(
             for ck in ("alt_btc_pos_24h_pct", "alt_btc_dd_24h_high_pct", "alt_btc_bounce_24h_low_pct", "beta_btc_24h", "corr_btc_24h"):
                 if cross_btc.get(ck) is not None:
                     entry[ck] = cross_btc[ck]
+    st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
+    pts_s24_sorted = _extract_sorted_ts_px(series_24h) if series_24h else []
+    s24_last_ts_s = (safe_float(pts_s24_sorted[-1][0], default=0.0) or 0.0) / 1000.0 if pts_s24_sorted else 0.0
     k_cur_vel = safe_float(entry.get("kalman_vel"), default=None)
     k_cur_std = safe_float(entry.get("kalman_vel_std"), default=None)
+    has_newer_seeded_kalman = bool(
+        st_ts_e is not None
+        and s24_last_ts_s > 0.0
+        and (st_ts_e - s24_last_ts_s) > 60.0
+        and k_cur_vel is not None
+        and k_cur_std is not None
+        and k_cur_std < 5.99
+    )
     unseeded_kalman = is_unseeded_kalman_state(entry, treat_none_as_unseeded=True)
-    if (unseeded_kalman or k_cur_std is None) and series_24h and isinstance(k_fb := compute_kalman_from_series(series_24h), dict):
+    if (
+        not has_newer_seeded_kalman
+        and (unseeded_kalman or k_cur_std is None)
+        and series_24h
+        and isinstance(k_fb := compute_kalman_from_series(series_24h), dict)
+    ):
         if k_cur_vel is None or k_cur_std is None or k_cur_std >= 5.99 or abs(safe_float(k_fb.get("kalman_vel"), 0.0)) >= 1e-5:
             for kk, kv in k_fb.items():
                 if kv is not None and (entry.get(kk) is None or unseeded_kalman):
                     entry[kk] = kv
     resolve_kalman_vel_z(entry, populate=True)
-    st_ts_e = safe_pos_float(entry.pop("_short_trend_ts", None), default=None)
     if series_24h:
-        pts_s24_sorted = _extract_sorted_ts_px(series_24h)
-        st_lag_s = (
-            ((safe_float(pts_s24_sorted[-1][0], default=0.0) or 0.0) / 1000.0 - st_ts_e)
-            if (st_ts_e is not None and pts_s24_sorted)
-            else 0.0
-        )
+        st_lag_s = (s24_last_ts_s - st_ts_e) if (st_ts_e is not None and s24_last_ts_s > 0.0) else 0.0
         stale_short_ts = bool(st_lag_s > 600.0)
         stale_kin_ts = bool(st_lag_s > 45.0)
         if stale_short_ts:
