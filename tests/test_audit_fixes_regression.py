@@ -10475,6 +10475,117 @@ def test_pass33_state_store_lookup_symmetry_and_balance_ts_future_clamp(tmp_path
     assert reloaded["pos:binance:BTCUSDC"]["quote_bal_ts"] == pytest.approx(t0)
 
 
+def test_pass35_macro_analyzer_future_ts_heartbeat_isolation_and_datasets_overflow(tmp_path, monkeypatch):
+    """Pass #35 pure invariants + dependent cross-checks:
+    1. write_daemon_heartbeat_files(use_save_json_state=True) isolates sibling path errors so one
+       failing target never skips remaining heartbeat files.
+    2. MacroAnalyzer clamps corrupt far-future persisted timestamps (> now + 60s) on init, notification,
+       stale-fallback detection, and run_cycle advisor freshness checks so a corrupt far-future LLM
+       fallback triggers retry backoff (advisor_updated=False) instead of sleeping a full interval.
+    3. offline.backtests.datasets.format_utc_bar_timestamp returns None on out-of-range overflow epochs
+       and format_ohlc_bars_log_span degrades safely to '?' without crashing.
+    """
+    from intelligence.macro import daemon_ssot
+    from intelligence.macro_analyzer import MacroAnalyzer
+    from offline.backtests.datasets import format_ohlc_bars_log_span, format_utc_bar_timestamp
+    from state_io import save_json_state as real_save_json_state
+
+    # 1. Pure invariant + cross-check: sibling heartbeat targets isolated under use_save_json_state=True
+    hb_bad = str(tmp_path / "hb_bad.json")
+    hb_good = str(tmp_path / "hb_good.json")
+    attempted: list[str] = []
+
+    def _flaky_save(path, payload, **kw):
+        attempted.append(str(path))
+        if str(path) == hb_bad:
+            raise OSError("simulated disk full on first target")
+        return real_save_json_state(path, payload, **kw)
+
+    monkeypatch.setattr(daemon_ssot, "save_json_state", _flaky_save)
+    daemon_ssot.write_daemon_heartbeat_files(
+        (hb_bad, hb_good),
+        {"pid": 12345, "ts": 1_795_000_000.0, "status": "ok"},
+        use_save_json_state=True,
+    )
+    assert attempted == [hb_bad, hb_good]
+    persisted_hb = json.loads((tmp_path / "hb_good.json").read_text(encoding="utf-8"))
+    assert persisted_hb["pid"] == 12345 and persisted_hb["status"] == "ok"
+
+    # 2. Pure invariant + dependent cross-check: MacroAnalyzer rejects corrupt far-future timestamps
+    now_s = time.time()
+    future_ts = now_s + 86400.0
+    (tmp_path / "geopolitical_eval.json").write_text(
+        json.dumps(
+            {
+                "threat_level": "NORMAL",
+                "risk_score": 0.1,
+                "summary": "Corrupt future geo cache.",
+                "recommended_brake": "NONE",
+                "headlines_analyzed": 2,
+                "ts": future_ts,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "sentiment_eval.json").write_text(
+        json.dumps(
+            {
+                "market_bias": "NEUTRAL",
+                "risk_level": "MODERATE",
+                "confidence": 0.5,
+                "summary": "Corrupt future sentiment cache.",
+                "key_risks": [],
+                "recommended_action": "HOLD",
+                "ts": future_ts,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ma = MacroAnalyzer(cache_dir=str(tmp_path), advisor_interval_sec=3600.0, macro_llm_interval_sec=3600.0)
+    ma.shadow_notify = False
+    assert ma._last_macro_llm_ts == 0.0
+    assert ma._last_advisor_ts == 0.0
+    assert ma._last_notified_geo_ts == 0.0
+    assert ma._last_notified_advisor_ts == 0.0
+
+    # _maybe_notify_assessment must clamp far-future assessment_ts to eval_now
+    ma._maybe_notify_assessment(
+        ts_attr="_last_notified_advisor_ts",
+        headline_attr="_last_notified_advisor_headline",
+        assessment_ts=future_ts,
+        eval_now=now_s,
+        eff_interval_sec=3600.0,
+        fallback_interval_sec=3600.0,
+        force=True,
+        topic_id="macro_sentiment",
+        icon="i",
+        headline_suffix="HOLD (NEUTRAL)",
+        body="test",
+    )
+    assert ma._last_notified_advisor_ts <= now_s + 1.0
+
+    # Dependent cross-check: LLM outage returning corrupt far-future prev_cached must NOT mark advisor_updated=True
+    ma._last_notified_advisor_ts = 0.0
+    ma._last_fg_value = None
+    monkeypatch.setattr(ma.sentiment_advisor, "_query_topic", lambda *_a, **_k: None)
+    monkeypatch.setattr(ma.geopolitical_analyzer, "_query_topic", lambda *_a, **_k: None)
+    # Restore corrupt far-future _last_eval_ts on sentiment_advisor to verify run_cycle freshness bound
+    ma.sentiment_advisor._last_eval_ts = future_ts
+    res_cycle = ma.run_cycle(force=True, now=now_s)
+    assert res_cycle["advisor_updated"] is False
+    assert ma._last_advisor_ts < now_s
+    assert ma._last_notified_advisor_ts == 0.0
+
+    # 3. Pure invariant + dependent cross-check: format_utc_bar_timestamp overflow guard
+    assert format_utc_bar_timestamp(10**18) is None
+    assert format_utc_bar_timestamp(10**18, include_time=True) is None
+    assert format_utc_bar_timestamp(1_700_000_000) == "2023-11-14"
+    assert format_utc_bar_timestamp(1_700_000_000, include_time=True) == "2023-11-14 22:13 UTC"
+    assert format_ohlc_bars_log_span([{"timestamp": 10**18}]) == "1 bars ? -> ?"
+
+
+
 
 
 

@@ -15,6 +15,7 @@ from functools import partial
 import inspect
 import os
 import sys
+import threading
 import time
 from typing import Optional, List, Callable, Any
 
@@ -43,6 +44,7 @@ from botcore import (
     clean_upper_scalar,
     extract_order_id,
     is_us_rth_open,
+    lru_dict_put,
     normalize_side,
     obj_attr,
     resolve_patched_attr,
@@ -748,14 +750,20 @@ class Instrument:
             if ctx.retry_enqueued or ledger_iid or ledger_cid:
                 dedup_key = (str(self.provider_name), str(self.symbol), ledger_iid or ledger_cid or "", str(ctx.reason or ""))
                 now_mono = time.monotonic()
-                dedup_map = getattr(Instrument, "_ledger_guard_block_dedup", None)
-                if dedup_map is None:
-                    dedup_map = {}
-                    Instrument._ledger_guard_block_dedup = dedup_map
-                if (now_mono - dedup_map.get(dedup_key, -1e9)) >= 300.0:
-                    if len(dedup_map) > 512:
-                        dedup_map.clear()
-                    dedup_map[dedup_key] = now_mono
+                dedup_lock = getattr(Instrument, "_ledger_guard_block_dedup_lock", None)
+                if dedup_lock is None:
+                    dedup_lock = threading.Lock()
+                    Instrument._ledger_guard_block_dedup_lock = dedup_lock
+                should_record = False
+                with dedup_lock:
+                    dedup_map = getattr(Instrument, "_ledger_guard_block_dedup", None)
+                    if dedup_map is None:
+                        dedup_map = {}
+                        Instrument._ledger_guard_block_dedup = dedup_map
+                    if (now_mono - dedup_map.get(dedup_key, -1e9)) >= 300.0:
+                        lru_dict_put(dedup_map, dedup_key, now_mono, 512)
+                        should_record = True
+                if should_record:
                     get_default_ledger_writer().record_event(
                         OrderEventType.GUARD_BLOCKED,
                         venue=self.provider_name,

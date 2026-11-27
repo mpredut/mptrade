@@ -190,6 +190,8 @@ def check_external_order_guards(
 
 def is_gi_whale_enforced(bypass_guards: Any = None, *, venue: str = "binance") -> bool:
     """Return True if GI_WHALE is actively enforced and not bypassed in order_guard.conf."""
+    if GUARD_REGISTRY["GI_WHALE"].is_bypassed(bypass_guards):
+        return False
     try:
         m = _load_margins()
         for mode_key in ("intelligence_guards_mode", "external_guard_mode", "whale_guard_mode"):

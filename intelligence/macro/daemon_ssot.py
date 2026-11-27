@@ -332,11 +332,11 @@ def write_daemon_heartbeat_files(
     log = logger_inst or logger
     if use_save_json_state:
         _save_state = _resolve_daemon_helper("save_json_state", save_json_state, _default_save_json_state)
-        try:
-            for raw_target in paths:
+        for raw_target in paths:
+            try:
                 _save_state(raw_target, payload, indent=2)
-        except Exception as exc:
-            log.debug("Failed writing daemon heartbeat: %s", exc)
+            except Exception as exc:
+                log.debug("Failed writing daemon heartbeat for %s: %s", raw_target, exc)
         return
 
     do_fsync = _parse_bool_flag(fsync, True)

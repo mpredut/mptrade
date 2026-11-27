@@ -2318,3 +2318,77 @@ def test_pass34_math_profit_ref_fails_closed_on_provider_error_and_margins_reloa
     os.utime(tmp_conf, (t_now[0] + 1.0, t_now[0] + 1.0))
     m1 = gh._load_margins()
     assert m1["default"] == pytest.approx(new_default)
+
+
+def test_pass35_external_bypass_and_geopolitical_future_ts_invariants_and_crosschecks(monkeypatch):
+    """Pass #35 pure invariants + dependent cross-checks:
+    1. external_order_guard.is_gi_whale_enforced honors explicit caller bypass_guards even when _load_margins raises.
+    2. Dependent cross-check: evaluate_whale_spread_flow short-circuits with 'gi_whale_bypassed_or_off' under _load_margins error.
+    3. llm_order_guard.check_geopolitical_order_guards ignores corrupt far-future cached_geo (> now + 60s)
+       instead of vetoing BUYs indefinitely, while still enforcing valid current CRITICAL_SHOCK assessments.
+    """
+    import external_order_guard as eog
+
+    def _boom_margins():
+        raise RuntimeError("transient order_guard.conf read failure")
+
+    monkeypatch.setattr(eog, "_load_margins", _boom_margins)
+
+    # 1. Pure invariant: explicit caller bypass_guards beats _load_margins failure; no bypass fails safe to True
+    assert eog.is_gi_whale_enforced(bypass_guards={"GI_WHALE"}) is False
+    assert eog.is_gi_whale_enforced(bypass_guards="all") is False
+    assert eog.is_gi_whale_enforced(bypass_guards={"gi"}) is False
+    assert eog.is_gi_whale_enforced(bypass_guards=None) is True
+
+    # 2. Dependent cross-check: evaluate_whale_spread_flow honors caller bypass without touching collector
+    blocked, reason = eog.evaluate_whale_spread_flow("BTCUSDC", "BUY", bypass_guards={"GI_WHALE"})
+    assert blocked is False
+    assert reason == "gi_whale_bypassed_or_off"
+
+    # 3. Pure invariant + dependent cross-check: far-future geopolitical cache is rejected; valid current shock vetoes
+    now_s = 1_795_100_000.0
+    future_shock = GeopoliticalThreatAssessment(
+        threat_level="CRITICAL_SHOCK",
+        risk_score=0.98,
+        summary="Corrupt future timestamp shock.",
+        recommended_brake="HARD_VETO_NEW_BUYS",
+        headlines_analyzed=10,
+        ts=now_s + 86400.0,
+    )
+    with patch.object(
+        GeopoliticalThreatAnalyzer,
+        "_load_from_disk",
+        lambda self: setattr(self, "_cached_assessment", future_shock),
+    ):
+        ok_f, reason_f, scale_f = check_geopolitical_order_guards(
+            symbol="BTCUSDC",
+            side="BUY",
+            margins=make_test_margins(geopolitical_guard_mode="enforce"),
+            now=now_s,
+        )
+    assert ok_f is True
+    assert reason_f == "geopolitical_cache_future_ts"
+    assert scale_f == 1.0
+
+    current_shock = GeopoliticalThreatAssessment(
+        threat_level="CRITICAL_SHOCK",
+        risk_score=0.98,
+        summary="Valid current shock.",
+        recommended_brake="HARD_VETO_NEW_BUYS",
+        headlines_analyzed=10,
+        ts=now_s - 30.0,
+    )
+    with patch.object(
+        GeopoliticalThreatAnalyzer,
+        "_load_from_disk",
+        lambda self: setattr(self, "_cached_assessment", current_shock),
+    ):
+        ok_c, reason_c, scale_c = check_geopolitical_order_guards(
+            symbol="BTCUSDC",
+            side="BUY",
+            margins=make_test_margins(geopolitical_guard_mode="enforce"),
+            now=now_s,
+        )
+    assert ok_c is False
+    assert "veto_critical_geopolitical_shock" in reason_c
+    assert scale_c == 0.0

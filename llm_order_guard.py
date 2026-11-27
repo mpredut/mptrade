@@ -296,6 +296,8 @@ def check_geopolitical_order_guards(
         if cached_geo is not None:
             now_ts = resolve_now_ts(now)
             geo_ts = normalize_epoch_sec(obj_attr(cached_geo, "ts", None), allow_iso=True) or 0.0
+            if geo_ts > now_ts + 60.0:
+                return True, "geopolitical_cache_future_ts", 1.0
             geo_level = clean_upper_scalar(obj_attr(cached_geo, "threat_level", "NORMAL")) or "NORMAL"
             market_absorbed = False
             if geo_level == "ELEVATED" and geo_ts > 0.0 and (now_ts - geo_ts) >= 1800.0:

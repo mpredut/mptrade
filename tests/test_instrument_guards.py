@@ -2845,3 +2845,82 @@ def test_active_intents_prunes_freshly_filled_ai_order_despite_stale_venue_balan
     )
     result = build_active_intent_index(str(tmp_path))
     assert [it["intent_id"] for it in result["intents"]] == ["intent_resting_arb"]
+
+
+def test_pass35_ledger_dedup_lru_threadsafe_and_pricewindow_vol_memo_lock():
+    """Pass #35 pure invariants + dependent cross-checks:
+    1. Instrument._ledger_guard_block_dedup uses lock-protected LRU eviction (capacity 512) instead of
+       clearing all 512 active dedup keys in a single cliff, and prevents duplicate GUARD_BLOCKED events.
+    2. pricewindow.calculate_volatility_1h memo cache is thread-safe under concurrent multi-thread eviction.
+    """
+    import threading
+    import pricewindow as pw
+    from providers.order_ledger import OrderEventType
+
+    orig_map = getattr(Instrument, "_ledger_guard_block_dedup", None)
+    try:
+        # 1. Pre-fill dedup map to capacity 512 with recent monotonic timestamps
+        now_m = time.monotonic()
+        pre = {("binance", "BTCUSDC", f"old_{i}", "profit_guard"): now_m - 10.0 for i in range(512)}
+        Instrument._ledger_guard_block_dedup = pre
+
+        recorded = []
+        fake_writer = SimpleNamespace(record_event=lambda et, **kw: recorded.append((et, kw)))
+        p = _FakeProvider(name="binance", price=100.0)
+        inst = Instrument(
+            name="BTC", symbol="BTCUSDC", provider="binance", base="BTC", quote="USDC",
+            api=MarketApi([p]),
+        )
+
+        with patch("instrument.get_default_ledger_writer", return_value=fake_writer), \
+             patch("order_guard.check_math_profit_reference", return_value=False), \
+             patch("order_guard.profit_guard", return_value=False):
+            # First blocked call inserts key #513 -> evicts only oldest ('old_0'), preserves 'old_511'
+            assert inst.place(
+                "BUY", 100.0, 1.0,
+                smart=False, wait_for_trend=False, caller_owns_retry=True, intent_id="intent-p35-lru",
+            ) is None
+            # Immediate duplicate call with same key must be deduped (still 1 ledger event)
+            assert inst.place(
+                "BUY", 100.0, 1.0,
+                smart=False, wait_for_trend=False, caller_owns_retry=True, intent_id="intent-p35-lru",
+            ) is None
+
+        dedup_after = Instrument._ledger_guard_block_dedup
+        assert len(dedup_after) == 512
+        assert ("binance", "BTCUSDC", "old_0", "profit_guard") not in dedup_after
+        assert ("binance", "BTCUSDC", "old_511", "profit_guard") in dedup_after
+        guard_events = [ev for ev in recorded if ev[0] == OrderEventType.GUARD_BLOCKED]
+        assert len(guard_events) == 1
+        assert guard_events[0][1]["iid"] == "intent-p35-lru"
+    finally:
+        Instrument._ledger_guard_block_dedup = orig_map
+
+    # 2. Pure invariant + concurrent cross-check on pricewindow._vol_memo_cache under lock
+    series_list = [
+        [100.0 + ((i + j) % 7) * 0.35 + j * 0.01 for j in range(30)]
+        for i in range(200)
+    ]
+    expected = [pw.calculate_volatility_1h(s, 60.0) for s in series_list]
+    with pw._vol_memo_lock:
+        pw._vol_memo_cache.clear()
+
+    errors = []
+    results = [None] * len(series_list)
+
+    def _worker(start_idx):
+        try:
+            for idx in range(start_idx, len(series_list), 8):
+                results[idx] = pw.calculate_volatility_1h(series_list[idx], 60.0)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(k,)) for k in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    assert results == expected
+    assert len(pw._vol_memo_cache) <= pw._VOL_MEMO_MAX_ENTRIES

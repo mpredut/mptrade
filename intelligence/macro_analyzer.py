@@ -129,7 +129,10 @@ class MacroAnalyzer:
         )
         self.gemini_advisor = self.sentiment_advisor
 
+        init_now = resolve_now_ts(None)
         cached_geo_ts = first_epoch_sec(getattr(self.geopolitical_analyzer, "_last_eval_ts", 0.0), default=0.0) or 0.0
+        if cached_geo_ts > init_now + 60.0:
+            cached_geo_ts = 0.0
         cached_adv_ts = (
             first_epoch_sec(
                 obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"),
@@ -138,6 +141,8 @@ class MacroAnalyzer:
             )
             or 0.0
         )
+        if cached_adv_ts > init_now + 60.0:
+            cached_adv_ts = 0.0
         self._last_macro_llm_ts = self._last_notified_geo_ts = cached_geo_ts
         self._last_advisor_ts = self._last_notified_advisor_ts = cached_adv_ts
         cached_geo_obj = getattr(self.geopolitical_analyzer, "_cached_assessment", None)
@@ -182,6 +187,8 @@ class MacroAnalyzer:
     ) -> None:
         last_notif = safe_nonneg_ts(getattr(self, ts_attr, 0.0), 0.0)
         assessment_ts = safe_nonneg_ts(assessment_ts, eval_now) or eval_now
+        if assessment_ts > eval_now + 60.0:
+            assessment_ts = eval_now
         is_fresh = assessment_ts > last_notif or (eval_now < last_notif)
         elapsed = eval_now - last_notif
         min_itv = min(eff_interval_sec if eff_interval_sec > 0 else fallback_interval_sec, 3600.0)
@@ -282,8 +289,9 @@ class MacroAnalyzer:
                 stale_cached_fallback = (
                     prev_cached is not None
                     and assessment is prev_cached
-                    and 0.0 < assess_ts < eval_now
-                    and adv_last_eval < eval_now
+                    and assess_ts > 0.0
+                    and (assess_ts < eval_now or assess_ts > eval_now + 60.0)
+                    and (adv_last_eval < eval_now or adv_last_eval > eval_now + 60.0)
                 ) or _parse_bool_flag(getattr(assessment, "is_fallback", False), False)
                 if not stale_cached_fallback:
                     if fg_snap is not None:
@@ -422,7 +430,12 @@ class MacroAnalyzer:
             adv_cached_ts = safe_nonneg_ts(
                 obj_attr(getattr(self.sentiment_advisor, "_cached_assessment", None), "ts"), 0.0
             )
-            if adv_ok and (adv_last_eval <= 0.0 or adv_last_eval >= current_ts or adv_cached_ts >= current_ts):
+            adv_fresh_window = (
+                (adv_last_eval <= 0.0 and adv_cached_ts <= current_ts + 60.0)
+                or (current_ts <= adv_last_eval <= current_ts + 60.0)
+                or (current_ts <= adv_cached_ts <= current_ts + 60.0)
+            )
+            if adv_ok and adv_fresh_window:
                 results["advisor_updated"] = True
                 self._last_advisor_ts = current_ts
             else:

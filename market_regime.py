@@ -802,8 +802,13 @@ class MarketRegimeService:
             if isinstance(cached, (tuple, list)) and len(cached) >= 4:
                 c_ts = safe_float(cached[0], default=None)
                 cached_dec = cached[1]
+                cached_cont = cached[3]
                 if c_ts is not None and cached_dec is not None:
-                    ttl = self.cache_ttl_sec if _parse_bool_flag(getattr(cached_dec, "fresh", False), False) else self.negative_cache_ttl_sec
+                    is_pos = (
+                        _parse_bool_flag(getattr(cached_dec, "fresh", False), False)
+                        and cached_cont is not False
+                    )
+                    ttl = self.cache_ttl_sec if is_pos else self.negative_cache_ttl_sec
                     if ttl > 0 and 0.0 <= cache_now - c_ts <= ttl:
                         self._cache.move_to_end(key)
                         return cached[1:]
@@ -844,7 +849,11 @@ class MarketRegimeService:
             )
         except Exception as exc:  # Unavailable data remains explicit unknown.
             decision = self.evaluator.unknown(f"source_error:{exc.__class__.__name__}")
-        if (self.cache_ttl_sec if getattr(decision, "fresh", False) else self.negative_cache_ttl_sec) > 0:
+        is_positive_cache = (
+            _parse_bool_flag(getattr(decision, "fresh", False), False)
+            and continuous is not False
+        )
+        if (self.cache_ttl_sec if is_positive_cache else self.negative_cache_ttl_sec) > 0:
             with self._lock:
                 lru_dict_put(
                     self._cache, key, (cache_now, decision, observed_at, continuous), self.cache_max,

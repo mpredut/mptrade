@@ -1494,6 +1494,7 @@ K_REENTRY_DEFAULT = pos_float_env("SHADOW_K_REENTRY", 2.0)
 K_DCA_DEFAULT = pos_float_env("SHADOW_K_DCA", 1.0)
 
 _vol_memo_cache: dict = {}
+_vol_memo_lock = threading.Lock()
 _VOL_MEMO_MAX_ENTRIES = 128
 
 
@@ -1606,7 +1607,8 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
         else None
     )
     if cache_key is not None:
-        cached = _vol_memo_cache.get(cache_key)
+        with _vol_memo_lock:
+            cached = _vol_memo_cache.get(cache_key)
         if cached is not None:
             return cached
 
@@ -1657,7 +1659,8 @@ def calculate_volatility_1h(prices: Sequence[float], sample_rate_sec: float = 60
     res = 0.0 if std == 0.0 else round(std * math.sqrt(3600.0 / sample_rate_sec) * 100.0, 4)
 
     if cache_key is not None:
-        lru_dict_put(_vol_memo_cache, cache_key, res, _VOL_MEMO_MAX_ENTRIES)
+        with _vol_memo_lock:
+            lru_dict_put(_vol_memo_cache, cache_key, res, _VOL_MEMO_MAX_ENTRIES)
     return res
 
 

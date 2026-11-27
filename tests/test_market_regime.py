@@ -631,3 +631,73 @@ def test_marketregimedecision_adverse_to_supports_bid_ask_a_and_marketregimecont
     ctx_from_dict = MarketRegimeContext.from_decision({"regime": "sideways", "fresh": True, "strength": 1.2}, evaluated_at=1000.0)
     assert ctx_from_dict.resolved_trend == "flat"
     assert ctx_from_dict.fresh is True
+
+
+def test_pass35_candle_gap_uses_negative_cache_ttl_and_recovers_promptly():
+    """Pass #35 pure invariant + dependent cross-check:
+    MarketRegimeService._evaluate_provider_source must cache discontinuous OHLC series
+    (continuous=False, even when decision.fresh=True) under negative_cache_ttl_sec (not cache_ttl_sec),
+    allowing resolve_with_evidence() to recover promptly after transient candle gaps.
+    """
+    now_clock = [1_795_000_000.0]
+    calls = {"n": 0}
+    closes = tuple(100.0 + i * 2.0 for i in range(15))
+
+    def _ohlc_series(_sym, _iv):
+        calls["n"] += 1
+        end_ts = now_clock[0] - 60.0
+        if calls["n"] == 1:
+            # Introduce a 5-minute candle gap inside the 15-bar window -> continuous=False while decision.fresh=True
+            ts_list = [end_ts - (14 - i) * 60.0 for i in range(15)]
+            ts_list[0] -= 300.0
+            return mr.ClosedPriceSeries(closes, 1, last_closed_at=end_ts, timestamps=tuple(ts_list))
+        ts_list = tuple(end_ts - (14 - i) * 60.0 for i in range(15))
+        return mr.ClosedPriceSeries(closes, 1, last_closed_at=end_ts, timestamps=ts_list)
+
+    prov = SimpleNamespace(name="binance", ohlc_series=_ohlc_series)
+    svc = mr.MarketRegimeService(
+        cache_ttl_sec=30.0,
+        negative_cache_ttl_sec=2.0,
+        clock=lambda: now_clock[0],
+    )
+
+    # 1. Pure invariant: gap call returns decision.fresh=True but continuous=False
+    dec1, _obs1, cont1 = svc._evaluate_provider_source(prov, "BTCUSDC", interval_min=1, window_seconds=900.0)
+    assert dec1.fresh is True and cont1 is False
+    assert calls["n"] == 1
+
+    # Dependent cross-check: resolve_with_evidence at t+1s hits negative cache (no new provider call) and rejects gap
+    now_clock[0] += 1.0
+    res_gap = svc.resolve_with_evidence(prov, "BTCUSDC", horizon="short", allow_fallback=False, now=now_clock[0])
+    assert calls["n"] == 1
+    assert res_gap.selected_index is None
+    assert res_gap.evidence[0].usable is False
+    assert res_gap.evidence[0].availability_reason == "candle_gap"
+
+    # At t+3s (> negative_cache_ttl_sec=2s, << cache_ttl_sec=30s): negative cache expired -> recovers immediately!
+    now_clock[0] += 2.0
+    res_ok = svc.resolve_with_evidence(prov, "BTCUSDC", horizon="short", allow_fallback=False, now=now_clock[0])
+    assert calls["n"] == 2
+    assert res_ok.selected_index == 0
+    assert res_ok.evidence[0].usable is True
+    assert res_ok.decision.regime == "bull"
+
+    # Pure invariant: negative_cache_ttl_sec=0 must NOT cache continuous=False entries at all
+    calls_zero = {"n": 0}
+    prov_zero = SimpleNamespace(
+        name="binance",
+        ohlc_series=lambda _s, _i: (
+            calls_zero.__setitem__("n", calls_zero["n"] + 1)
+            or mr.ClosedPriceSeries(
+                closes,
+                1,
+                last_closed_at=now_clock[0] - 60.0,
+                timestamps=(now_clock[0] - 5000.0,) + tuple(now_clock[0] - (14 - i) * 60.0 for i in range(1, 15)),
+            )
+        ),
+    )
+    svc_zero = mr.MarketRegimeService(cache_ttl_sec=30.0, negative_cache_ttl_sec=0.0, clock=lambda: now_clock[0])
+    svc_zero._evaluate_provider_source(prov_zero, "BTCUSDC", interval_min=1, window_seconds=900.0)
+    svc_zero._evaluate_provider_source(prov_zero, "BTCUSDC", interval_min=1, window_seconds=900.0)
+    assert calls_zero["n"] == 2
+    assert len(svc_zero._cache) == 0

@@ -210,7 +210,10 @@ def format_utc_bar_timestamp(ts: object, *, include_time: bool = False) -> str |
     if ts_i is None:
         return None
     fmt = "%Y-%m-%d %H:%M UTC" if include_time else "%Y-%m-%d"
-    return dt.datetime.fromtimestamp(ts_i, tz=dt.timezone.utc).strftime(fmt)
+    try:
+        return dt.datetime.fromtimestamp(ts_i, tz=dt.timezone.utc).strftime(fmt)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def format_ohlc_bars_log_span(records: Sequence[Mapping]) -> str:
