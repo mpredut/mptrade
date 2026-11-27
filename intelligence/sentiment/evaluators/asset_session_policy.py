@@ -25,6 +25,7 @@ from intelligence.macro_sentiment_ssot import (
     parse_ts_px_row,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
+    CLOSED_EQUITY_QUOTE_AGE_MIN,
     STALE_SHORT_24H_KEYS,
     _SHORT_SLOPE_OVERRIDE_KEYS,
     compute_24h_price_metrics,
@@ -504,6 +505,30 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             return [by_bar_ts[k] for k in sorted(by_bar_ts)]
         return raw_ser
 
+    _CROSS_SESSION_TAIL_GAP_MIN: float = 240.0
+    _MAX_LIVE_CROSS_SESSION_GAP_MIN: float = 14.0 * 1440.0
+
+    @classmethod
+    def resolve_cross_session_tail_age_min(
+        cls,
+        bar_ts_ms: float,
+        now_ts: float,
+        entry: Optional[Dict[str, Any]] = None,
+    ) -> Optional[float]:
+        """Return stale age (min) when ``bar_ts_ms`` is far-future or crosses an overnight/pre-market gap, else ``None``."""
+        raw_age_min = (now_ts * 1000.0 - bar_ts_ms) / 60000.0
+        if raw_age_min < -1.0:
+            return cls._CROSS_SESSION_TAIL_GAP_MIN + 1.0
+        if raw_age_min > cls._MAX_LIVE_CROSS_SESSION_GAP_MIN:
+            return None
+        is_pre_sess = isinstance(entry, dict) and str(entry.get("market_state") or "").strip().upper() in (
+            "PRE",
+            "PREPRE",
+            "OVERNIGHT",
+        )
+        thr_min = CLOSED_EQUITY_QUOTE_AGE_MIN if is_pre_sess else cls._CROSS_SESSION_TAIL_GAP_MIN
+        return raw_age_min if raw_age_min > thr_min else None
+
     def apply_post_rth_price_override(
         self,
         matched_series_24h: list,
@@ -519,6 +544,12 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         replaced = False
         override_px = round(cur_px, 4)
+        tail_cross_age_min = (
+            self.resolve_cross_session_tail_age_min(s24_p1[0], now_ts, entry=entry)
+            if (now_ts is not None and s24_p1 is not None)
+            else None
+        )
+        tail_cross_session_stale = tail_cross_age_min is not None
         if s24_p1 is not None and len(matched_series_24h) >= 2:
             prev_m24 = dict(m24)
             override_series_24h = override_series_tail_close(matched_series_24h, override_px)
@@ -535,15 +566,18 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
                 live_px=override_px,
             )
             if abs(cur_px - s24_p1[1]) / max(cur_px, s24_p1[1]) > 0.005:
-                replaced = True
-                matched_series_24h = override_series_24h
+                if not tail_cross_session_stale:
+                    replaced = True
+                    matched_series_24h = override_series_24h
                 if isinstance(entry, dict):
-                    for k_ov in _SHORT_SLOPE_OVERRIDE_KEYS:
+                    for k_ov in (*_SHORT_SLOPE_OVERRIDE_KEYS, *SHORT_KINEMATIC_METRIC_KEYS):
                         entry.pop(k_ov, None)
         if "chg_24h_pct" in m24 and s24_p0 is not None and s24_p0[1] > 0:
             m24["chg_24h_pct"] = pct_delta(override_px, s24_p0[1])
         for k_stale in STALE_SHORT_24H_KEYS:
             m24.pop(k_stale, None)
+        if tail_cross_session_stale:
+            prune_closed_equity_stale_metrics(m24, entry, quote_age_min=tail_cross_age_min)
         return matched_series_24h, m24, replaced
 
     @staticmethod
@@ -603,7 +637,23 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
     ) -> None:
         if not isinstance(entry, dict):
             return
-        prune_closed_equity_stale_metrics(m24, entry, quote_age_min=entry.get("quote_age_min"))
+        q_age_min = safe_nonneg_float(entry.get("quote_age_min"), default=None)
+        last_eq_pt = (
+            parse_ts_px_row(matched_series_24h[-1])
+            if (has_series_tail and matched_series_24h)
+            else None
+        )
+        tail_cross_age_min = (
+            self.resolve_cross_session_tail_age_min(last_eq_pt[0], now_ts, entry=entry)
+            if (last_eq_pt is not None and not post_rth_series_replaced)
+            else None
+        )
+        eff_stale_age_min = (
+            max(q_age_min, tail_cross_age_min)
+            if (q_age_min is not None and tail_cross_age_min is not None)
+            else (tail_cross_age_min if tail_cross_age_min is not None else q_age_min)
+        )
+        prune_closed_equity_stale_metrics(m24, entry, quote_age_min=eff_stale_age_min)
         if post_rth_series_replaced:
             return
         if not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct")):
@@ -620,8 +670,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             (not rth_fresh_override)
             if rth_fresh_override is not None
             else bool(
-                matched_series_24h
-                and (last_eq_pt := parse_ts_px_row(matched_series_24h[-1])) is not None
+                last_eq_pt is not None
                 and self._is_series_tail_stale_ms(last_eq_pt[0], now_ts)
             )
         )

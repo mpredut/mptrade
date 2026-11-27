@@ -163,6 +163,7 @@ from intelligence.external.collectors.derivatives_telemetry_collector import Der
 from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
 from intelligence.external.collectors.whale_positioning_collector import WhalePositioningCollector
 from intelligence.macro_sentiment_ssot import (
+    SHORT_KINEMATIC_METRIC_KEYS,
     callable_identity_anchor,
     load_cached_btc_24h_change_pct,
     load_microstructure_cycle_history,
@@ -190,6 +191,7 @@ from providers.ohlc_utils import normalize_ohlc_row, normalize_yahoo_5d_chart_ba
 from providers.portfolio_valuation import reprice_position_balance_fields
 from intelligence.sentiment.evaluators.asset_session_policy import (
     Continuous24x7SessionPolicy,
+    EquityRthSessionPolicy,
     resolve_asset_session_policy,
 )
 from intelligence.sentiment.evaluators.price_series_evaluator import (
@@ -208,6 +210,7 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     override_series_tail_close,
     pct_delta,
     prepend_older_non_diverged_points,
+    prune_closed_equity_stale_metrics,
     recalculate_live_price_geometry,
     restore_rth_metric_anchors,
     round_opt_px,
@@ -2683,20 +2686,34 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                 px_diverged_05pct = bool(
                     pts_24h and sym_px_cur > 0 and abs(sym_px_cur - pts_24h[-1][1]) / max(sym_px_cur, pts_24h[-1][1]) > 0.005
                 )
+                chart_last_pt = parse_ts_px_row(pts_24h[-1]) if pts_24h else None
+                chart_tail_age_min = (
+                    EquityRthSessionPolicy.resolve_cross_session_tail_age_min(
+                        chart_last_pt[0], eff_now, entry=pt_map.get(sym)
+                    )
+                    if chart_last_pt is not None
+                    else None
+                )
+                chart_tail_cross_session = chart_tail_age_min is not None
                 if px_diff_from_chart and rth_bar_fresh and not px_diverged_05pct:
                     pts_24h = list(pts_24h) + [[math.trunc(pts_24h[-1][0] + 1000), round(sym_px_cur, 4)]]
                     pts_24h_to_save = list(pts_24h)
                     post_rth_series_replaced = False
-                elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2:
+                elif px_diff_from_chart and px_diverged_05pct and len(pts_24h) >= 2 and not chart_tail_cross_session:
                     post_rth_series_replaced = True
                     pts_24h = override_series_tail_close(pts_24h, round(sym_px_cur, 4))
                 else:
                     post_rth_series_replaced = False
-                if post_rth_series_replaced or (eq_cache_stale and len(pts_24h) >= 5):
-                    for k_ov in _SHORT_SLOPE_OVERRIDE_KEYS:
+                if post_rth_series_replaced or (px_diff_from_chart and px_diverged_05pct) or (eq_cache_stale and len(pts_24h) >= 5):
+                    for k_ov in (*_SHORT_SLOPE_OVERRIDE_KEYS, *SHORT_KINEMATIC_METRIC_KEYS):
                         pt_map[sym].pop(k_ov, None)
                 pts_24h_for_m24 = pts_24h
-                if px_diff_from_chart and not rth_bar_fresh and not px_diverged_05pct and len(pts_24h) >= 2:
+                if (
+                    px_diff_from_chart
+                    and (not rth_bar_fresh or chart_tail_cross_session)
+                    and (not px_diverged_05pct or chart_tail_cross_session)
+                    and len(pts_24h) >= 2
+                ):
                     pts_24h_for_m24 = override_series_tail_close(pts_24h, round(sym_px_cur, 4))
                 if m24_new := _call_compute_24h(pts_24h_for_m24, is_equity=True, series_7d_ts_px=pts_5d, now_ts=eff_now):
                     m24 = m24_new
@@ -2715,6 +2732,8 @@ class Fleet24hAndMicrostructureEnricher(MicrostructureCacheCollectorBase):
                     if not rth_bar_fresh or px_diverged_05pct:
                         for k_stale in STALE_SHORT_24H_KEYS:
                             m24.pop(k_stale, None)
+                        if chart_tail_cross_session:
+                            prune_closed_equity_stale_metrics(m24, pt_map[sym], quote_age_min=chart_tail_age_min)
                         if px_diff_from_chart:
                             post_rth_px_override = round(sym_px_cur, 4)
                             if "chg_24h_pct" in m24 and pts_24h[0][1] > 0:

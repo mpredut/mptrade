@@ -7821,9 +7821,13 @@ def test_advisor_1h_cvd_sign_flip_divergence_and_liq_magnet_multi_horizon_flow(t
     cur_p_rgnt = {"RGNT_US_EQ": [[rth_end_ms, 1.32]]}
     enrich_24h_and_microstructure(str(cdir_rgnt_gap), str(tmp_path), pt_rgnt_gap, {}, cur_p_rgnt, {}, now_s_rec)
     assert pt_rgnt_gap["RGNT_US_EQ"]["price"] == 1.27
-    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_15m_pct") is not None
-    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_1h_pct") is not None
-    assert pt_rgnt_gap["RGNT_US_EQ"].get("slope_15m") is not None
+    assert pt_rgnt_gap["RGNT_US_EQ"]["low_24h"] == pytest.approx(1.27)
+    # Sparse (<15m) pre-market ticks after a 16h overnight gap must NOT fabricate cross-gap short horizons/kinematics
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_15m_pct") is None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("chg_1h_pct") is None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("slope_15m") is None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("kalman_vel") is None
+    assert pt_rgnt_gap["RGNT_US_EQ"].get("vel_90s_pct_min") is None
 
     # 10h. extract_symbol_recent_fills preserves middle lots up to 32 open lots and retains open_lots[0] when > 32 lots exist
     # so enrich_positions_with_orders_and_cycles recovers both exact LIFO VWAP and true cycle peak since the first open lot.
@@ -19033,6 +19037,175 @@ def test_yahoo_overnight_fullday_price_and_sre_cli_log_prefix_filter(tmp_path):
     assert res.error_count == 1
     assert any("real bot error sample" in ev for ev in res.critical_events)
     assert not any("audit_prompt_invariants" in ev or "account_cache_coherence" in ev for ev in res.critical_events)
+
+
+def test_cycle29_yahoo_pre_ext_px_stale_reg_chg_and_equity_cross_gap_kinematics(tmp_path):
+    """Cycle 29 live PROD audit fixes:
+    1. resolve_yahoo_chart_market_state_and_price promotes fulldayPrice to ext_px in PRE/POST (not stale prior-session latest_pt).
+    2. collect_macro_benchmarks_snapshot never stamps stale regularMarketChangePercent onto active extended/overnight fulldayPrice
+       when fulldayChangePercent is omitted/zero; recomputes cleanly against regularMarketPrice in PRE/OVERNIGHT.
+    3. EquityRthSessionPolicy + compute_24h_price_metrics never fabricate cross-gap 15m/30m/1h/3h/6h/12h deltas,
+       kalman_vel, or vel_90s/vel_5m kinematics when a fresh pre-market quote arrives after a multi-hour closed gap.
+    """
+    from intelligence.sentiment.collectors.macro_telemetry_collector import collect_macro_benchmarks_snapshot
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from intelligence.sentiment.evaluators.price_series_evaluator import (
+        apply_24h_series_enrichment,
+        compute_24h_price_metrics,
+        recalculate_live_price_geometry,
+    )
+    from providers.ohlc_utils import resolve_yahoo_chart_market_state_and_price
+
+    now_s = 1_795_770_047.0  # Fri Nov 27 04:00:47 EST (32h after Wed Nov 25 19:59 EST)
+    ctp_pre = {
+        "pre": {"start": now_s - 47.0, "end": now_s + 19_753.0},
+        "regular": {"start": now_s + 19_753.0, "end": now_s + 32_353.0},
+        "post": {"start": now_s + 32_353.0, "end": now_s + 46_753.0},
+    }
+    pts_wed = [
+        (now_s - 129_600.0, 715.0),
+        (now_s - 115_500.0, 720.43),  # Wed 19:55 EST post-market bar (32h old)
+    ]
+
+    # 1. PRE session with fulldayPrice & no preMarketPrice promotes fulldayPrice to ext_px (not 32h-old Wed bar 720.43)
+    st_pre, px_pre, ext_pre = resolve_yahoo_chart_market_state_and_price(
+        {
+            "hasPrePostMarketData": True,
+            "regularMarketPrice": 716.70,
+            "regularMarketTime": now_s - 129_647.0,
+            "fulldayPrice": 729.77,
+            "currentTradingPeriod": ctp_pre,
+        },
+        pts_wed,
+        now_ts=now_s,
+    )
+    assert (st_pre, px_pre, ext_pre) == ("PRE", 729.77, 729.77)
+
+    # 2. Macro benchmarks with overnight/PRE fulldayPrice & missing/zero fulldayChangePercent must NOT stamp stale regularMarketChangePercent
+    def _fetch_pre_missing_fd_chg(url, **kw):
+        if "SPY" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "hasPrePostMarketData": True,
+                                "regularMarketPrice": 716.70,
+                                "regularMarketTime": int(now_s - 129_647.0),
+                                "regularMarketChangePercent": -0.289,
+                                "fulldayPrice": 730.98,
+                                "previousClose": 718.78,
+                                "chartPreviousClose": 722.29,
+                                "currentTradingPeriod": ctp_pre,
+                            },
+                            "timestamp": [int(now_s - 135_000.0), int(now_s - 129_647.0), int(now_s - 115_500.0)],
+                            "indicators": {"quote": [{"close": [715.0, 716.70, 720.43]}]},
+                        }
+                    ]
+                }
+            }
+        if "IBIT" in url:
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "hasPrePostMarketData": True,
+                                "regularMarketPrice": 34.07,
+                                "regularMarketTime": int(now_s - 129_647.0),
+                                "regularMarketChangePercent": 0.918,
+                                "fulldayPrice": 34.88,
+                                "fulldayChangePercent": 0.0,
+                                "previousClose": 33.76,
+                                "currentTradingPeriod": {
+                                    "pre": {"start": now_s + 120.0, "end": now_s + 19_920.0},
+                                    "regular": {"start": now_s + 19_920.0, "end": now_s + 32_520.0},
+                                    "post": {"start": now_s + 32_520.0, "end": now_s + 46_920.0},
+                                },
+                            },
+                            "timestamp": [int(now_s - 135_000.0), int(now_s - 129_647.0), int(now_s - 115_500.0)],
+                            "indicators": {"quote": [{"close": [33.80, 34.07, 34.23]}]},
+                        }
+                    ]
+                }
+            }
+        return {}
+
+    mb_pre = collect_macro_benchmarks_snapshot(
+        str(tmp_path / "mb_pre"), now_ts=now_s, persist=False, fetch_fn=_fetch_pre_missing_fd_chg
+    )
+    assert mb_pre is not None
+    assert mb_pre["items"]["SPY"]["market_state"] == "PRE"
+    assert mb_pre["items"]["SPY"]["price"] == pytest.approx(730.98)
+    assert mb_pre["items"]["SPY"]["chg_24h_pct"] == pytest.approx(((730.98 - 716.70) / 716.70) * 100.0, abs=0.02)
+    assert mb_pre["items"]["IBIT"]["market_state"] == "OVERNIGHT"
+    assert mb_pre["items"]["IBIT"]["price"] == pytest.approx(34.88)
+    assert mb_pre["items"]["IBIT"]["chg_24h_pct"] == pytest.approx(((34.88 - 34.07) / 34.07) * 100.0, abs=0.02)
+
+    # 3a. Equity pre-market open after 32h closed gap: fresh quote (age=0.7m) must NOT fabricate 15m..12h or vel_90s/kalman_vel
+    wed_close_ms = (now_s - 32.0 * 3600.0) * 1000.0
+    nvda_wed = [
+        [wed_close_ms - (24 * 60 - m) * 60_000.0, round(152.70 - 0.001 * m, 4), 10_000.0 if m < 1200 else 0.0]
+        for m in range(0, 24 * 60 + 1, 5)
+    ]
+    # Add 1-minute resolution near Wed 19:59:59 close so naive tail overwrite would trigger quadratic vel_90s explosion
+    nvda_wed.extend(
+        [
+            [wed_close_ms - 120_000.0, 151.30],
+            [wed_close_ms - 60_000.0, 151.25],
+            [wed_close_ms, 151.22],
+        ]
+    )
+    eq_pol = resolve_asset_session_policy("NVDA_US_EQ")
+    m24_wed = compute_24h_price_metrics(nvda_wed, is_equity=True, now_ts=now_s)
+    entry_nvda = {"price": 156.30, "quote_source": "yahoo_ext", "quote_age_min": 0.7, "market_state": "PRE"}
+    ser_out, m24_out, ov_px, replaced = eq_pol.evaluate_post_rth_override(
+        nvda_wed, dict(m24_wed), 156.30, now_s, entry=entry_nvda
+    )
+    assert ov_px == pytest.approx(156.30)
+    assert replaced is False
+    for k_bad in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct", "chg_15m_pct", "chg_30m_pct", "chg_1h_pct", "chg_3h_pct", "chg_6h_pct", "chg_12h_pct"):
+        assert k_bad not in m24_out
+    assert "chg_24h_pct" in m24_out
+    apply_24h_series_enrichment("NVDA_US_EQ", entry_nvda, m24_out, ser_out, None)
+    eq_pol.prune_stale_short_metrics(
+        entry_nvda, m24_out, ser_out, now_s, post_rth_series_replaced=replaced, include_kinematics=True
+    )
+    recalculate_live_price_geometry(entry_nvda, 156.30)
+    for k_bad_e in (
+        "chg_15m_pct",
+        "chg_30m_pct",
+        "chg_1h_pct",
+        "chg_3h_pct",
+        "chg_6h_pct",
+        "chg_12h_pct",
+        "vel_90s_pct_min",
+        "accel_90s_pct_min2",
+        "vel_5m_pct_min",
+        "accel_5m_pct_min2",
+        "kalman_vel",
+        "kalman_vel_z",
+        "slope_90s",
+        "slope_3_7m",
+        "slope_15m",
+    ):
+        assert k_bad_e not in entry_nvda
+    assert entry_nvda["high_24h"] == pytest.approx(156.30)
+    assert entry_nvda["chg_24h_pct"] == pytest.approx(((156.30 - nvda_wed[0][1]) / nvda_wed[0][1]) * 100.0, abs=0.02)
+
+    # 3b. Once 4 real pre-market ticks arrive after a 32h gap, 1m/3m/24h are emitted cleanly without bogus 6h/12h off a 32h anchor
+    nvda_pre_live = nvda_wed + [
+        [(now_s - 180.0) * 1000.0, 156.30],
+        [(now_s - 120.0) * 1000.0, 156.06],
+        [(now_s - 60.0) * 1000.0, 155.98],
+        [now_s * 1000.0, 155.93],
+    ]
+    m24_live = compute_24h_price_metrics(nvda_pre_live, is_equity=True, now_ts=now_s)
+    assert m24_live["chg_1m_pct"] == pytest.approx(-0.03, abs=0.02)
+    assert m24_live["chg_3m_pct"] == pytest.approx(-0.24, abs=0.02)
+    assert "chg_6h_pct" not in m24_live
+    assert "chg_12h_pct" not in m24_live
+    assert "chg_24h_pct" in m24_live
 
 
 

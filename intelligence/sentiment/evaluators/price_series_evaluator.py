@@ -1090,8 +1090,9 @@ def compute_24h_price_metrics(
             ("chg_30m_pct", 30.0, 0.0, 29.99 if dedup_sparse_samples else 0.0),
             ("chg_1h_pct", 60.0, 0.0, 119.99 if dedup_sparse_samples else 0.0),
             ("chg_3h_pct", 180.0, 0.0, 179.99 if dedup_sparse_samples else 0.0),
-            ("chg_6h_pct", 360.0, 3600000.0 * 4, 0.0),
-            ("chg_12h_pct", 720.0, 3600000.0 * 9, 0.0), ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
+            ("chg_6h_pct", 360.0, 3600000.0 * 4, 1079.99 if dedup_sparse_samples else 0.0),
+            ("chg_12h_pct", 720.0, 3600000.0 * 9, 719.99 if dedup_sparse_samples else 0.0),
+            ("chg_24h_pct", 1440.0, 3600000.0 * 18, 0.0),
         ):
             target_ms = now_ms - mins * 60000.0
             ref_idx = bisect.bisect_right(clean_series, target_ms, key=_PT_TS_KEY)

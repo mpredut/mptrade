@@ -795,7 +795,7 @@ def resolve_yahoo_chart_market_state_and_price(
             if mkt_state in ("PRE", "PREPRE")
             else first_pos_float(meta_d.get("postMarketPrice"), meta_d.get("preMarketPrice"))
         )
-        if ext_px is None and mkt_state == "OVERNIGHT" and fullday_px is not None:
+        if ext_px is None and fullday_px is not None and mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT"):
             ext_px = fullday_px
         if ext_px is None and reg_time_s is not None and latest_pt is not None and latest_pt[0] > reg_time_s + 60.0:
             ext_px = safe_pos_float(latest_pt[1], default=None)

@@ -413,17 +413,30 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                 mkt_state, px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts, now_ts=eff_now)
                 if px is None:
                     continue
-                chg_24h = next(
-                    (round(v, 2) + 0.0 for mk in ("fulldayChangePercent", "regularMarketChangePercent") if (v := safe_float(meta.get(mk), default=None)) is not None and abs(v) > 1e-9),
-                    None,
+                fullday_chg = safe_float(meta.get("fulldayChangePercent"), default=None)
+                reg_chg = safe_float(meta.get("regularMarketChangePercent"), default=None)
+                reg_px = safe_pos_float(meta.get("regularMarketPrice"), default=None)
+                px_is_extended = bool(
+                    ext_px is not None
+                    and (reg_px is None or abs(px - reg_px) / reg_px >= 0.0005)
                 )
+                if fullday_chg is not None and abs(fullday_chg) > 1e-9:
+                    chg_24h: Optional[float] = round(fullday_chg, 2) + 0.0
+                elif not px_is_extended and reg_chg is not None and abs(reg_chg) > 1e-9:
+                    chg_24h = round(reg_chg, 2) + 0.0
+                else:
+                    chg_24h = None
                 if chg_24h is not None and pts_24h:
                     lo_24_m = min(p[1] for p in pts_24h)
                     hi_24_m = max(p[1] for p in pts_24h)
                     if chg_24h <= -90.0 or not (lo_24_m * 0.90 <= (px / (1.0 + chg_24h / 100.0)) <= hi_24_m * 1.10):
                         chg_24h = None
-                if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and safe_float(meta.get("fulldayChangePercent"), default=None) is None):
-                    prev_close = first_pos_float(meta.get("previousClose"), meta.get("chartPreviousClose"))
+                if chg_24h is None or (ext_px is not None and safe_pos_float(meta.get("fulldayPrice"), default=None) is None and fullday_chg is None):
+                    prev_close = (
+                        first_pos_float(reg_px, meta.get("previousClose"), meta.get("chartPreviousClose"))
+                        if (px_is_extended and mkt_state in ("PRE", "PREPRE", "OVERNIGHT"))
+                        else first_pos_float(meta.get("previousClose"), meta.get("chartPreviousClose"))
+                    )
                     if prev_close is not None and pts_24h:
                         lo_24_b = min(p[1] for p in pts_24h)
                         hi_24_b = max(p[1] for p in pts_24h)
