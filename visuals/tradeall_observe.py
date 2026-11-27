@@ -45,10 +45,12 @@ if ROOT not in sys.path:
 from active_intents import build_active_intent_index
 from botcore import (
     lru_dict_put,
+    normalize_epoch_sec,
     normalize_side,
     normalize_trend_direction,
     parse_cli_float,
     require_pos_float,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_pos_float,
@@ -208,14 +210,16 @@ def _log_dates(days_back):
 _LAST_SAMPLED_TS = {}
 
 
-def _entry_latest_ts(entry, *, default=None):
-    """Return the freshest positive timestamp between ``ts`` and ``ts_fast``."""
+def _entry_latest_ts(entry, *, default=None, now_ts=None):
+    """Return the freshest valid non-future epoch-seconds timestamp between ``ts`` and ``ts_fast``."""
     if not isinstance(entry, dict):
         return default
+    eff_now = resolve_now_ts(now_ts)
+    max_ts = eff_now + 60.0
     candidates = [
         val
         for key in ("ts", "ts_fast")
-        if (val := safe_pos_float(entry.get(key), default=None)) is not None
+        if (val := normalize_epoch_sec(entry.get(key), default=None)) is not None and val <= max_ts
     ]
     return max(candidates) if candidates else default
 
@@ -245,13 +249,14 @@ def sample_current_prices(symbols, *, snapshot=None):
     items_map = snapshot.get("items") if isinstance(snapshot.get("items"), dict) else snapshot
 
     pending = []
+    now_s = time.time()
     for symbol in symbols:
         entry = _lookup_symbol_dict(items_map, symbol)
         if not isinstance(entry, dict) or "current_price" not in entry:
             continue
         raw_px = entry["current_price"]
         has_ts_key = "ts" in entry or "ts_fast" in entry
-        sample_ts = _entry_latest_ts(entry, default=None if has_ts_key else time.time())
+        sample_ts = _entry_latest_ts(entry, default=None if has_ts_key else now_s, now_ts=now_s)
         px_val = safe_pos_float(raw_px, default=None)
         if sample_ts is None or px_val is None:
             continue
@@ -1211,16 +1216,18 @@ setInterval(function() {{
     # Schedule live charts and analysis state every cycle for a real-time feel.
     # Refresh day/week charts less often because their visible state barely changes
     # in three seconds and rendering them increased a cycle from ~3s to ~17s.
-    last_day = last_week = last_memory_trim = 0.0
+    last_day_mono = last_week_mono = -math.inf
+    last_memory_trim = 0.0
     last_state_text: dict[str, str] = {}
     try:
         while True:
             cycle_start = time.time()
+            cycle_mono = time.monotonic()
             trend_snapshot = read_json_dict(CACHE_TREND_PATH, default={}, recover_previous=True)
             kalman_snapshot = read_json_dict(get_kalman_state_path(), default={}, recover_previous=True)
             sample_current_prices(symbols, snapshot=trend_snapshot)
-            due_day = cycle_start - last_day >= day_refresh
-            due_week = cycle_start - last_week >= week_refresh
+            due_day = (cycle_mono - last_day_mono) >= day_refresh
+            due_week = (cycle_mono - last_week_mono) >= week_refresh
             if due_day:
                 try:
                     active_summary = build_active_intent_index(ROOT).get("summary")
@@ -1262,8 +1269,13 @@ setInterval(function() {{
                         sh = _lookup_symbol_dict(kalman_snapshot, symbol)
                         if isinstance(sh, dict) and sh:
                             entry = {**entry, **{k: v for k, v in sh.items() if k not in ("ts", "price")}}
-                        latest_ts = _entry_latest_ts(entry, default=0.0) or 0.0
-                        age = max(0.0, time.time() - latest_ts)
+                        now_state = time.time()
+                        latest_ts = _entry_latest_ts(entry, default=0.0, now_ts=now_state) or 0.0
+                        state_header = (
+                            f"ANALYSIS NOW ({max(0.0, now_state - latest_ts):.0f}s ago)"
+                            if latest_ts > 0.0
+                            else "ANALYSIS NOW (stale/unknown)"
+                        )
                         pending_info = None
                         exposure_info = None
                         if isinstance(active_summary, dict):
@@ -1290,7 +1302,7 @@ setInterval(function() {{
                                     cost_str = f" (${safe_float(raw_cost, 0.0):.2f})" if raw_cost is not None else ""
                                     exposure_info = f"{qty_val}{cost_str}"
                         state_text = format_state_text(
-                            entry, f"ANALYSIS NOW ({age:.0f}s ago)",
+                            entry, state_header,
                             pending=pending_info, exposure=exposure_info,
                         )
                         state_out = os.path.join(LIVE_OUT_DIR, f"tradeall_live_{symbol}_state.png")
@@ -1300,9 +1312,9 @@ setInterval(function() {{
                 except Exception as e:
                     print(f"[tradeall_observe] render error {symbol}: {e}")
             if due_day:
-                last_day = cycle_start
+                last_day_mono = cycle_mono
             if due_week:
-                last_week = cycle_start
+                last_week_mono = cycle_mono
             last_memory_trim = _trim_memory_and_sleep(last_memory_trim, interval_sec)
     except KeyboardInterrupt:
         print("\n[tradeall_observe] stopped.")

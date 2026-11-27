@@ -20,6 +20,7 @@ from botcore import (
 from order_retry import get_accepted_order_owner_map
 from providers.market_api import api as mkt
 from providers.order_id_context import resolve_order_owner, resolve_priority_bot_owner
+from providers.order_ohlc_utils import extract_executed_qty
 from providers.portfolio_state_store import resolve_kraken_trade_cache_position
 from instrument_registry import discover_tradable_specs, symbols_for, venue_for_symbol
 from state_io import read_json_dict
@@ -87,6 +88,13 @@ def _bot(cid, order=None, owner_map=None):
     return owner
 
 
+def _extract_attributed_fill_qty(order: dict, *, src_kind: str) -> float:
+    """Return executed fill quantity for attribution, never counting unfilled/canceled origQty."""
+    if src_kind == "orders":
+        return safe_pos_float(extract_executed_qty(order, default=0.0), default=0.0) or 0.0
+    return safe_pos_float(extract_order_qty(order, default=0.0), default=0.0) or 0.0
+
+
 def per_bot(symbol, provider_name: str | None = None):
     venue = provider_name or venue_for_symbol(symbol, default="binance")
     try:
@@ -105,7 +113,7 @@ def per_bot(symbol, provider_name: str | None = None):
     for o in orders:
         if not isinstance(o, dict):
             continue
-        eq = safe_pos_float(o.get("executedQty", 0), default=0.0) or extract_order_qty(o)
+        eq = _extract_attributed_fill_qty(o, src_kind=src_kind)
         if eq <= 0:
             continue
         cqq = safe_pos_float(o.get("cummulativeQuoteQty", 0), default=0.0)

@@ -32,7 +32,7 @@ from .bapi import _normalize_side
 
 
 def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
-                       strict=False):
+                       strict=False, max_rate_limit_retries=3):
     """Fetch every fill from ``start_time_ms`` through now using pagination.
 
     The first page uses ``startTime`` and later pages use the previous final fill ID
@@ -51,6 +51,10 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
         return []
     start_time_ms = start_i
     limit = min(1000, max(1, safe_pos_int(limit, default=1000)))
+    max_rl_retries = safe_nonneg_int(max_rate_limit_retries, default=3)
+    if max_rl_retries is None:
+        max_rl_retries = 3
+    rate_limit_retries = 0
     out = []
     from_id = None
     while True:
@@ -66,10 +70,23 @@ def paginate_my_trades(api_client, symbol, start_time_ms, limit=1000, *,
                     raise RuntimeError(
                         f"Binance returned no trade page for {symbol}")
                 batch = []
+            rate_limit_retries = 0
         except BinanceAPIException as api_err:
             err_msg = str(api_err)
             if getattr(api_err, "code", None) == -1003 or "too much request weight" in err_msg.lower():
-                print(f"[paginate_my_trades] rate limit -> backoff 60s: {err_msg}")
+                rate_limit_retries += 1
+                if rate_limit_retries > max_rl_retries:
+                    print(
+                        f"[paginate_my_trades] {symbol}: rate limit retries exhausted "
+                        f"({max_rl_retries}): {err_msg}"
+                    )
+                    if strict:
+                        raise
+                    break
+                print(
+                    f"[paginate_my_trades] rate limit ({rate_limit_retries}/{max_rl_retries}) "
+                    f"-> backoff 60s: {err_msg}"
+                )
                 time.sleep(60)
                 continue
             print(f"[paginate_my_trades] {symbol}: {api_err}")

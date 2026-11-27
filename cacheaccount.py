@@ -4155,7 +4155,13 @@ class CacheBalanceManager(CacheAccountManagerBase):
             return False
         if not isinstance(balances_by_asset, Mapping) or not balances_by_asset:
             return False
-        eff_ts = resolve_now_ts(event_ts)
+        now_wall = _now_time()
+        ev_ts_norm = normalize_epoch_sec(event_ts, default=None) if event_ts is not None else None
+        eff_ts = (
+            ev_ts_norm
+            if (ev_ts_norm is not None and ev_ts_norm <= now_wall + 60.0)
+            else now_wall
+        )
         self.replace_venue_balances_snapshot(
             self.filename,
             balances_by_asset,
@@ -4197,14 +4203,17 @@ class CacheBalanceManager(CacheAccountManagerBase):
         """
         target_path = str(cache_file)
         eff_now_s = resolve_now_ts(now_s)
-        eff_ver_ts = safe_pos_float(verified_ts, default=None)
+        eff_ver_ts = normalize_epoch_sec(verified_ts, default=None) if verified_ts is not None else None
+        if eff_ver_ts is not None and eff_ver_ts > eff_now_s + 60.0:
+            eff_ver_ts = eff_now_s
         v_norm = normalize_venue_name(venue) or cls._normalize_venue_arg(venue=venue, filename=target_path)
         with generation_transaction(target_path) as target_path:
             loaded = read_json_dict_recovering(target_path, repair_files=True)
             if not isinstance(loaded, dict):
                 loaded = {}
             prev_items = loaded.get("items") if isinstance(loaded.get("items"), dict) else {}
-            prev_ver = safe_nonneg_float(loaded.get("verified_ts"), default=0.0) or 0.0
+            prev_ver_raw = normalize_epoch_sec(loaded.get("verified_ts"), default=0.0) or 0.0
+            prev_ver = prev_ver_raw if prev_ver_raw <= eff_now_s + 60.0 else 0.0
             prev_bd = loaded.get("breakdown") if isinstance(loaded.get("breakdown"), dict) else {}
 
             items_out: dict[str, dict[str, Any]] = {}
@@ -4216,10 +4225,13 @@ class CacheBalanceManager(CacheAccountManagerBase):
                 if not (ak_c := canonical_balance_asset_key(asset_k, venue=v_norm)):
                     continue
                 if (norm := cls.normalize_balance_entry(raw_entry, default_ts=eff_now_s)) is not None:
+                    new_a_ts = normalize_epoch_sec(norm.get("ts"), default=eff_now_s) or eff_now_s
+                    if new_a_ts > eff_now_s + 60.0:
+                        new_a_ts = eff_now_s
+                        norm["ts"] = round(eff_now_s, 3)
                     if eff_ver_ts is None and ak_c in items_out:
                         prev_a_ts = normalize_epoch_sec(items_out[ak_c].get("ts"), default=0.0) or 0.0
-                        new_a_ts = normalize_epoch_sec(norm.get("ts"), default=eff_now_s) or eff_now_s
-                        if prev_a_ts > new_a_ts + 1e-6:
+                        if prev_a_ts <= eff_now_s + 60.0 and prev_a_ts > new_a_ts + 1e-6:
                             continue
                     items_out[ak_c] = norm
 

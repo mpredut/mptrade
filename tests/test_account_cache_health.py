@@ -943,6 +943,87 @@ def test_inspect_prod_fleet_rejects_corrupt_negative_and_future_health_ts(monkey
     assert fh_ms_stale["stale"] is True
 
 
+def test_pass22_balance_snapshot_heals_future_verified_and_asset_ts_crosscheck_coherence(tmp_path, monkeypatch):
+    """Pass 22 pure invariant & cross-check: partial WS balance updates heal corrupt far-future verified_ts/asset ts and clear Rule 2 coherence violations."""
+    import cacheaccount as ca
+    from verify_tools.account_cache_coherence import (
+        AccountCacheCoherenceSnapshot,
+        VenueCoherenceEvidence,
+        evaluate_account_cache_coherence,
+    )
+
+    t_now = 1_795_000_000.0
+    bal_path = tmp_path / "cache_balance_binance.json"
+
+    # Seed disk balance snapshot poisoned with far-future verified_ts and far-future BTC asset ts
+    poisoned = {
+        "venue": "binance",
+        "ts": t_now - 10.0,
+        "verified_ts": t_now + 7200.0,
+        "items": {
+            "BTC": {"free": 0.5, "locked": 0.0, "ts": t_now + 7200.0},
+            "USDC": {"free": 100.0, "locked": 0.0, "ts": t_now - 10.0},
+        },
+    }
+    bal_path.write_text(json.dumps(poisoned), encoding="utf-8")
+
+    # Cross-check before healing: account_cache_coherence flags balance_verified_ts_future
+    items_before, ver_before, _ = ca.CacheBalanceManager.read_venue_balances_snapshot(str(bal_path))
+    assert ver_before > t_now + 60.0
+    viols_before = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(
+            now_s=t_now,
+            venues={
+                "binance": VenueCoherenceEvidence(
+                    venue="binance",
+                    balance_file_exists=True,
+                    balance_verified_ts=ver_before,
+                    balance_items=items_before,
+                )
+            },
+        )
+    )
+    assert any(v.rule == "balance_verified_ts_future" for v in viols_before)
+
+    # Pure invariant: partial WS update with real BTC balance heals poisoned BTC ts and clears poisoned verified_ts;
+    # incoming far-future event_ts is clamped to wall clock instead of re-poisoning disk.
+    monkeypatch.setattr(ca, "_now_time", lambda: t_now)
+    mgr = ca.CacheBalanceManager.__new__(ca.CacheBalanceManager)
+    mgr.venue = "binance"
+    mgr.filename = str(bal_path)
+    mgr.read_only = False
+    mgr.lock = ca.threading.RLock()
+    mgr.cache = {}
+    mgr.cls_name = "CacheBalanceManager"
+    mgr._load_snapshot_state = lambda: None
+    ok = mgr.apply_ws_balance_updates(
+        {"BTC": {"free": 0.25, "locked": 0.0, "ts": t_now + 3600.0}},
+        event_ts=t_now + 3600.0,
+    )
+    assert ok is True
+
+    items_after, ver_after, _ = ca.CacheBalanceManager.read_venue_balances_snapshot(str(bal_path))
+    assert items_after["BTC"]["free"] == pytest.approx(0.25)
+    assert items_after["BTC"]["ts"] <= t_now + 1.0
+    assert ver_after <= t_now + 1.0
+
+    # Dependent cross-check: coherence audit has ZERO balance_verified_ts_future violations after healing
+    viols_after = evaluate_account_cache_coherence(
+        AccountCacheCoherenceSnapshot(
+            now_s=t_now,
+            venues={
+                "binance": VenueCoherenceEvidence(
+                    venue="binance",
+                    balance_file_exists=True,
+                    balance_verified_ts=ver_after,
+                    balance_items=items_after,
+                )
+            },
+        )
+    )
+    assert not any(v.rule == "balance_verified_ts_future" for v in viols_after)
+
+
 
 
 

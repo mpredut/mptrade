@@ -1963,6 +1963,114 @@ def test_pass19_order_ledger_truthy_zero_ts_invariants_and_crosscheck():
     assert adapted["status"] == "closed"
 
 
+def test_pass22_pnl_report_facade_and_backfill_invariants_and_crosschecks(tmp_path, monkeypatch, capsys):
+    """Pass 22 pure invariants & cross-checks: pnl_report ignores unfilled canceled orders, verify_account_facade fails closed when all symbols skip, and backfill guards future live boundary/mtime."""
+    import time
+    from types import SimpleNamespace
+    from verify_tools import backfill_order_ledger_from_audit as bfl
+    from verify_tools import pnl_report
+    from verify_tools import verify_account_facade as vaf
+
+    # 1. Pure invariant & cross-check: pnl_report.per_bot must NEVER book canceled/unfilled origQty as filled P&L
+    canceled_order = {
+        "orderId": 1,
+        "clientOrderId": "AI_cancel_1",
+        "side": "BUY",
+        "status": "CANCELED",
+        "origQty": "1.5",
+        "executedQty": "0.00000000",
+        "cummulativeQuoteQty": "0.00000000",
+        "price": "60000.0",
+    }
+    partial_canceled = {
+        "orderId": 2,
+        "clientOrderId": "AI_part_2",
+        "side": "BUY",
+        "status": "CANCELED",
+        "origQty": "1.0",
+        "executedQty": "0.25",
+        "cummulativeQuoteQty": "15000.0",
+        "price": "60000.0",
+    }
+    filled_sell = {
+        "orderId": 3,
+        "clientOrderId": "AI_sell_3",
+        "side": "SELL",
+        "status": "FILLED",
+        "origQty": "0.25",
+        "executedQty": "0.25",
+        "cummulativeQuoteQty": "15500.0",
+        "price": "62000.0",
+    }
+    assert pnl_report._extract_attributed_fill_qty(canceled_order, src_kind="orders") == 0.0
+    assert pnl_report._extract_attributed_fill_qty(partial_canceled, src_kind="orders") == pytest.approx(0.25)
+    assert pnl_report._extract_attributed_fill_qty({"qty": "0.5", "price": "60000.0"}, src_kind="fills") == pytest.approx(0.5)
+
+    fake_prov = SimpleNamespace(fetch_recent_orders=lambda _s, limit=1000: [canceled_order, partial_canceled, filled_sell])
+    monkeypatch.setattr(pnl_report.mkt, "provider_by_name", lambda _v: fake_prov)
+    monkeypatch.setattr(pnl_report, "get_accepted_order_owner_map", lambda: {})
+    pnl_report.per_bot("BTCUSDC", provider_name="binance")
+    out_pnl = capsys.readouterr().out
+    assert "15000" in out_pnl and "15500" in out_pnl
+    assert "+500.00" in out_pnl  # 0.25 * (62000 - 60000), NOT poisoned by 1.5 BTC canceled order!
+    assert "105000" not in out_pnl
+
+    # 2. Pure invariant & cross-check: verify_account_facade exits non-zero when ALL symbols skip due to unavailable balances
+    monkeypatch.setattr(vaf, "SYMBOLS", ["BTCUSDC", "ETHUSDC"])
+    monkeypatch.setattr(vaf, "free_direct", lambda _b: 0.0)
+    monkeypatch.setattr(vaf.mkt, "provider_by_name", lambda _v: SimpleNamespace(free_balance=lambda _b: None))
+    with pytest.raises(SystemExit) as exc_info:
+        vaf.main()
+    assert exc_info.value.code == 1
+    out_vaf = capsys.readouterr().out
+    assert "inconclusive" in out_vaf.lower()
+
+    # 3. Pure invariant & cross-check: backfill_order_ledger picks earliest non-future live boundary & ignores far-future source mtime
+    t_now = time.time()
+    audit_dir = tmp_path / "audit"
+    cdb_dir = tmp_path / "cachedb"
+    audit_dir.mkdir(parents=True)
+    reader = OrderLedgerReader(cachedb_dir=str(cdb_dir))
+    day_live = bfl.utc_day_for_ts(t_now - 3600.0)
+    ev_live_path = reader.events_path(day_live)
+    os.makedirs(os.path.dirname(ev_live_path), exist_ok=True)
+    # Unsorted live events + poisoned far-future live row
+    with open(ev_live_path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": t_now + 86400.0, "src": "live", "ev": "STATUS"}) + "\n")
+        fh.write(json.dumps({"ts": t_now - 100.0, "src": "live", "ev": "STATUS"}) + "\n")
+        fh.write(json.dumps({"ts": t_now - 3600.0, "src": "live", "ev": "STATUS"}) + "\n")
+    b_day, b_ts = bfl._find_first_live_event_boundary(reader, now_ts=t_now)
+    assert b_day == day_live
+    assert b_ts == pytest.approx(t_now - 3600.0)
+
+    # Audit file with corrupt far-future mtime must NOT copy future mtime onto created order_events_*.jsonl
+    day_old = bfl.utc_day_for_ts(t_now - 2 * 86400.0)
+    audit_file = audit_dir / f"execution_audit_{day_old}.jsonl"
+    audit_file.write_text(
+        json.dumps(
+            {
+                "event": "order_terminal",
+                "status": "FILLED",
+                "ts": t_now - 2 * 86400.0,
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "qty": 0.01,
+                "filled_qty": 0.01,
+                "price": 60000.0,
+                "order_id": "9001",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.utime(audit_file, (t_now + 86400.0, t_now + 86400.0))
+    stats = bfl.backfill_order_ledger_from_audit(str(audit_dir), str(cdb_dir), dry_run=False)
+    assert stats["event_days_written"] == 1
+    ev_old_path = reader.events_path(day_old)
+    assert os.path.getmtime(ev_old_path) <= time.time() + 60.0
+
+
 
 
 

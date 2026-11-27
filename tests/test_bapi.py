@@ -1671,4 +1671,91 @@ def test_thread_worker_invokes_subclass_main_initializing_cmd_queue_and_account_
     assert avail_events == [True]
 
 
+def test_pass22_paginate_rate_limit_bound_and_ws_bridge_isolation_invariants_crosscheck(monkeypatch):
+    """Pass 22 pure invariants & cross-checks: paginate_my_trades bounds -1003 retries, refresh_symbol_in_cache ignores zero fetchtime, and WS saves are isolated."""
+    from binance.exceptions import BinanceAPIException
+    from binance_api import bapi_ws_bridge
+
+    class _FakeRateLimitResp:
+        status_code = 429
+        text = '{"code": -1003, "msg": "Too much request weight used"}'
+
+    def _make_rl_err():
+        return BinanceAPIException(_FakeRateLimitResp(), 429, _FakeRateLimitResp.text)
+
+    sleeps = []
+    monkeypatch.setattr(bapi_allorders.time, "sleep", lambda s: sleeps.append(s))
+
+    # 1. Pure invariant: persistent -1003 stops after max_rate_limit_retries (no infinite hang)
+    calls_non_strict = {"n": 0}
+
+    def _always_rl(**_kw):
+        calls_non_strict["n"] += 1
+        raise _make_rl_err()
+
+    res_non_strict = bapi_allorders.paginate_my_trades(
+        SimpleNamespace(get_my_trades=_always_rl),
+        "BTCUSDC",
+        1000,
+        strict=False,
+        max_rate_limit_retries=2,
+    )
+    assert res_non_strict == []
+    assert calls_non_strict["n"] == 3  # 1 initial + 2 retries, then break
+    assert sleeps == [60, 60]
+
+    # Strict mode raises after exhausting max_rate_limit_retries
+    sleeps.clear()
+    calls_strict = {"n": 0}
+
+    def _always_rl_strict(**_kw):
+        calls_strict["n"] += 1
+        raise _make_rl_err()
+
+    with pytest.raises(BinanceAPIException):
+        bapi_allorders.paginate_my_trades(
+            SimpleNamespace(get_my_trades=_always_rl_strict),
+            "BTCUSDC",
+            1000,
+            strict=True,
+            max_rate_limit_retries=1,
+        )
+    assert calls_strict["n"] == 2
+    assert sleeps == [60]
+
+    # 2. Pure invariant: refresh_symbol_in_cache falls back when fetchtime_per_symbol has "0" / 0
+    seen_start = []
+    fake_mgr = SimpleNamespace(
+        cls_name="FakeCache",
+        fetchtime_per_symbol={"BTCUSDC": "0"},
+        fallback_time_default=1_795_000_000_000,
+        get_remote_items=lambda sym, st: seen_start.append((sym, st)) or [],
+        _persist_items=lambda *_a, **_kw: None,
+    )
+    bapi_ws_bridge.refresh_symbol_in_cache(fake_mgr, "BTCUSDC")
+    assert seen_start == [("BTCUSDC", 1_795_000_000_000)]
+
+    # 3. Dependent cross-check: BinanceOrderFilled save error must NOT starve BinanceTrade / BinanceOrderOpen saves
+    saved_caches = []
+
+    def _fail_save():
+        saved_caches.append("BinanceOrderFilled:ERR")
+        raise OSError("disk busy")
+
+    caches = {
+        "BinanceOrderFilled": SimpleNamespace(save_state_to_file_if_enabled=_fail_save),
+        "BinanceTrade": SimpleNamespace(save_state_to_file_if_enabled=lambda: saved_caches.append("BinanceTrade:OK")),
+        "BinanceOrderOpen": SimpleNamespace(save_state_to_file_if_enabled=lambda: saved_caches.append("BinanceOrderOpen:OK")),
+    }
+    bapi_ws_bridge.handle_binance_ws_event(
+        {"e": "executionReport", "s": "BTCUSDC", "i": 123, "X": "FILLED", "x": "TRADE", "S": "BUY"},
+        cache_getter=lambda name: caches[name],
+        log_enabled=False,
+        upsert_order_fn=lambda _ev: True,
+        append_trade_fn=lambda _ev: True,
+        apply_open_order_fn=lambda _ev: True,
+    )
+    assert saved_caches == ["BinanceOrderFilled:ERR", "BinanceTrade:OK", "BinanceOrderOpen:OK"]
+
+
 

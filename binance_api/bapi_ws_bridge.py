@@ -15,7 +15,7 @@ from binance_api.bapi_ws_normalize import (
     parse_outbound_account_position,
     parse_trade_execution_report,
 )
-from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float
+from botcore import _parse_bool_flag, normalize_class_name, safe_pos_float, safe_pos_int
 from instrument_registry import casefold_get
 from providers.ssot_bridge import ProviderSsotBridgeMixin
 import log  # noqa: F401 -- keep print behavior aligned with the rest of the runtime
@@ -220,9 +220,8 @@ def append_trade_from_execution_report(
 def refresh_symbol_in_cache(manager: Any, symbol: str) -> None:
     """Refresh only one manager symbol efficiently for a WebSocket event."""
     try:
-        start_time = casefold_get(
-            manager.fetchtime_per_symbol, symbol, manager.fallback_time_default
-        )
+        raw_ft = casefold_get(manager.fetchtime_per_symbol, symbol, None)
+        start_time = safe_pos_int(raw_ft, default=None) or manager.fallback_time_default
         items = manager.get_remote_items(symbol, start_time)
         if items:
             manager._persist_items(symbol, items)
@@ -296,14 +295,20 @@ def handle_binance_ws_event(
                 persist_fn(event_type)
             else:
                 if not symbol or order_res is not False:
-                    getter("BinanceOrderFilled").save_state_to_file_if_enabled()
+                    try:
+                        getter("BinanceOrderFilled").save_state_to_file_if_enabled()
+                    except Exception as exc:
+                        builtins.print(f"[cacheManager][WS] BinanceOrderFilled save failed: {exc}")
                 if not symbol or trade_res is not False:
-                    getter("BinanceTrade").save_state_to_file_if_enabled()
+                    try:
+                        getter("BinanceTrade").save_state_to_file_if_enabled()
+                    except Exception as exc:
+                        builtins.print(f"[cacheManager][WS] BinanceTrade save failed: {exc}")
                 if open_res:
                     try:
                         getter("BinanceOrderOpen").save_state_to_file_if_enabled()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        builtins.print(f"[cacheManager][WS] BinanceOrderOpen save failed: {exc}")
         return
 
     if event_type == "outboundAccountPosition":

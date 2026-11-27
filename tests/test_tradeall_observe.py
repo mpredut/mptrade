@@ -746,4 +746,37 @@ def test_trend_coordinator_run_reports_degraded_error_and_recovery_heartbeats(mo
     assert statuses[5] == ("ok", True, None)
 
 
+def test_pass22_entry_latest_ts_and_sampling_reject_future_poison_invariant_and_crosscheck(tmp_path, monkeypatch):
+    """Pass 22 pure invariant & cross-check: _entry_latest_ts normalizes ms and rejects far-future poison so sample_current_prices never freezes _LAST_SAMPLED_TS."""
+    t_now = 1_795_000_000.0
+    monkeypatch.setattr(observe.time, "time", lambda: t_now)
+
+    # 1. Pure invariant: far-future ts_fast is ignored in favor of valid ts; epoch-ms normalizes cleanly
+    assert observe._entry_latest_ts({"ts": t_now - 5.0, "ts_fast": t_now + 86400.0}, now_ts=t_now) == pytest.approx(t_now - 5.0)
+    assert observe._entry_latest_ts({"ts": (t_now - 3.0) * 1000.0}, now_ts=t_now) == pytest.approx(t_now - 3.0)
+    assert observe._entry_latest_ts({"ts": t_now + 3600.0, "ts_fast": t_now + 7200.0}, default=None, now_ts=t_now) is None
+
+    # 2. Dependent cross-check: poisoned far-future snapshot must NOT write or wedge _LAST_SAMPLED_TS for subsequent valid ticks
+    cache_path = tmp_path / "cache_short_trend.json"
+    logger_dir = tmp_path / "logger"
+    monkeypatch.setattr(observe, "CACHE_TREND_PATH", str(cache_path))
+    monkeypatch.setattr(observe, "LOGGER_DIR", str(logger_dir))
+
+    cache_path.write_text(
+        json.dumps({"BTCUSDC": {"ts": t_now + 86400.0, "current_price": 99999.0}}),
+        encoding="utf-8",
+    )
+    observe.sample_current_prices(["BTCUSDC"])
+    assert not logger_dir.exists()
+    assert "BTCUSDC" not in observe._LAST_SAMPLED_TS
+
+    cache_path.write_text(
+        json.dumps({"BTCUSDC": {"ts": t_now - 2.0, "current_price": 61250.5}}),
+        encoding="utf-8",
+    )
+    observe.sample_current_prices(["BTCUSDC"])
+    log_path = next(logger_dir.glob("tradeall_price_samples_*.log"))
+    assert log_path.read_text(encoding="utf-8").splitlines() == [f"{t_now - 2.0}|BTCUSDC|61250.5"]
+
+
 

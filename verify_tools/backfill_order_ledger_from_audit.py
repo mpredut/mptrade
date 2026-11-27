@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from typing import Any, Optional
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -101,14 +102,21 @@ def _convert_audit_row_to_ledger_event(rec: dict[str, Any]) -> Optional[dict[str
     )
 
 
-def _find_first_live_event_boundary(reader: OrderLedgerReader) -> tuple[str, float]:
+def _find_first_live_event_boundary(reader: OrderLedgerReader, *, now_ts: Optional[float] = None) -> tuple[str, float]:
     """Return ``(day_utc, ts)`` of the earliest non-backfilled live Order Ledger event, or ``('', 0.0)``."""
+    eff_now = safe_pos_float(now_ts, default=None) or time.time()
+    max_ts = eff_now + 60.0
     for fpath in reader.list_event_files():
+        earliest_ts: Optional[float] = None
         for row in read_jsonl_dicts(fpath):
             if clean_upper_scalar(row.get("src")) == "AUDIT_BACKFILL":
                 continue
-            if (ts_v := safe_pos_float(row.get("ts"), default=None)) is not None:
-                return utc_day_for_ts(ts_v), ts_v
+            ts_v = safe_pos_float(row.get("ts"), default=None)
+            if ts_v is not None and ts_v <= max_ts:
+                if earliest_ts is None or ts_v < earliest_ts:
+                    earliest_ts = ts_v
+        if earliest_ts is not None:
+            return utc_day_for_ts(earliest_ts), earliest_ts
     return "", 0.0
 
 
@@ -152,11 +160,14 @@ def backfill_order_ledger_from_audit(
     day_source_mtime: dict[str, float] = {}
     all_backfill_events: list[dict[str, Any]] = []
     source_rows = 0
+    now_s = time.time()
+    max_mtime = now_s + 60.0
     for ap in audit_paths:
         base = os.path.basename(ap)
         fday = base[len("execution_audit_") : -len(".jsonl")] if base.startswith("execution_audit_") and base.endswith(".jsonl") else ""
         try:
-            ap_mtime = os.path.getmtime(ap)
+            raw_mtime = os.path.getmtime(ap)
+            ap_mtime = raw_mtime if (0.0 < raw_mtime <= max_mtime) else 0.0
         except OSError:
             ap_mtime = 0.0
         for rec in read_jsonl_dicts(ap):

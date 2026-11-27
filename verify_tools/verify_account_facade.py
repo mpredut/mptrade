@@ -83,6 +83,7 @@ def finish_facade_verification(
 
 def main():
     failures = []
+    compared = 0
     for s in SYMBOLS:
         base = resolve_assets(s)[0]
         print(f"\n==== {s} (base={base}) ====")
@@ -104,6 +105,7 @@ def main():
             print("  the rest of the private comparison is skipped; two empty lists after API "
                   "errors are not proof of parity")
             continue
+        compared += 1
 
         # 2) BUY/SELL orders: count plus a field-by-field comparison -----------
         direct = {}
@@ -134,7 +136,12 @@ def main():
         print(f"  avg_buy: direct={avg_d:.8f} facade={avg_f:.8f} | net: direct={net_d:.8f} "
               f"facade={net_f:.8f} -> {'OK' if same_pos else 'DIFF'}")
         if not same_pos:
-            failures.append(f"{s}: direct position(avg={avg_d},net={net_d}) != facade(avg={avg_f},net={avg_f})")
+            failures.append(f"{s}: direct position(avg={avg_d},net={net_d}) != facade(avg={avg_f},net={net_f})")
+
+    if SYMBOLS and compared == 0:
+        failures.append(
+            f"all {len(SYMBOLS)} symbols skipped due to unavailable balances (inconclusive - cannot PASS)"
+        )
 
     finish_facade_verification(
         failures,
