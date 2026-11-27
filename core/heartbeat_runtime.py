@@ -88,7 +88,7 @@ def touch_heartbeat_file(
     force_flag = _parse_bool_flag(force, default=False)
     now_val = safe_float(now, default=None)
     now_m = _time.monotonic() if now_val is None else now_val
-    if not force_flag and now_m - last_ts < interval_sec:
+    if not force_flag and 0.0 <= (now_m - last_ts) < interval_sec:
         return last_ts
     try:
         hb_path = str(path)

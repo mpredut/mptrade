@@ -517,8 +517,12 @@ class TimedQuote:
         return max(0.0, now_ts - self.ts)
 
     def is_fresh(self, now_ts: float | None, max_age_sec: float) -> bool:
-        age = self.age_sec(now_ts)
-        return age is None or age <= max_age_sec
+        if self.ts is None or now_ts is None:
+            return True
+        if self.ts > now_ts + 60.0:
+            return False
+        age = max(0.0, now_ts - self.ts)
+        return age <= max_age_sec
 
 
 def quote_spread_bps(quote_a: TimedQuote, quote_b: TimedQuote, *, decimals: int = 1) -> float:
@@ -554,7 +558,10 @@ def resolve_aligned_quote_pair(
         and abs(pa_ts - pb_ts) > max_skew_sec
     ) or (
         eff_now is not None
-        and any(t is not None and (eff_now - t) > max_age_sec for t in (pa_ts, pb_ts))
+        and any(
+            t is not None and (t > eff_now + 60.0 or (eff_now - t) > max_age_sec)
+            for t in (pa_ts, pb_ts)
+        )
     )
     fallback_consistent = (
         (primary_a is None or fallback_a is None or abs(fallback_a.price - primary_a.price) / primary_a.price <= max_fallback_divergence)

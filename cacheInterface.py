@@ -637,7 +637,13 @@ class CacheManagerInterface(ABC):
         if not last_times_per_sym:
             fallback_time_file = self.fallback_time_default
             if os.path.exists(self.filename):
-                fallback_time_file = math.trunc(os.path.getmtime(self.filename) * 1000) - 60_000
+                try:
+                    mtime_ms = math.trunc(os.path.getmtime(self.filename) * 1000) - 60_000
+                    now_ms = math.trunc(time.time() * 1000)
+                    if 0 < mtime_ms <= now_ms + 60_000:
+                        fallback_time_file = mtime_ms
+                except OSError:
+                    pass
             fallback_time = min(self.fallback_time_default, fallback_time_file)
             return {symbol: fallback_time for symbol in self.symbols}
         return last_times_per_sym

@@ -76,12 +76,119 @@ _low_prio_cmd() {
 rsync_cachedb() {  # $1=src $2=dst [extra_rsync_args...]
     local src="$1" dst="$2" rc=0
     shift 2
-    _low_prio_cmd rsync -a --info=stats1 "${CACHEDB_RSYNC_EXCLUDES[@]}" "$@" "$src" "$dst" 2>&1 || rc=$?
+    local -a bw_args=()
+    if [ -n "${CACHEDB_RSYNC_BWLIMIT_KB:-}" ] && [ "${CACHEDB_RSYNC_BWLIMIT_KB}" -gt 0 ] 2>/dev/null; then
+        bw_args=(--bwlimit="$CACHEDB_RSYNC_BWLIMIT_KB")
+    fi
+    _low_prio_cmd rsync -a --info=stats1 "${bw_args[@]}" "${CACHEDB_RSYNC_EXCLUDES[@]}" "$@" "$src" "$dst" 2>&1 || rc=$?
     if [ "$rc" != 0 ] && [ "$rc" != 23 ] && [ "$rc" != 24 ]; then
         echo "[rsync_cachedb] ERROR: rsync ($src -> $dst) failed with code $rc" >&2
         return "$rc"
     fi
     return 0
+}
+
+rsync_cachedb_append_aware() {  # $1=local_src_dir/ $2=dst_spec/ $3=inode_state_tsv [extra_rsync_args...]
+    local src="$1" dst="$2" state_file="$3"
+    shift 3
+    src="${src%/}/"
+    dst="${dst%/}/"
+
+    # Pass 1: sync all non-archive cachedb files normally (small hot JSONs, trends, account, 24h caches).
+    rsync_cachedb "$src" "$dst" \
+        --exclude 'prices/cache_365_price_*.jsonl' \
+        --exclude 'prices/cache_sparse_price_*.jsonl' \
+        "$@" || return $?
+
+    # Collect local append-only dense price archives (typically >95% of cachedb bytes).
+    local -a local_archives=()
+    local had_nullglob=0 f
+    shopt -q nullglob && had_nullglob=1
+    shopt -s nullglob
+    for f in "${src}prices/"cache_365_price_*.jsonl "${src}prices/"cache_sparse_price_*.jsonl; do
+        [ -f "$f" ] && local_archives+=("$f")
+    done
+    [ "$had_nullglob" -eq 0 ] && shopt -u nullglob
+    if [ "${#local_archives[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    # Probe destination archive byte sizes via rsync --list-only (works identically for local & SSH dst).
+    local probe_out="" probe_rc=0
+    probe_out="$(_low_prio_cmd rsync -r --list-only --no-h \
+        --include='prices/' \
+        --include='prices/cache_365_price_*.jsonl' \
+        --include='prices/cache_sparse_price_*.jsonl' \
+        --exclude='*' \
+        "$@" "$dst" 2>/dev/null)" || probe_rc=$?
+    if [ "$probe_rc" != 0 ] && [ "$probe_rc" != 23 ] && [ "$probe_rc" != 24 ]; then
+        # Destination probe failed unexpectedly -> fall back safely to standard rsync for archives.
+        rsync_cachedb "$src" "$dst" \
+            --prune-empty-dirs \
+            --include='prices/' \
+            --include='prices/cache_365_price_*.jsonl' \
+            --include='prices/cache_sparse_price_*.jsonl' \
+            --exclude='*' \
+            "$@"
+        return $?
+    fi
+
+    local -A dst_sizes=() prev_inodes=() cur_inodes=()
+    local rel sz ino prev_ino dst_sz
+    while IFS=$'\t' read -r rel sz; do
+        [ -n "$rel" ] && dst_sizes["$rel"]="$sz"
+    done < <(printf '%s\n' "$probe_out" | awk '/^-/ && NF >= 5 { sz=$2; gsub(/,/, "", sz); p=$5; for (i=6; i<=NF; i++) p=p " " $i; print p "\t" sz }')
+
+    if [ -n "$state_file" ] && [ -f "$state_file" ]; then
+        while IFS=$'\t' read -r rel ino; do
+            [ -n "$rel" ] && prev_inodes["$rel"]="$ino"
+        done < "$state_file"
+    fi
+
+    local append_tmp full_tmp state_tmp
+    append_tmp="$(mktemp /tmp/rsync_append_list.XXXXXX)"
+    full_tmp="$(mktemp /tmp/rsync_full_list.XXXXXX)"
+    state_tmp=""
+    local append_cnt=0 full_cnt=0 rc=0
+
+    for f in "${local_archives[@]}"; do
+        rel="prices/$(basename "$f")"
+        read -r ino sz < <(stat -c '%i %s' "$f")
+        cur_inodes["$rel"]="$ino"
+        prev_ino="${prev_inodes[$rel]:-}"
+        dst_sz="${dst_sizes[$rel]:-}"
+        if [ -z "$dst_sz" ]; then
+            printf '%s\n' "$rel" >> "$append_tmp"
+            append_cnt=$((append_cnt + 1))
+        elif [ "$sz" -lt "$dst_sz" ] || { [ -n "$prev_ino" ] && [ "$prev_ino" != "$ino" ]; }; then
+            # File shrank (compaction/trim) or inode changed (atomic rewrite) -> full delta sync required.
+            printf '%s\n' "$rel" >> "$full_tmp"
+            full_cnt=$((full_cnt + 1))
+        else
+            # Same inode & non-decreasing size -> seek straight to dst_size via --append (0 historic read I/O).
+            printf '%s\n' "$rel" >> "$append_tmp"
+            append_cnt=$((append_cnt + 1))
+        fi
+    done
+
+    if [ "$append_cnt" -gt 0 ]; then
+        rsync_cachedb "$src" "$dst" --append --files-from="$append_tmp" "$@" || rc=$?
+    fi
+    if [ "$rc" -eq 0 ] && [ "$full_cnt" -gt 0 ]; then
+        rsync_cachedb "$src" "$dst" --ignore-times --files-from="$full_tmp" "$@" || rc=$?
+    fi
+
+    if [ "$rc" -eq 0 ] && [ -n "$state_file" ]; then
+        mkdir -p "$(dirname "$state_file")" 2>/dev/null || true
+        state_tmp="${state_file}.tmp.$$"
+        : > "$state_tmp"
+        for rel in "${!cur_inodes[@]}"; do
+            printf '%s\t%s\n' "$rel" "${cur_inodes[$rel]}" >> "$state_tmp"
+        done
+        mv -f "$state_tmp" "$state_file" 2>/dev/null || rm -f "$state_tmp"
+    fi
+    rm -f "$append_tmp" "$full_tmp"
+    return "$rc"
 }
 
 unpack_repo_payload() {  # $1=src_dir $2=dst_root [extra_tar_excludes...]

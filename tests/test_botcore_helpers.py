@@ -1567,4 +1567,92 @@ def test_heartbeat_freshness_and_fleet_health_invariants_and_crosschecks(tmp_pat
     assert rep.fleet_healthy is False
 
 
+def test_pass14_heartbeat_clock_rollback_and_daemon_ssot_future_ts_invariants(tmp_path, monkeypatch):
+    """Pass #14 invariants & cross-checks: clock rollback/future last_ts never freezes touch_heartbeat_file,
+    and far-future timestamps never poison inspect_daemon_heartbeat, compute_step_retry_ts, or load_last_thread_prune_ts."""
+    import time as _t
+    from intelligence.macro import daemon_ssot as ds
+
+    # 1. Pure invariant: touch_heartbeat_file heals when last_ts > now instead of suppressing writes forever
+    hb_path = tmp_path / "clock_rollback.heartbeat"
+    ret_ts = botcore.touch_heartbeat_file(hb_path, last_ts=5000.0, interval_sec=30.0, force=False, now=1000.0)
+    assert ret_ts == pytest.approx(1000.0)
+    assert hb_path.is_file()
+    # Normal throttle within [0, interval_sec) still suppresses writes cleanly
+    ret_throttled = botcore.touch_heartbeat_file(hb_path, last_ts=1000.0, interval_sec=30.0, force=False, now=1010.0)
+    assert ret_throttled == pytest.approx(1000.0)
+
+    # 2. Pure invariants: compute_step_retry_ts drops corrupt far-future last_ts while preserving recent valid floor
+    now_s = 1_750_000_000.0
+    retry_healed = ds.compute_step_retry_ts(now_s + 86400.0, now_s, 120.0)
+    assert retry_healed == pytest.approx(now_s - 120.0 + 30.0)
+    # Normal valid prev_ts within current_ts + 60s preserves max(prev_ts, retry_ts)
+    retry_normal = ds.compute_step_retry_ts(now_s - 50.0, now_s, 120.0)
+    assert retry_normal == pytest.approx(now_s - 50.0)
+
+    # 3. Pure invariants: inspect_daemon_heartbeat rejects far-future ts (> now + 60s) even for a live PID
+    hb_dir = tmp_path / "hb_inspect"
+    hb_dir.mkdir()
+    live_pid = os.getpid()
+    (hb_dir / "fut.heartbeat").write_text(
+        json.dumps({"pid": live_pid, "status": "alive", "ts": _t.time() + 3600.0}),
+        encoding="utf-8",
+    )
+    insp_fut = ds.inspect_daemon_heartbeat(str(hb_dir), ("fut.heartbeat",), max_alive_age_sec=120.0)
+    assert insp_fut["running"] is False
+    assert insp_fut["status"] == "stale"
+    assert insp_fut["age_seconds"] is None
+
+    (hb_dir / "ok.heartbeat").write_text(
+        json.dumps({"pid": live_pid, "status": "alive", "ts": _t.time() - 5.0}),
+        encoding="utf-8",
+    )
+    insp_ok = ds.inspect_daemon_heartbeat(str(hb_dir), ("ok.heartbeat",), max_alive_age_sec=120.0)
+    assert insp_ok["running"] is True
+    assert insp_ok["status"] == "alive"
+    assert insp_ok["age_seconds"] is not None and insp_ok["age_seconds"] < 30.0
+
+    # 4. Pure invariants: load_last_thread_prune_ts rejects far-future prune timestamps
+    fut_prune_hb = tmp_path / "prune_fut.heartbeat"
+    fut_prune_hb.write_text(json.dumps({"last_thread_prune_ts": _t.time() + 7200.0}), encoding="utf-8")
+    assert ds.load_last_thread_prune_ts(str(fut_prune_hb)) == 0.0
+    valid_prune_ts = _t.time() - 100.0
+    ok_prune_hb = tmp_path / "prune_ok.heartbeat"
+    ok_prune_hb.write_text(json.dumps({"last_thread_prune_ts": valid_prune_ts}), encoding="utf-8")
+    assert ds.load_last_thread_prune_ts(str(ok_prune_hb)) == pytest.approx(valid_prune_ts)
+
+    # 5. Dependent cross-check: run_scheduled_step recovers from poisoned far-future ts_attr on failure & retries cleanly
+    calls = []
+    stub = SimpleNamespace(_last_step_ts=now_s + 86400.0)
+    monkeypatch.setattr(ds, "resolve_now_ts", lambda _x=None: now_s)
+
+    def _flaky_step():
+        calls.append(len(calls) + 1)
+        return len(calls) >= 2
+
+    res_map = {"ok_cnt": False}
+    ran1 = run_scheduled_step(
+        stub, current_ts=now_s, ts_attr="_last_step_ts", interval_sec=120.0, fn=_flaky_step,
+        force=False, bounded=True, results=res_map, result_key="ok_cnt",
+    )
+    assert ran1 is False
+    assert calls == [1]
+    assert stub._last_step_ts == pytest.approx(now_s - 120.0 + 30.0)
+
+    # 10s later -> still inside 30s retry backoff (does not hammer)
+    ran2 = run_scheduled_step(
+        stub, current_ts=now_s + 10.0, ts_attr="_last_step_ts", interval_sec=120.0, fn=_flaky_step,
+        force=False, bounded=True, results=res_map, result_key="ok_cnt",
+    )
+    assert ran2 is False and calls == [1]
+
+    # 31s later -> due again and succeeds!
+    ran3 = run_scheduled_step(
+        stub, current_ts=now_s + 31.0, ts_attr="_last_step_ts", interval_sec=120.0, fn=_flaky_step,
+        force=False, bounded=True, results=res_map, result_key="ok_cnt",
+    )
+    assert ran3 is True and calls == [1, 2] and res_map["ok_cnt"] is True
+    assert stub._last_step_ts == pytest.approx(now_s + 31.0)
+
+
 

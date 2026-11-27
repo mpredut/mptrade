@@ -3183,6 +3183,45 @@ def test_pass12_va_pos_clamp_alignment_invariant_and_crosscheck() -> None:
         assert [v for v in audit_rendered_prompt_text(rendered_line) if v.code == "PROMPT_VA_POS_AND_LIQ_MATH"] == []
 
 
+def test_pass14_timed_quote_and_aligned_pair_future_timestamp_invariants() -> None:
+    """Pass #14 invariants & cross-checks: far-future corrupt quote timestamps are never treated as fresh
+    in TimedQuote.is_fresh or trusted as primaries in resolve_aligned_quote_pair / compute_cross_venue_arb_metrics."""
+    now_s = 1_750_000_000.0
+
+    # 1. Pure invariants on TimedQuote.is_fresh
+    fresh_q = TimedQuote.from_raw(61.5, now_s - 2.0, source="ob_mid")
+    jitter_q = TimedQuote.from_raw(61.5, now_s + 5.0, source="ob_mid")
+    future_q = TimedQuote.from_raw(61.5, now_s + 3600.0, source="ob_mid")
+    stale_q = TimedQuote.from_raw(61.5, now_s - 30.0, source="ob_mid")
+    untimed_q = TimedQuote.from_raw(61.5, None, source="spot")
+    assert fresh_q is not None and fresh_q.is_fresh(now_s, 10.0) is True
+    assert jitter_q is not None and jitter_q.is_fresh(now_s, 10.0) is True
+    assert future_q is not None and future_q.is_fresh(now_s, 10.0) is False
+    assert stale_q is not None and stale_q.is_fresh(now_s, 10.0) is False
+    assert untimed_q is not None and untimed_q.is_fresh(now_s, 10.0) is True
+
+    # 2. Pure invariant: resolve_aligned_quote_pair rejects BOTH far-future primaries (even when mutually close in ts)
+    #    and switches to consistent spot fallbacks.
+    fut_ob_a = TimedQuote.from_raw(61.60, now_s + 3600.0, source="ob_mid")
+    fut_ob_b = TimedQuote.from_raw(61.65, now_s + 3600.2, source="ob_mid")
+    spot_a = TimedQuote.from_raw(61.62, source="spot")
+    spot_b = TimedQuote.from_raw(61.64, source="spot")
+    pair = resolve_aligned_quote_pair(fut_ob_a, fut_ob_b, spot_a, spot_b, now_ts=now_s)
+    assert pair == (spot_a, spot_b)
+
+    # 3. Dependent cross-check: compute_cross_venue_arb_metrics uses spot fallback when both OB timestamps are far-future
+    micro = {
+        "HYPEUSDC": {"venue": "hyperliquid", "ob_mid_price": 61.60, "_ob_raw_ts": now_s + 3600.0, "spread_bps": 0.2},
+        "HYPEUSD": {"venue": "kraken", "ob_mid_price": 61.65, "_ob_raw_ts": now_s + 3600.2, "spread_bps": 1.6},
+    }
+    pt = {"HYPEUSDC": {"price": 61.62}, "HYPEUSD": {"price": 61.64}}
+    compute_cross_venue_arb_metrics("HYPEUSDC", micro["HYPEUSDC"], pt["HYPEUSDC"], micro, pt, now_ts=now_s)
+    compute_cross_venue_arb_metrics("HYPEUSD", micro["HYPEUSD"], pt["HYPEUSD"], micro, pt, now_ts=now_s)
+    expected_bps = quote_spread_bps(spot_a, spot_b)
+    assert micro["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(expected_bps, abs=0.1)
+    assert micro["HYPEUSD"]["cross_venue_arb_bps"] == pytest.approx(-expected_bps, abs=0.1)
+
+
 
 
 

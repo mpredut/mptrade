@@ -210,7 +210,11 @@ def compute_step_retry_ts(last_ts: float, current_ts: float, interval_sec: float
     if itv <= 0.0:
         return last_ts
     retry_delay = min(itv, max(5.0, itv * 0.25))
-    return max(safe_nonneg_ts(last_ts, 0.0), current_ts - itv + retry_delay)
+    retry_ts = current_ts - itv + retry_delay
+    prev_ts = safe_nonneg_ts(last_ts, 0.0)
+    if prev_ts > current_ts + 60.0:
+        return retry_ts
+    return max(prev_ts, retry_ts)
 
 
 def run_step_bounded(
@@ -277,9 +281,13 @@ def inspect_daemon_heartbeat(
         return {"running": False, "reason": "no_heartbeat_file"}
 
     try:
+        now_s = time.time()
         pid = exact_pos_int(data.get("pid", 0), 0)
         ts = safe_nonneg_ts(data.get("ts", 0.0), 0.0)
-        age = max(0.0, time.time() - ts) if ts > 0.0 else math.inf
+        if ts <= 0.0 or ts > now_s + 60.0:
+            age = math.inf
+        else:
+            age = max(0.0, now_s - ts)
         is_alive = False
         if pid > 0:
             try:
@@ -628,7 +636,9 @@ def load_last_thread_prune_ts(heartbeat_path: str) -> float:
     try:
         hb_doc = read_json_dict(str(resolve_cachedb_filepath(heartbeat_path)), default={})
         if isinstance(hb_doc, dict):
-            return safe_nonneg_ts(hb_doc.get("last_thread_prune_ts"), 0.0)
+            prune_ts = safe_nonneg_ts(hb_doc.get("last_thread_prune_ts"), 0.0)
+            if 0.0 < prune_ts <= time.time() + 60.0:
+                return prune_ts
     except Exception:
         pass
     return 0.0

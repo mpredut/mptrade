@@ -2582,7 +2582,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         committed_ts = max(persisted_after, commit_state.get("snap_max_ts", 0))
         with self.lock:
             self._last_persisted_snapshot_max_ts = committed_ts
-            self._last_disk_sync_max_ts = max(committed_ts, self._mem_max_ts())
+            self._last_disk_sync_max_ts = committed_ts
         return self._log_cache_saved_ok()
 
     def _get_or_create_fallback_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:

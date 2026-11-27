@@ -2960,4 +2960,116 @@ def test_read_jsonl_cached_never_pins_backup_fallback_under_primary_stat_sig(tmp
     assert str(primary) in memo
 
 
+def test_pass14_ephemeral_staging_cleanup_throttle_and_append_aware_rsync_invariants(tmp_path, monkeypatch):
+    """Pass #14 invariants & cross-checks: ephemeral fsync=False staging sweeps throttle redundant listdir calls
+    (while durable fsync=True sweeps stay immediate), and rsync_cachedb_append_aware handles grow, shrink, and
+    same-size inode-replacement rewrites cleanly."""
+    import subprocess
+    from cachepaths import STALE_STAGING_MAX_AGE_SEC
+
+    # 1. Pure invariants: ephemeral fsync=False writes sweep on first call, throttle within 30s, then sweep again;
+    #    durable fsync=True writes always sweep immediately (preserving orphan-cleanup guarantees).
+    state_io._STAGING_CLEANUP_LAST_MONO.clear()
+    mono_clock = [1000.0]
+    monkeypatch.setattr(state_io.time, "perf_counter", lambda: mono_clock[0])
+
+    sweep_calls: list[tuple[str, str, bool]] = []
+    real_cleanup = state_io.cleanup_stale_staging_siblings
+
+    def _spy_cleanup(directory, prefix, **kwargs):
+        sweep_calls.append((directory, prefix, bool(kwargs.get("dirs_only", False))))
+        return real_cleanup(directory, prefix, **kwargs)
+
+    monkeypatch.setattr(state_io, "cleanup_stale_staging_siblings", _spy_cleanup)
+
+    eph_p = tmp_path / "cache_current_price.json"
+    stale_eph = tmp_path / ".cache_current_price.json.orphan1.tmp"
+    stale_eph.write_text("{}", encoding="utf-8")
+    old_ts = time.time() - (STALE_STAGING_MAX_AGE_SEC + 60.0)
+    os.utime(stale_eph, (old_ts, old_ts))
+
+    # First ephemeral write sweeps immediately and cleans the stale orphan.
+    state_io.atomic_write_json(str(eph_p), {"v": 1}, separators=(",", ":"), fsync=False)
+    assert not stale_eph.exists()
+    assert len(sweep_calls) == 1
+
+    # Next 4 rapid ephemeral writes within 30s must NOT trigger redundant os.listdir sweeps.
+    for k in range(2, 6):
+        mono_clock[0] += 1.0
+        state_io.atomic_write_json(str(eph_p), {"v": k}, separators=(",", ":"), fsync=False)
+    assert len(sweep_calls) == 1
+
+    # Once 30s elapses, the next ephemeral write sweeps again and cleans newly aged debris.
+    stale_eph2 = tmp_path / ".cache_current_price.json.orphan2.tmp"
+    stale_eph2.write_text("{}", encoding="utf-8")
+    os.utime(stale_eph2, (old_ts, old_ts))
+    mono_clock[0] += state_io._STAGING_CLEANUP_MIN_INTERVAL_SEC + 1.0
+    state_io.atomic_write_json(str(eph_p), {"v": 6}, separators=(",", ":"), fsync=False)
+    assert not stale_eph2.exists()
+    assert len(sweep_calls) == 2
+
+    # Durable fsync=True writes ALWAYS sweep immediately even on rapid consecutive writes.
+    dur_p = tmp_path / "shared_durable.json"
+    state_io.atomic_write_json(str(dur_p), {"v": 1}, fsync=True)
+    stale_dur = tmp_path / ".shared_durable.json.orphan3.tmp"
+    stale_dur.write_text("{}", encoding="utf-8")
+    os.utime(stale_dur, (old_ts, old_ts))
+    state_io.atomic_write_json(str(dur_p), {"v": 2}, fsync=True)
+    assert not stale_dur.exists()
+    assert len(sweep_calls) == 4
+
+    # 2. Dependent end-to-end cross-check: real bash + rsync execution of rsync_cachedb_append_aware
+    repo_root = Path(__file__).resolve().parents[1]
+    common_sh = repo_root / "orchestratorOS" / "lib" / "backup_sync_common.sh"
+    src = tmp_path / "src_cachedb"
+    dst = tmp_path / "dst_cachedb"
+    (src / "prices").mkdir(parents=True)
+    dst.mkdir(parents=True)
+    state_tsv = tmp_path / "archive_inodes.tsv"
+
+    arc365 = src / "prices" / "cache_365_price_BTCUSDC.jsonl"
+    arc_sp = src / "prices" / "cache_sparse_price_BTCUSDC.jsonl"
+    hot_json = src / "prices" / "cache_current_price.json"
+    arc365.write_text('{"s":"BTCUSDC","i":[1,60000.0]}\n', encoding="utf-8")
+    arc_sp.write_text('{"s":"BTCUSDC","i":[1,60000.0]}\n', encoding="utf-8")
+    hot_json.write_text('{"items":{"BTCUSDC":[[1,60000.0]]}}', encoding="utf-8")
+
+    def _run_append_sync() -> subprocess.CompletedProcess:
+        cmd = (
+            f'set -euo pipefail; source "{common_sh}"; '
+            f'rsync_cachedb_append_aware "{src}/" "{dst}/" "{state_tsv}"'
+        )
+        res = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"rsync_cachedb_append_aware failed: {res.stdout}\n{res.stderr}"
+        return res
+
+    # Initial sync populates dst and records archive inodes.
+    _run_append_sync()
+    assert (dst / "prices" / "cache_365_price_BTCUSDC.jsonl").read_text(encoding="utf-8") == arc365.read_text(encoding="utf-8")
+    assert (dst / "prices" / "cache_sparse_price_BTCUSDC.jsonl").read_text(encoding="utf-8") == arc_sp.read_text(encoding="utf-8")
+    assert state_tsv.is_file() and "prices/cache_365_price_BTCUSDC.jsonl" in state_tsv.read_text(encoding="utf-8")
+
+    # Case A: pure append (same inode, src_size > dst_size) transfers tail via --append cleanly.
+    with open(arc365, "a", encoding="utf-8") as fh:
+        fh.write('{"s":"BTCUSDC","i":[2,60100.0]}\n')
+    _run_append_sync()
+    assert (dst / "prices" / "cache_365_price_BTCUSDC.jsonl").read_text(encoding="utf-8") == arc365.read_text(encoding="utf-8")
+
+    # Case B: compaction/shrink (src_size < dst_size) MUST NOT be skipped by --append.
+    arc365.write_text('{"s":"BTCUSDC","i":[2,60100.0]}\n', encoding="utf-8")
+    _run_append_sync()
+    assert (dst / "prices" / "cache_365_price_BTCUSDC.jsonl").read_text(encoding="utf-8") == '{"s":"BTCUSDC","i":[2,60100.0]}\n'
+
+    # Case C: same-second, exact-same-size atomic inode replacement MUST trigger full sync via inode tracker + --ignore-times.
+    repl_tmp = src / "prices" / "._replace_sparse.tmp"
+    rewritten_sp = '{"s":"BTCUSDC","i":[9,69999.0]}\n'
+    assert len(rewritten_sp) == len(arc_sp.read_text(encoding="utf-8"))
+    repl_tmp.write_text(rewritten_sp, encoding="utf-8")
+    os.replace(str(repl_tmp), str(arc_sp))
+    hot_json.write_text('{"items":{"BTCUSDC":[[9,69999.0]]},"seq":2}', encoding="utf-8")
+    _run_append_sync()
+    assert (dst / "prices" / "cache_sparse_price_BTCUSDC.jsonl").read_text(encoding="utf-8") == rewritten_sp
+    assert (dst / "prices" / "cache_current_price.json").read_text(encoding="utf-8") == '{"items":{"BTCUSDC":[[9,69999.0]]},"seq":2}'
+
+
 

@@ -3937,6 +3937,82 @@ def test_live_reader_stop_aborts_sequential_polls_and_ws_stop_shares_deadline(tm
     assert seen_timeouts[1][0] == "resync" and seen_timeouts[1][1] < 0.20
 
 
+def test_pass14_current_price_disk_sync_watermark_and_rebuild_fetchtimes_invariants(tmp_path, monkeypatch):
+    """Pass #14 invariants & cross-checks: stalled CacheCurrentPriceManager disk writes record only committed_ts
+    in _last_disk_sync_max_ts (never live _mem_max_ts()), and _rebuild_fetchtimes guards OSError/corrupt mtime."""
+    import cacheprice
+    import state_io
+
+    now_ms = int(time.time() * 1000)
+    cpm_path = tmp_path / "cache_current_price.json"
+    cpm = cacheprice.CacheCurrentPriceManager(
+        5,
+        ["BTCUSDC"],
+        str(cpm_path),
+        api_client=None,
+        read_only=False,
+    )
+    cpm.save_state = True
+    t_snap = now_ms - 5_000
+    t_newer = now_ms - 100
+    with cpm.lock:
+        cpm.cache["BTCUSDC"] = [[t_snap, 70000.0]]
+        cpm.fetchtime_per_symbol["BTCUSDC"] = t_snap
+    snap_ts = cpm._mem_max_ts()
+    assert snap_ts == t_snap
+
+    # 1. Dependent cross-check: simulate a slow disk commit during which a newer WS tick advances RAM.
+    real_write_json = state_io.atomic_write_json
+    injected = {"done": False}
+
+    def _slow_write_json(path, payload, **kwargs):
+        res = real_write_json(path, payload, **kwargs)
+        if not injected["done"] and str(path) == str(cpm_path):
+            injected["done"] = True
+            # Newer tick arrives in RAM after snapshot payload was serialized for disk.
+            cpm.on_items_update("BTCUSDC", [[t_newer, 70500.0]])
+        return res
+
+    monkeypatch.setattr(cm, "atomic_write_json", _slow_write_json)
+    monkeypatch.setattr(cacheprice, "atomic_write_json", _slow_write_json)
+    assert cpm.save_state_to_file() is True
+    assert injected["done"] is True
+
+    # Disk only received snap_ts, so BOTH _last_persisted_snapshot_max_ts and _last_disk_sync_max_ts MUST equal snap_ts.
+    assert cpm._mem_max_ts() >= t_newer
+    assert cpm._last_persisted_snapshot_max_ts == snap_ts
+    assert cpm._last_disk_sync_max_ts == snap_ts
+    assert cpm._next_sync_wait_sec() <= 0.05
+
+    # Next flush commits t_newer and advances _last_disk_sync_max_ts honestly to >= t_newer.
+    assert cpm.save_state_to_file() is True
+    assert cpm._last_disk_sync_max_ts >= t_newer
+    cpm.shutdown(timeout=1.0)
+
+    # 2. Pure invariants on CacheManagerInterface._rebuild_fetchtimes:
+    #    - TOCTOU OSError on os.path.getmtime falls back safely to fallback_time_default
+    #    - corrupt epoch-0 mtime never produces negative fetchtime (-60_000)
+    f_rebuild = tmp_path / "cache_rebuild.json"
+    f_rebuild.write_text("{}", encoding="utf-8")
+    cpm2 = cacheprice.CacheCurrentPriceManager(5, ["BTCUSDC"], str(f_rebuild), api_client=None, read_only=True)
+    cpm2.cache = {"BTCUSDC": []}
+
+    real_getmtime = os.path.getmtime
+    monkeypatch.setattr(os.path, "getmtime", lambda _p: (_ for _ in ()).throw(FileNotFoundError("vanished")))
+    ft_err = cpm2._rebuild_fetchtimes()
+    assert ft_err["BTCUSDC"] == cpm2.fallback_time_default and ft_err["BTCUSDC"] > 0
+
+    monkeypatch.setattr(os.path, "getmtime", lambda _p: 0.0)
+    ft_zero = cpm2._rebuild_fetchtimes()
+    assert ft_zero["BTCUSDC"] == cpm2.fallback_time_default and ft_zero["BTCUSDC"] > 0
+
+    monkeypatch.setattr(os.path, "getmtime", lambda _p: time.time() + 86400.0)
+    ft_fut = cpm2._rebuild_fetchtimes()
+    assert ft_fut["BTCUSDC"] == cpm2.fallback_time_default and ft_fut["BTCUSDC"] > 0
+    monkeypatch.setattr(os.path, "getmtime", real_getmtime)
+    cpm2.shutdown(timeout=1.0)
+
+
 
 
 

@@ -136,6 +136,36 @@ def cleanup_stale_staging_siblings(
         pass
 
 
+_STAGING_CLEANUP_MIN_INTERVAL_SEC = 30.0
+_STAGING_CLEANUP_MAX_KEYS = 512
+_STAGING_CLEANUP_LOCK = globals().get("_STAGING_CLEANUP_LOCK") or threading.Lock()
+_STAGING_CLEANUP_LAST_MONO: dict[tuple[str, str, str, bool], float] = (
+    globals().get("_STAGING_CLEANUP_LAST_MONO") or {}
+)
+
+
+def _maybe_cleanup_stale_staging_siblings(
+    directory: str, prefix: str, *, exclude_name: str = "", suffix: str = "",
+    dirs_only: bool = False, max_age_sec: float = STALE_STAGING_MAX_AGE_SEC,
+    throttle: bool = False,
+) -> None:
+    """Invoke ``cleanup_stale_staging_siblings``, throttling high-frequency ephemeral writes."""
+    if throttle:
+        key = (directory, prefix, suffix, bool(dirs_only))
+        now_m = time.perf_counter()
+        with _STAGING_CLEANUP_LOCK:
+            last_m = _STAGING_CLEANUP_LAST_MONO.get(key)
+            if last_m is not None and 0.0 <= (now_m - last_m) < _STAGING_CLEANUP_MIN_INTERVAL_SEC:
+                return
+            if len(_STAGING_CLEANUP_LAST_MONO) >= _STAGING_CLEANUP_MAX_KEYS and key not in _STAGING_CLEANUP_LAST_MONO:
+                _STAGING_CLEANUP_LAST_MONO.clear()
+            _STAGING_CLEANUP_LAST_MONO[key] = now_m
+    cleanup_stale_staging_siblings(
+        directory, prefix, exclude_name=exclude_name, suffix=suffix,
+        dirs_only=dirs_only, max_age_sec=max_age_sec,
+    )
+
+
 def durable_replace_file(source: str, destination: str, *, fsync: bool = True) -> None:
     """Atomically replace ``destination`` and optionally durably fsync the new entry."""
     source = os.path.abspath(os.fspath(source))
@@ -173,8 +203,9 @@ def atomic_snapshot_file(source: str, destination: str, *, fsync: bool = True) -
         durable_replace_file(staged, destination, fsync=do_fsync)
     finally:
         shutil.rmtree(staging_directory, ignore_errors=True)
-        cleanup_stale_staging_siblings(
-            directory, prefix, exclude_name=os.path.basename(staging_directory), dirs_only=True
+        _maybe_cleanup_stale_staging_siblings(
+            directory, prefix, exclude_name=os.path.basename(staging_directory),
+            dirs_only=True, throttle=(not do_fsync),
         )
 
 
@@ -295,8 +326,9 @@ def _atomic_stream_writer(
         discard_generation_file(temporary)
         raise exc
     finally:
-        cleanup_stale_staging_siblings(
-            directory, prefix, exclude_name=os.path.basename(temporary), suffix=".tmp"
+        _maybe_cleanup_stale_staging_siblings(
+            directory, prefix, exclude_name=os.path.basename(temporary),
+            suffix=".tmp", throttle=(not do_fsync),
         )
 
 

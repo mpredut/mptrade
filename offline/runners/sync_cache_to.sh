@@ -34,7 +34,8 @@ sync_to_dev() {
     fi
 
     echo "[sync_cache_to:dev $(date '+%F %T')] data: rsync cachedb/ prod -> dev"
-    rsync_cachedb "$ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" \
+    local archive_inode_state="${SYNC_CACHE_DEV_ARCHIVE_STATE:-$HOME/.cache/mptrade_sync_dev_archive_inodes.tsv}"
+    rsync_cachedb_append_aware "$ROOT/cachedb/" "$DEV_USER@$DEV_HOST:$DEV_PATH/cachedb/" "$archive_inode_state" \
         --exclude 'dev_regression_status.json' \
         --exclude 'ai_attribution_status.json' \
         --exclude 'ai_attribution_30d.json' \
