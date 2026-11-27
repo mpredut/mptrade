@@ -1247,5 +1247,143 @@ class TestFetchDeadline(TempDirTestCase):
             )
             self.assertTrue(os.path.exists(fo_path))
 
+    def test_pass37_unified_ws_stream_order_isolation_cleanup_and_slot_thread_failure(self):
+        """Pass #37 pure invariants + dependent cross-checks:
+        1. NonBlockingRestSlotTracker.submit_thread cleans up slot and does not fire on_done when thread start raises.
+        2. CacheCurrentPriceManager.start_venue_ws_streams starts Binance primary WS even when non-primary venues
+           are registered before binance (the real runtime import order), isolates failing sibling venues with
+           unsubscribe rollback, and detaches stopped owned streams cleanly on shutdown.
+        """
+        import threading
+        from unittest.mock import patch
+
+        # 1. Pure invariant: submit_thread RuntimeError/OSError cleans slot without spurious on_done callback
+        tracker = NonBlockingRestSlotTracker()
+        cb_fired = []
+
+        class _FailingThread:
+            def __init__(self, **_kw):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        slot_fail = tracker.submit_thread(
+            "hl",
+            lambda: "never",
+            thread_name="fail-thread",
+            now_mono=time.monotonic(),
+            now_wall_ts=time.time(),
+            thread_cls=_FailingThread,
+            on_done=lambda f: cb_fired.append(f),
+        )
+        self.assertIsNone(slot_fail)
+        self.assertEqual(cb_fired, [])
+        self.assertFalse(tracker.has_active())
+
+        done_ev = threading.Event()
+        slot_ok = tracker.submit_thread(
+            "hl",
+            lambda: "ok",
+            thread_name="ok-thread",
+            now_mono=time.monotonic(),
+            now_wall_ts=time.time(),
+            on_done=lambda f: (cb_fired.append(f), done_ev.set()),
+        )
+        self.assertIsNotNone(slot_ok)
+        self.assertTrue(done_ev.wait(timeout=2.0))
+        self.assertEqual(len(cb_fired), 1)
+        st_ok, val_ok, _ = tracker.inspect_and_harvest("hl", now_mono=time.monotonic(), hard_timeout_sec=5.0)
+        self.assertEqual((st_ok, val_ok), ("DONE_OK", "ok"))
+
+        # 2. Pure invariant & cross-check: non-primary venues registered BEFORE binance must NOT suppress BinancePriceWS
+        started_calls = []
+        stopped_calls = []
+        unsub_calls = []
+
+        class _FakeWs:
+            def __init__(self, label, syms, *, fail_start=False):
+                self.label = label
+                self.syms = list(syms)
+                self.fail_start = fail_start
+                self.is_running = False
+                self.subs = []
+
+            def subscribe(self, sub):
+                self.subs.append(sub)
+
+            def unsubscribe(self, sub):
+                unsub_calls.append(self.label)
+                if sub in self.subs:
+                    self.subs.remove(sub)
+
+            def start(self, name=None, daemon=True):
+                if self.fail_start:
+                    raise RuntimeError(f"{self.label} start boom")
+                self.is_running = True
+                started_calls.append((self.label, tuple(self.syms), name))
+
+            def request_stop(self):
+                pass
+
+            def stop(self, timeout=None):
+                self.is_running = False
+                stopped_calls.append(self.label)
+
+        runtime_order_specs = (
+            ("hyperliquid", "HyperliquidPriceWS", lambda syms, cpm=None: _FakeWs("hyperliquid", syms)),
+            ("kraken", "KrakenPriceWS", lambda syms, cpm=None: _FakeWs("kraken", syms)),
+            ("binance", "BinancePriceWS", lambda syms, cpm=None: _FakeWs("binance", syms)),
+        )
+        cpm_order = cm.CacheCurrentPriceManager(
+            sync_ts=0.2,
+            symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD"],
+            filename=self._empty_cp_file("cpm_p37_order.json"),
+            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        try:
+            with patch.object(VenuePriceStreamBase, "iter_registered_venue_streams", return_value=runtime_order_specs):
+                streams = cpm_order.start_venue_ws_streams(start_ws=True, startup_grace_sec=0.0)
+                self.assertEqual(len(streams), 3)
+                self.assertEqual([lbl for lbl, _, _ in started_calls], ["hyperliquid", "kraken", "binance"])
+                self.assertEqual(getattr(cpm_order._ws_manager, "label", None), "binance")
+        finally:
+            cpm_order.shutdown(timeout=1.0)
+        # Shutdown detaches stopped owned streams from _ws_managers while leaving primary intact
+        self.assertEqual({lbl for lbl in stopped_calls}, {"hyperliquid", "kraken"})
+        self.assertEqual([getattr(w, "label", None) for w in cpm_order._ws_managers], ["binance"])
+
+        # 3. Dependent cross-check: failing venue start rolls back attachment and does NOT block sibling venues;
+        #    pre-attached external primary ws_manager still suppresses duplicate binance WS spawn.
+        started_calls.clear()
+        unsub_calls.clear()
+        ext_binance = _FakeWs("ext_binance", ["BTCUSDC"])
+        failing_specs = (
+            ("hyperliquid", "HyperliquidPriceWS", lambda syms, cpm=None: _FakeWs("hyperliquid", syms, fail_start=True)),
+            ("kraken", "KrakenPriceWS", lambda syms, cpm=None: _FakeWs("kraken", syms)),
+            ("binance", "BinancePriceWS", lambda syms, cpm=None: _FakeWs("binance", syms)),
+        )
+        cpm_iso = cm.CacheCurrentPriceManager(
+            sync_ts=0.2,
+            symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD"],
+            filename=self._empty_cp_file("cpm_p37_iso.json"),
+            ws_manager=ext_binance,
+            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken"},
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        try:
+            with patch.object(VenuePriceStreamBase, "iter_registered_venue_streams", return_value=failing_specs):
+                streams = cpm_iso.start_venue_ws_streams(start_ws=True, startup_grace_sec=0.0)
+                self.assertEqual([getattr(w, "label", None) for w in streams], ["kraken"])
+                self.assertEqual([lbl for lbl, _, _ in started_calls], ["kraken"])
+                self.assertIn("hyperliquid", unsub_calls)
+                self.assertEqual([getattr(w, "label", None) for w in cpm_iso._ws_managers], ["ext_binance", "kraken"])
+        finally:
+            cpm_iso.shutdown(timeout=1.0)
+        self.assertEqual([getattr(w, "label", None) for w in cpm_iso._ws_managers], ["ext_binance"])
+
 
 

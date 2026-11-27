@@ -37,6 +37,7 @@ from botcore import (  # noqa: E402
     exact_nonneg_int,
     format_price_log,
     log,
+    normalize_epoch_sec,
     normalize_scalar_order_id,
     require_finite_float,
     require_nonneg_float,
@@ -275,7 +276,7 @@ def _sanitize_state(raw: dict) -> dict:
                 amount=safe_nonneg_float(o.get("amount", 0.0), 0.0),
             )
             if "ts" in o_copy and o_copy.get("ts") is not None:
-                o_copy["ts"] = safe_nonneg_float(o_copy.get("ts"), 0.0)
+                o_copy["ts"] = normalize_epoch_sec(o_copy.get("ts"), default=0.0, allow_zero=True) or 0.0
             if "dca_counted" in o_copy:
                 o_copy["dca_counted"] = _parse_bool_flag(o_copy.get("dca_counted"), False)
             clean_orders.append(o_copy)
@@ -541,8 +542,11 @@ class Strategy(BaseSpotMixin):
         if ord_px is None:
             return False
         if elapsed_min is None:
-            ts_f = safe_float(order.get("ts"), default=0.0)
-            elapsed_min = (self._now() - ts_f) / 60.0
+            now_s = self._now()
+            ts_f = normalize_epoch_sec(order.get("ts"), default=0.0, allow_zero=True) or 0.0
+            if ts_f > now_s + 60.0:
+                return self.sign * (price - ord_px) > 0.003 * ord_px
+            elapsed_min = (now_s - ts_f) / 60.0
         el_f = safe_float(elapsed_min, default=None)
         if el_f is None or el_f <= self.p.order_ttl_min:
             return False

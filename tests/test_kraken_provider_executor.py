@@ -1843,3 +1843,43 @@ def test_pass23_kraken_cache_rollback_xstock_archive_future_and_hl_meta_atomic_i
     hl_empty.info = SimpleNamespace(meta=lambda: {"universe": []})
     assert hl_empty._meta() == {}
     assert hl_empty._meta_cache == {}
+
+
+def test_pass37_xstock_watch_check_pairs_endpoint_isolation(monkeypatch):
+    """Pass #37 pure invariant + dependent cross-check:
+    kraken_xstock_watch.check_pairs isolates KrakenError between asset_pairs() and tokenized_asset_pairs()
+    so a failure on either endpoint never blinds pair detection on the other.
+    """
+    from kraken import kraken_xstock_watch as xsw
+
+    alerts: list[str] = []
+    monkeypatch.setattr(xsw, "notify", lambda **kw: alerts.append(kw.get("title", "")))
+
+    # 1. asset_pairs() fails, tokenized_asset_pairs() succeeds -> tokenized xStock pair is still detected
+    cli_base_fail = SimpleNamespace(
+        asset_pairs=lambda: (_ for _ in ()).throw(xsw.KrakenError("public asset_pairs timeout")),
+        tokenized_asset_pairs=lambda: {
+            "SPCXxUSD": {"wsname": "SPCXx/USD", "base": "SPCXx", "quote": "USD", "altname": "SPCXxUSD", "status": "online"}
+        },
+        last_price=lambda _k: 132.5,
+    )
+    st1 = {"alerted_pair": False}
+    xsw.check_pairs(cli_base_fail, st1, r"SPCX", desktop=False, quote="USD")
+    assert st1.get("pair") == "SPCXxUSD"
+    assert st1.get("alerted_pair") is True
+    assert len(alerts) == 1
+
+    # 2. tokenized_asset_pairs() fails, asset_pairs() succeeds -> regular pair is still detected
+    cli_tok_fail = SimpleNamespace(
+        asset_pairs=lambda: {
+            "HYPEUSD": {"wsname": "HYPE/USD", "base": "HYPE", "quote": "USD", "altname": "HYPEUSD", "status": "online"}
+        },
+        tokenized_asset_pairs=lambda: (_ for _ in ()).throw(xsw.KrakenError("tokenized endpoint 503")),
+        last_price=lambda _k: 42.0,
+    )
+    st2 = {"alerted_pair": False}
+    xsw.check_pairs(cli_tok_fail, st2, r"HYPE", desktop=False, quote="USD")
+    assert st2.get("pair") == "HYPEUSD"
+    assert st2.get("alerted_pair") is True
+    assert len(alerts) == 2
+

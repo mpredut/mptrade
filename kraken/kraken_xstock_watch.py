@@ -473,18 +473,22 @@ def check_pairs(client: KrakenClient, st: dict, rx: str, desktop: bool,
     """
     if not rx:
         return
+    pairs: dict = {}
     try:
         base_pairs = client.asset_pairs()
-        pairs = dict(base_pairs) if isinstance(base_pairs, dict) else base_pairs
-        tok_fn = getattr(client, "tokenized_asset_pairs", None)
-        if isinstance(pairs, dict) and callable(tok_fn):
+        if isinstance(base_pairs, dict):
+            pairs.update(base_pairs)
+    except KrakenError as e:
+        log(f"  ! asset_pairs: {e}")
+    tok_fn = getattr(client, "tokenized_asset_pairs", None)
+    if callable(tok_fn):
+        try:
             tok_pairs = tok_fn()
             if isinstance(tok_pairs, dict):
                 pairs.update(tok_pairs)
-    except KrakenError as e:
-        log(f"  ! asset_pairs: {e}")
-        return
-    if not isinstance(pairs, dict):
+        except KrakenError as e:
+            log(f"  ! tokenized_asset_pairs: {e}")
+    if not pairs:
         return
     matches = [
         (k, v)

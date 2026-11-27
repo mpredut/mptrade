@@ -1880,3 +1880,59 @@ def test_batch_balance_fail_closed_and_hl_alo_replace_preserves_fetchtime(tmp_pa
     assert res_gtc is not None and res_gtc["ok"] is True
     assert "HYPEUSDC" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
 
+
+def test_pass37_hl_strategy_stale_order_ms_and_future_ts_invariants(tmp_path, monkeypatch):
+    """Pass #37 pure invariants + dependent cross-check:
+    Hyperliquid Strategy._sanitize_state normalizes epoch-ms order timestamps, and _open_is_stale / _reconcile
+    treat both expired epoch-ms timestamps and corrupt far-future timestamps as stale when price runs away.
+    """
+    t_now = 1_795_800_000.0
+    state_path = tmp_path / ".state_HYPE_long_p37.json"
+    monkeypatch.setattr(_hl_strat_mod, "state_path_for", lambda _c, _d: str(state_path))
+    monkeypatch.setattr(_hl_strat_mod, "notify", lambda **_kw: None)
+
+    # 1. Pure invariant: _sanitize_state normalizes epoch-ms order["ts"] into seconds
+    sanitized = _hl_strat_mod._sanitize_state(
+        {"orders": [{"oid": 701, "role": "open", "px": 25.0, "sz": 1.0, "amount": 25.0, "ts": int((t_now - 3600) * 1000)}]}
+    )
+    assert len(sanitized["orders"]) == 1
+    assert abs(sanitized["orders"][0]["ts"] - (t_now - 3600.0)) < 1.0
+
+    # 2. Pure invariant: _open_is_stale handles fresh ts, expired epoch-ms ts, and corrupt far-future ts
+    cancels: list[tuple[str, object]] = []
+    open_orders_payload = [
+        {"oid": 702, "sz": "1.0", "origSz": "1.0", "limitPx": "25.0"},
+        {"oid": 703, "sz": "1.0", "origSz": "1.0", "limitPx": "25.0"},
+    ]
+    fake_cli = SimpleNamespace(
+        exchange=None,
+        sz_decimals=lambda _coin: 2,
+        position_strict=lambda _coin: (0.0, 0.0),
+        open_orders_strict=lambda _coin: list(open_orders_payload),
+        cancel=lambda coin, oid: cancels.append((coin, oid)) or True,
+    )
+    params = _hl_strat_mod.StratParams(
+        direction="long",
+        order_ttl_min=15.0,
+        fee_pct=0.0,
+    )
+    strat = _hl_strat_mod.Strategy(fake_cli, "HYPE", params, dry_run=False, initial_state={})
+    monkeypatch.setattr(strat, "_now", lambda: t_now)
+
+    fresh_order = {"oid": "700", "role": "open", "px": 25.0, "sz": 1.0, "ts": t_now - 60.0}
+    ms_expired_order = {"oid": "702", "role": "open", "px": 25.0, "sz": 1.0, "ts": int((t_now - 1800.0) * 1000)}
+    future_corrupt_order = {"oid": "703", "role": "open", "px": 25.0, "sz": 1.0, "ts": t_now + 86_400.0}
+
+    assert strat._open_is_stale(fresh_order, price=26.0) is False
+    assert strat._open_is_stale(ms_expired_order, price=26.0) is True
+    assert strat._open_is_stale(future_corrupt_order, price=26.0) is True
+    # Even when corrupt far-future, do not cancel if price has NOT run away (> +0.3%)
+    assert strat._open_is_stale(future_corrupt_order, price=25.02) is False
+
+    # 3. Dependent cross-check: live reconcile cancels both expired ms-ts and corrupt far-future open orders
+    strat.s["orders"] = [dict(ms_expired_order), dict(future_corrupt_order)]
+    assert strat.reconcile(price=26.0) is True
+    assert {str(oid) for _, oid in cancels} == {"702", "703"}
+    assert strat.s["orders"] == []
+
+

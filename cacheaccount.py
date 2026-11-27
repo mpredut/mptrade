@@ -5038,17 +5038,24 @@ def publish_venue_fills_bundle(
         )
         tr_ok = True
     else:
-        tr_ok = CacheTradeManager.merge_venue_fills_snapshot(
-            trade_cache_file,
-            fills_by_symbol,
-            now_ms=eff_ms,
-            is_snapshot=False,
-            touch_symbols=touch_symbols,
-            touch_create_missing=touch_create_missing,
-            sanitize_venue=sanitize_venue,
-            indent=indent,
-            missing_out=tr_missing,
-        )
+        try:
+            tr_ok = bool(
+                CacheTradeManager.merge_venue_fills_snapshot(
+                    trade_cache_file,
+                    fills_by_symbol,
+                    now_ms=eff_ms,
+                    is_snapshot=False,
+                    touch_symbols=touch_symbols,
+                    touch_create_missing=touch_create_missing,
+                    sanitize_venue=sanitize_venue,
+                    indent=indent,
+                    missing_out=tr_missing,
+                )
+            )
+        except Exception:
+            tr_ok = False
+        if tr_ok:
+            merged_tr = {"items": fills_by_symbol}
 
     merged_fo: Optional[dict] = None
     fo_ok = False
@@ -5152,7 +5159,7 @@ class _HyperliquidAccountTradeBridge:
     ) -> None:
         self.ws_stream = ws_stream
         self.hl_prov_cls = MarketDataProvider.resolve_venue_provider_class("hyperliquid")
-        self._rest_resync_lock = threading.Lock()
+        self._rest_resync_lock = threading.RLock()
         self._rest_resync_tracker = NonBlockingRestSlotTracker()
         self._rest_resync_hard_timeout_sec: float = ACCOUNT_REST_HARD_TIMEOUT_SEC
         self._rest_resync_in_flight = False
@@ -5240,26 +5247,12 @@ class _HyperliquidAccountTradeBridge:
             )
             or ACCOUNT_REST_HARD_TIMEOUT_SEC
         )
-        slot_state, _slot_res, _prev_slot = self._rest_resync_tracker.inspect_and_harvest(
-            "hyperliquid", now_mono=now_mono, hard_timeout_sec=eff_ht
-        )
-        if slot_state == "HARD_TIMEOUT":
-            log(
-                f"[hyperliquid_cache][ws] invalidated fills REST resync hard-timeout >{eff_ht:.1f}s -- resetting slot"
-            )
-        elif slot_state == "IN_FLIGHT":
-            return False
-        with self._rest_resync_lock:
-            if self._rest_resync_in_flight or now_ms < self._next_rest_resync_ms:
-                return False
-            self._rest_resync_gen += 1
-            my_gen = self._rest_resync_gen
-            if blocking:
-                self._rest_resync_in_flight = True
 
-        def _worker() -> None:
+        def _worker(_gen: int) -> None:
             last_err = ""
             ok_syms: list[str] = []
+            tr_ok = False
+            fo_ok = False
             try:
                 fills_by_sym: dict[str, list[dict[str, Any]]] = {}
                 for sym_s in symbols:
@@ -5274,7 +5267,7 @@ class _HyperliquidAccountTradeBridge:
                         log(f"[hyperliquid_cache][ws] invalidated fills REST resync {sym_s} failed: {exc}")
                 if ok_syms:
                     sync_ms = ts_ms if blocking else max(ts_ms, resolve_now_ms())
-                    publish_venue_fills_bundle(
+                    merged_tr, merged_fo, _, _ = publish_venue_fills_bundle(
                         "hyperliquid",
                         fills_file,
                         fills_by_sym,
@@ -5285,10 +5278,14 @@ class _HyperliquidAccountTradeBridge:
                         publish_health=(len(ok_syms) == len(symbols)),
                         refresh_mode="on_change",
                     )
+                    tr_ok = merged_tr is not None
+                    fo_ok = isinstance(merged_fo, dict)
+                    if not tr_ok or not fo_ok:
+                        last_err = last_err or "cache fills merge failed"
             finally:
                 with self._rest_resync_lock:
-                    if my_gen == self._rest_resync_gen:
-                        if len(ok_syms) == len(symbols):
+                    if _gen == self._rest_resync_gen:
+                        if len(ok_syms) == len(symbols) and tr_ok and fo_ok:
                             self._rest_backoff_sec = 0.0
                             self._next_rest_resync_ms = 0
                         else:
@@ -5302,20 +5299,37 @@ class _HyperliquidAccountTradeBridge:
                     if blocking:
                         self._rest_resync_in_flight = False
 
-        if blocking:
-            _worker()
-            return True
-        return (
-            self._rest_resync_tracker.submit_thread(
-                "hyperliquid",
-                _worker,
-                thread_name="hl-ws-invalidated-fills-resync",
-                now_mono=now_mono,
-                now_wall_ts=now_ms / 1000.0,
-                thread_cls=threading.Thread,
+        with self._rest_resync_lock:
+            slot_state, _slot_res, _prev_slot = self._rest_resync_tracker.inspect_and_harvest(
+                "hyperliquid", now_mono=now_mono, hard_timeout_sec=eff_ht
             )
-            is not None
-        )
+            if slot_state == "HARD_TIMEOUT":
+                log(
+                    f"[hyperliquid_cache][ws] invalidated fills REST resync hard-timeout >{eff_ht:.1f}s -- resetting slot"
+                )
+            elif slot_state == "IN_FLIGHT":
+                return False
+            if self._rest_resync_in_flight or now_ms < self._next_rest_resync_ms:
+                return False
+            self._rest_resync_gen += 1
+            my_gen = self._rest_resync_gen
+            if blocking:
+                self._rest_resync_in_flight = True
+            else:
+                return (
+                    self._rest_resync_tracker.submit_thread(
+                        "hyperliquid",
+                        lambda _g=my_gen: _worker(_g),
+                        thread_name="hl-ws-invalidated-fills-resync",
+                        now_mono=now_mono,
+                        now_wall_ts=now_ms / 1000.0,
+                        thread_cls=threading.Thread,
+                    )
+                    is not None
+                )
+
+        _worker(my_gen)
+        return True
 
     def touch_fills_cache_if_needed(self, ts_ms: int) -> None:
         ws_stream = self.ws_stream
@@ -5490,7 +5504,7 @@ def run_kraken_trade_ws_loop(
     backoff_cur = [backoff_base]
     ws_subscribed = [False]
     last_err_text = [""]
-    rest_sync_lock = threading.Lock()
+    rest_sync_lock = threading.RLock()
     rest_sync_tracker = NonBlockingRestSlotTracker()
     rest_sync_gen = [0]
     eff_rest_hard_timeout = (
@@ -5521,6 +5535,7 @@ def run_kraken_trade_ws_loop(
         *,
         now_ms: Optional[int] = None,
         trigger_refresh: bool = True,
+        expected_gen: Optional[int] = None,
     ) -> Optional[dict]:
         try:
             by_sym = kr_prov_cls.fetch_ledger_fills_by_symbol(
@@ -5540,9 +5555,12 @@ def run_kraken_trade_ws_loop(
                 strict_trade_merge=True,
                 refresh_mode="on_change" if trigger_refresh else "none",
             )
-            last_flush_ms[0] = last_rest_sync_ms[0] = eff_ms
-            rest_backoff_sec[0] = 0.0
-            next_rest_sync_ms[0] = 0
+            with rest_sync_lock:
+                last_flush_ms[0] = max(last_flush_ms[0], eff_ms)
+                last_rest_sync_ms[0] = max(last_rest_sync_ms[0], eff_ms)
+                if expected_gen is None or expected_gen == rest_sync_gen[0]:
+                    rest_backoff_sec[0] = 0.0
+                    next_rest_sync_ms[0] = 0
             return merged
         except Exception as exc:
             last_err_text[0] = str(exc)
@@ -5600,51 +5618,51 @@ def run_kraken_trade_ws_loop(
             if kind == "keepalive" and (now_ms - last_flush_ms[0]) >= 15_000:
                 def _launch_bg_rest_sync(sync_ms: int) -> bool:
                     now_mono = _monotonic_time()
-                    slot_state, _slot_res, _prev_slot = rest_sync_tracker.inspect_and_harvest(
-                        "kraken", now_mono=now_mono, hard_timeout_sec=eff_rest_hard_timeout
-                    )
-                    if slot_state == "HARD_TIMEOUT":
-                        log(
-                            f"[kraken_cache][ws] periodic REST Ledgers sync hard-timeout "
-                            f">{eff_rest_hard_timeout:.1f}s -- resetting slot"
-                        )
-                    elif slot_state == "IN_FLIGHT":
-                        return False
                     with rest_sync_lock:
+                        slot_state, _slot_res, _prev_slot = rest_sync_tracker.inspect_and_harvest(
+                            "kraken", now_mono=now_mono, hard_timeout_sec=eff_rest_hard_timeout
+                        )
+                        if slot_state == "HARD_TIMEOUT":
+                            log(
+                                f"[kraken_cache][ws] periodic REST Ledgers sync hard-timeout "
+                                f">{eff_rest_hard_timeout:.1f}s -- resetting slot"
+                            )
+                        elif slot_state == "IN_FLIGHT":
+                            return False
                         rest_sync_gen[0] += 1
                         my_gen = rest_sync_gen[0]
 
-                    # Run periodic REST Ledgers reconciliation off the WS reader thread so slow HTTP calls
-                    # never starve RFC6455 ping/pong handling and trigger spurious ping/pong timeouts.
-                    def _bg_rest_sync(eff_sync_ms: int = sync_ms, _gen: int = my_gen) -> None:
-                        try:
-                            merged = _merge_rest(now_ms=eff_sync_ms)
-                            if merged is not None:
-                                log(
-                                    f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
-                                    f"for {list(merged['items'].keys())}"
-                                )
-                        except Exception as exc:
-                            with rest_sync_lock:
-                                is_current = _gen == rest_sync_gen[0]
-                            if is_current:
-                                delay_s = _bump_rest_sync_backoff(exc)
-                                log(
-                                    f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc} "
-                                    f"(backing off {delay_s:g}s)"
-                                )
+                        # Run periodic REST Ledgers reconciliation off the WS reader thread so slow HTTP calls
+                        # never starve RFC6455 ping/pong handling and trigger spurious ping/pong timeouts.
+                        def _bg_rest_sync(eff_sync_ms: int = sync_ms, _gen: int = my_gen) -> None:
+                            try:
+                                merged = _merge_rest(now_ms=eff_sync_ms, expected_gen=_gen)
+                                if merged is not None:
+                                    log(
+                                        f"[kraken_cache][ws] {sum(len(v) for v in merged['items'].values())} fills "
+                                        f"for {list(merged['items'].keys())}"
+                                    )
+                            except Exception as exc:
+                                with rest_sync_lock:
+                                    is_current = _gen == rest_sync_gen[0]
+                                    delay_s = _bump_rest_sync_backoff(exc) if is_current else 0.0
+                                if is_current:
+                                    log(
+                                        f"[kraken_cache][ws] periodic REST Ledgers sync failed: {exc} "
+                                        f"(backing off {delay_s:g}s)"
+                                    )
 
-                    return (
-                        rest_sync_tracker.submit_thread(
-                            "kraken",
-                            _bg_rest_sync,
-                            thread_name="kraken-ws-rest-sync",
-                            now_mono=now_mono,
-                            now_wall_ts=sync_ms / 1000.0,
-                            thread_cls=threading.Thread,
+                        return (
+                            rest_sync_tracker.submit_thread(
+                                "kraken",
+                                _bg_rest_sync,
+                                thread_name="kraken-ws-rest-sync",
+                                now_mono=now_mono,
+                                now_wall_ts=sync_ms / 1000.0,
+                                thread_cls=threading.Thread,
+                            )
+                            is not None
                         )
-                        is not None
-                    )
 
                 launched_async = False
                 if (now_ms - last_rest_sync_ms[0]) >= rest_sync_interval_ms and now_ms >= next_rest_sync_ms[0]:
@@ -5665,7 +5683,7 @@ def run_kraken_trade_ws_loop(
         else:
             if not any(fills_by_sym.values()):
                 return
-            _, _, tr_missing, fo_missing = publish_venue_fills_bundle(
+            _, merged_fo, tr_missing, fo_missing = publish_venue_fills_bundle(
                 "kraken",
                 cache_file,
                 fills_by_sym,
@@ -5677,8 +5695,8 @@ def run_kraken_trade_ws_loop(
                 strict_trade_merge=True,
                 refresh_mode="always",
             )
-            if not tr_missing and not fo_missing:
-                last_flush_ms[0] = now_ms
+            if merged_fo is not None and not tr_missing and not fo_missing:
+                last_flush_ms[0] = max(last_flush_ms[0], now_ms)
             should_hb = True
         if should_hb and callable(heartbeat_fn):
             heartbeat_fn()
@@ -5945,15 +5963,24 @@ class _MultiVenueNonBlockingBridgeBase(_AccountTradeBridgeBase, ABC):
                         continue
                     elif state == "DONE_OK":
                         if callable(on_success_fn):
-                            on_success_fn(v_key, res_val)
+                            try:
+                                on_success_fn(v_key, res_val)
+                            except Exception as exc:
+                                log(f"[{self.LOG_TAG}] {v_key} on_success hook failed: {exc}")
                         next_due_mono[v_key] = now_mono + eff_interval
                         continue
 
                     if now_mono < next_due_mono.get(v_key, 0.0):
                         continue
-                    if callable(should_skip_fn) and should_skip_fn(v_key, now_s):
-                        next_due_mono[v_key] = now_mono + eff_interval
-                        continue
+                    if callable(should_skip_fn):
+                        try:
+                            if should_skip_fn(v_key, now_s):
+                                next_due_mono[v_key] = now_mono + eff_interval
+                                continue
+                        except Exception as exc:
+                            log(f"[{self.LOG_TAG}] {v_key} should_skip hook failed: {exc}")
+                            next_due_mono[v_key] = now_mono + eff_interval
+                            continue
 
                     def _call_venue(_v: str = v_key, _ns: float = now_s, _nm: int = now_ms):
                         return sync_fn(_v, _ns, _nm)

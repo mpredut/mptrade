@@ -3299,17 +3299,45 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             ]
             if not v_syms or venue_key in attached_venues:
                 continue
-            if is_primary_stream_venue(venue_key) and self._ws_manager is not None:
+            is_primary = is_primary_stream_venue(venue_key)
+            if is_primary and any(ws not in owned for ws in self._ws_managers):
                 attached_venues.add(venue_key)
                 continue
-            ws_inst = build_ws(v_syms, cpm=self)
-            if ws_inst is None:
+            ws_inst = None
+            attached_here = False
+            prev_ws_mgr = self._ws_manager
+            try:
+                ws_inst = build_ws(v_syms, cpm=self)
+                if ws_inst is None:
+                    continue
+                self.attach_ws_manager(ws_inst)
+                attached_here = True
+                if is_primary:
+                    self._ws_manager = ws_inst
+                if not getattr(ws_inst, "is_running", False):
+                    ws_inst.start(name=ws_name, daemon=True)
+            except Exception as exc:
+                if attached_here and ws_inst is not None:
+                    unsub = getattr(ws_inst, "unsubscribe", None)
+                    if callable(unsub):
+                        try:
+                            unsub(self)
+                        except Exception:
+                            pass
+                    if ws_inst in self._ws_managers:
+                        self._ws_managers.remove(ws_inst)
+                    if self._ws_manager is ws_inst:
+                        self._ws_manager = (
+                            prev_ws_mgr
+                            if prev_ws_mgr in self._ws_managers
+                            else (self._ws_managers[0] if self._ws_managers else None)
+                        )
+                builtins.print(
+                    f"[{self.cls_name}] Warning starting {venue_key} price WS ({ws_name}): {exc}"
+                )
                 continue
-            self.attach_ws_manager(ws_inst)
-            if not getattr(ws_inst, "is_running", False):
-                ws_inst.start(name=ws_name, daemon=True)
             attached_venues.add(venue_key)
-            if not is_primary_stream_venue(venue_key) and ws_inst not in owned:
+            if not is_primary and ws_inst not in owned:
                 owned.append(ws_inst)
             if eff_grace > 0.0:
                 grace_until = _monotonic_time() + eff_grace
@@ -3338,7 +3366,8 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         if eff_timeout is None:
             eff_timeout = 2.0
         ws_deadline = _monotonic_time() + min(2.0, eff_timeout)
-        for ws in list(owned):
+        stopped_owned = list(owned)
+        for ws in stopped_owned:
             try:
                 rem = (
                     min(eff_timeout, max(0.05, ws_deadline - _monotonic_time()))
@@ -3348,9 +3377,24 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                 ws.stop(timeout=rem)
             except Exception:
                 pass
+            unsub = getattr(ws, "unsubscribe", None)
+            if callable(unsub):
+                try:
+                    unsub(self)
+                except Exception:
+                    pass
+            if ws in self._ws_managers:
+                self._ws_managers.remove(ws)
+            if self._ws_manager is ws:
+                self._ws_manager = self._ws_managers[0] if self._ws_managers else None
         owned.clear()
         if isinstance(attached := getattr(self, "_attached_ws_venues", None), set):
-            attached.clear()
+            if self._ws_managers:
+                attached.difference_update(
+                    {v for v in list(attached) if not is_primary_stream_venue(v)}
+                )
+            else:
+                attached.clear()
 
     @property
     def tick_socket_path(self) -> str:

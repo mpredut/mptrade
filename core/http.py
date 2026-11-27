@@ -265,8 +265,6 @@ class NonBlockingRestSlotTracker:
             if existing is not None and not existing.future.done():
                 return None
             self._slots[key] = slot
-        if callable(on_done):
-            fut.add_done_callback(on_done)
 
         def _run() -> None:
             try:
@@ -280,12 +278,14 @@ class NonBlockingRestSlotTracker:
 
         try:
             thread_cls(target=_run, name=thread_name, daemon=True).start()
-        except RuntimeError:
+        except (RuntimeError, OSError):
             with self._lock:
                 if self._slots.get(key) is slot:
                     self._slots.pop(key, None)
             fut.cancel()
             return None
+        if callable(on_done):
+            fut.add_done_callback(on_done)
         return slot
 
     def clear(self) -> None:

@@ -2575,6 +2575,240 @@ def test_hl_and_kraken_ws_bg_rest_resync_hard_timeout_eviction_and_recovery(tmp_
         release_kr.set()
 
 
+def test_pass37_account_bridge_merge_failure_backoff_gen_guard_and_hook_isolation(tmp_path, monkeypatch):
+    """Pass #37 pure invariants + dependent cross-checks:
+    1. Hyperliquid WS invalidated-fills REST resync backs off and omits health sync when a cache merge fails.
+    2. Kraken WS late stale pre-timeout REST sync does not wipe a newer generation's rate-limit backoff,
+       and failed filled_orders merge on ownTrades does not advance last_flush_ms.
+    3. _MultiVenueNonBlockingBridgeBase isolates should_skip_fn / on_success_fn errors per venue so sibling venues survive.
+    """
+    import sys
+    import threading
+    import time
+    import types
+    import cacheaccount
+
+    t0_ms = 1_795_800_000_000
+
+    # 1. Pure invariant: Hyperliquid invalidated-fills resync must back off & skip failed-cache health on merge error
+    hl_tr = tmp_path / "cache_trade_hyperliquid_p37.json"
+    health_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        cacheaccount,
+        "_record_venue_health_sync",
+        lambda venue, domain, now_ms=None: health_calls.append((venue, domain)),
+    )
+
+    class _OkHlProv:
+        def __init__(self, token=None):
+            self.token = token
+
+        @staticmethod
+        def resolve_ws_user_address(addr, resolve_env=None):
+            return addr
+
+        def fetch_remote_trades(self, sym_s, start_ms):
+            return [{"symbol": sym_s, "id": "T1", "orderId": "O1", "side": "BUY", "price": 40.0, "qty": 1.0, "time": t0_ms}]
+
+    monkeypatch.setattr(
+        cacheaccount.MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda _cls, v: _OkHlProv if v == "hyperliquid" else None),
+    )
+    monkeypatch.setattr(
+        cacheaccount.CacheTradeManager,
+        "merge_venue_fills_snapshot",
+        staticmethod(lambda *a, **kw: True),
+    )
+    monkeypatch.setattr(
+        cacheaccount.CacheOrderFilledManager,
+        "merge_venue_filled_orders_snapshot",
+        staticmethod(lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full"))),
+    )
+    ws_stub = types.SimpleNamespace(_lock=threading.Lock(), _symbols=["HYPEUSDC"])
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(
+        ws_stub, user_address="0xabc", fills_cache_path=str(hl_tr)
+    )
+    assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(hl_tr), t0_ms, blocking=True) is True
+    assert ("hyperliquid", "trades") in health_calls
+    assert ("hyperliquid", "filled_orders") not in health_calls
+    assert bridge._rest_backoff_sec >= 15.0
+    assert bridge._next_rest_resync_ms > t0_ms
+    # Backoff blocks immediate retry
+    assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(hl_tr), t0_ms + 1_000, blocking=True) is False
+
+    # 2. Dependent cross-check: Kraken stale pre-timeout gen=1 completion must NOT erase gen=2 rate-limit backoff
+    kr_tr = tmp_path / "cache_trade_kraken_p37.json"
+    now_ref = [t0_ms]
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda now_ms=None: now_ref[0] if now_ms is None else now_ms)
+    monkeypatch.setattr(
+        cacheaccount.CacheTradeManager,
+        "_merge_venue_fills_snapshot_locked",
+        staticmethod(lambda *a, **kw: {"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": now_ref[0]}}),
+    )
+    monkeypatch.setattr(
+        cacheaccount.CacheOrderFilledManager,
+        "merge_venue_filled_orders_snapshot",
+        staticmethod(lambda *a, **kw: {"items": {"HYPEUSD": []}, "fetchtime": {"HYPEUSD": now_ref[0]}}),
+    )
+    monkeypatch.setattr(
+        cacheaccount.CacheTradeManager,
+        "touch_venue_fills_snapshot",
+        staticmethod(lambda *a, **kw: False),
+    )
+    monkeypatch.setattr(
+        cacheaccount.CacheOrderFilledManager,
+        "touch_venue_filled_orders_snapshot",
+        staticmethod(lambda *a, **kw: False),
+    )
+    gen1_started = threading.Event()
+    release_gen1 = threading.Event()
+    gen1_done = threading.Event()
+    gen2_failed = threading.Event()
+    kr_calls = [0]
+
+    class _RaceKrProv:
+        PRIVATE_WS_URL = "wss://ws-auth.kraken.com/"
+
+        @staticmethod
+        def fetch_ledger_fills_by_symbol(_client, *, pairs, lookback_sec):
+            kr_calls[0] += 1
+            c = kr_calls[0]
+            if c == 1:
+                return {"HYPEUSD": []}  # initial seed
+            if c == 2:
+                gen1_started.set()
+                release_gen1.wait(timeout=5.0)
+                return {"HYPEUSD": []}  # late stale completion after hard timeout
+            if c == 3:
+                try:
+                    raise RuntimeError("EAPI:Rate limit exceeded")
+                finally:
+                    gen2_failed.set()
+            return {"HYPEUSD": []}
+
+        @staticmethod
+        def build_ws_own_trades_subscription(_c):
+            return '{"event":"subscribe"}'
+
+        @staticmethod
+        def extract_ws_own_trades(_d, *, pairs):
+            return None
+
+        @staticmethod
+        def classify_ws_control_event(_d):
+            return "keepalive", ""
+
+    monkeypatch.setattr(
+        cacheaccount.MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda _cls, v: _RaceKrProv if v == "kraken" else None),
+    )
+    stop_ev = threading.Event()
+
+    class _RaceKrWs:
+        def __init__(self, _url, *, on_open, on_message, on_error):
+            self._on_open = on_open
+            self._on_message = on_message
+            self.keep_running = True
+
+        def send(self, _p):
+            pass
+
+        def run_forever(self, **_kw):
+            try:
+                self._on_open(self)
+                # Launch gen=1 (call #2) which hangs past hard timeout
+                now_ref[0] = t0_ms + 320_000
+                self._on_message(self, '{"event":"heartbeat"}')
+                assert gen1_started.wait(timeout=2.0)
+                time.sleep(0.11)
+                # Evict gen=1 and launch gen=2 (call #3) which hits 30s rate limit -> next_rest_sync_ms = t0 + 390s
+                now_ref[0] = t0_ms + 360_000
+                self._on_message(self, '{"event":"heartbeat"}')
+                assert gen2_failed.wait(timeout=2.0)
+                time.sleep(0.05)
+                # Now release stale gen=1 so it finishes AFTER gen=2 recorded rate-limit backoff
+                release_gen1.set()
+                time.sleep(0.08)
+                gen1_done.set()
+                # Keepalive 20s later (< 30s rate-limit backoff) with invalidated cache must NOT launch call #4
+                # because stale gen=1 must not wipe gen=2's rate-limit backoff.
+                now_ref[0] = t0_ms + 380_000
+                self._on_message(self, '{"event":"heartbeat"}')
+                time.sleep(0.05)
+            finally:
+                stop_ev.set()
+
+    monkeypatch.setitem(sys.modules, "websocket", types.SimpleNamespace(WebSocketApp=_RaceKrWs))
+    try:
+        cacheaccount.run_kraken_trade_ws_loop(
+            object(),
+            cache_file=str(kr_tr),
+            pairs=("HYPEUSD",),
+            poll_interval=30.0,
+            backoff_init=5.0,
+            backoff_max=60.0,
+            lookback_sec=3600.0,
+            stop_event=stop_ev,
+            rest_hard_timeout_sec=0.08,
+        )
+        assert gen1_done.is_set()
+        assert kr_calls[0] == 3
+    finally:
+        release_gen1.set()
+
+    # 3. Dependent cross-check: _MultiVenueNonBlockingBridgeBase isolates throwing hooks so sibling venues continue
+    class _HookBridge(cacheaccount._MultiVenueNonBlockingBridgeBase):
+        LOG_TAG = "test_hook_bridge"
+
+        def start(self) -> bool:
+            return True
+
+    hb = _HookBridge(hard_timeout_sec=1.0, poll_interval_sec=0.05)
+    synced: list[str] = []
+    hl_synced_ev = threading.Event()
+
+    def _sync_fn(v_key, _ns, _nm):
+        synced.append(v_key)
+        if v_key == "hyperliquid":
+            hl_synced_ev.set()
+        return True
+
+    def _bad_skip(v_key, _ns):
+        if v_key == "kraken":
+            raise RuntimeError("kraken skip boom")
+        return False
+
+    def _bad_success(v_key, _res):
+        if v_key == "t212":
+            raise RuntimeError("t212 on_success boom")
+
+    th = threading.Thread(
+        target=hb._run_multi_venue_slot_loop,
+        args=(("kraken", "t212", "hyperliquid"),),
+        kwargs={
+            "interval_sec": 0.05,
+            "sync_fn": _sync_fn,
+            "should_skip_fn": _bad_skip,
+            "on_success_fn": _bad_success,
+            "pool_prefix": "TestHookIso",
+        },
+        daemon=True,
+    )
+    th.start()
+    try:
+        assert hl_synced_ev.wait(timeout=2.0)
+        assert "t212" in synced
+        assert "hyperliquid" in synced
+        assert "kraken" not in synced
+    finally:
+        hb.request_stop()
+        th.join(timeout=2.0)
+        hb.stop(timeout=1.0)
+
+
+
 
 
 
