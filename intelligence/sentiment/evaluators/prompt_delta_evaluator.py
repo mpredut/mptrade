@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from botcore import (
     _parse_bool_flag,
     clean_scalar_str,
+    first_epoch_sec,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -220,8 +221,7 @@ def _resolve_block_age_sec(
     """Return upstream source age in seconds for a delta-managed block when deterministically known."""
     if (d_age := safe_nonneg_float(domain_ages.get(domain_key), default=None)) is not None:
         return d_age
-    raw_ts = payload.get("ts") if payload.get("ts") is not None else payload.get("timestamp")
-    ts_s = normalize_epoch_sec(raw_ts, default=0.0, allow_iso=True) or 0.0
+    ts_s = first_epoch_sec(payload.get("ts"), payload.get("timestamp"), default=0.0, allow_iso=True) or 0.0
     if ts_s > 0.0 and now_ts >= ts_s:
         return now_ts - ts_s
     return None
@@ -458,7 +458,18 @@ def _extract_block_fingerprints(
                     "ls_px": ls.get("price"),
                     "ls_ts": ls.get("ts_ms"),
                     "ls_qty": ls.get("qty"),
-                    "lots_n": len(oinfo.get("open_lots")) if isinstance(oinfo.get("open_lots"), list) else 0,
+                    "open_lots": (
+                        [
+                            (
+                                round(safe_float(lt.get("qty"), 0.0) or 0.0, 8),
+                                round(safe_float(lt.get("price"), 0.0) or 0.0, 8),
+                            )
+                            for lt in oinfo.get("open_lots")
+                            if isinstance(lt, Mapping)
+                        ]
+                        if isinstance(oinfo.get("open_lots"), list)
+                        else []
+                    ),
                     "rpnl": oinfo.get("lifo_realized_pnl_usd"),
                 })
         if recent_order_hashes:
@@ -493,7 +504,7 @@ class PromptDeltaKeyframeEvaluator(PromptViewEvaluatorBase):
         cadence_overrides: Optional[Mapping[str, int]] = None,
         **kwargs: Any,
     ) -> PromptDeltaPlan:
-        eff_now = safe_pos_float(now_ts, default=None) or safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None) or resolve_now_ts(None)
+        eff_now = first_epoch_sec(now_ts, getattr(sensors, "evaluated_at_ts", None), default=None) or resolve_now_ts(None)
         date_iso = datetime.fromtimestamp(eff_now, tz=_BUCHAREST_TZ).strftime("%Y-%m-%d")
         scope_norm = str(asset_scope or "all").strip().lower()
         cid_clean = clean_scalar_str(conversation_id) or ""

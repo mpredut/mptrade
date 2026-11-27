@@ -35,6 +35,7 @@ from orchestratorOS.agy.summary_store import (
     drop_wal_sidecars,
     get_thread_step_count,
     iter_sqlite_user_table_columns,
+    latest_valid_file_mtime,
     read_summary_row,
     summaries_db,
     upsert_summary_row_dict,
@@ -85,13 +86,13 @@ def sync_topic_thread_from_ui(
     bot_steps = safe_nonneg_int((bot_row or {}).get("step_count"))
     bot_db = conversation_db(dst_base, cid)
     bot_exists = os.path.exists(bot_db)
-    ui_mtime = max((os.stat(p).st_mtime for p in (ui_db, ui_db + "-wal") if os.path.exists(p)), default=0.0)
-    bot_mtime = max((os.stat(p).st_mtime for p in (bot_db, bot_db + "-wal") if os.path.exists(p)), default=0.0)
+    ui_mtime = latest_valid_file_mtime((ui_db, ui_db + "-wal"))
+    bot_mtime = latest_valid_file_mtime((bot_db, bot_db + "-wal"))
 
     ui_is_ahead = (
         ui_steps > bot_steps
         or (not bot_exists and ui_steps > 0)
-        or (bot_exists and ui_steps >= bot_steps and ui_mtime > bot_mtime + 2.0)
+        or (bot_exists and ui_steps >= bot_steps and ui_mtime > 0.0 and bot_mtime > 0.0 and ui_mtime > bot_mtime + 2.0)
     )
     if not ui_is_ahead:
         return False

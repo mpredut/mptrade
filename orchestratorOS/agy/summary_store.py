@@ -51,6 +51,22 @@ def conversation_db(cli_base: str, cid: str) -> str:
     return os.path.join(cli_base, "conversations", f"{cid}.db")
 
 
+def latest_valid_file_mtime(paths: Iterable[str], *, now_ts: Optional[float] = None) -> float:
+    """Return max finite file mtime <= now + 60s across ``paths``, ignoring missing/TOCTOU/corrupt-future files."""
+    eff_now = now_ts if (isinstance(now_ts, (int, float)) and not isinstance(now_ts, bool) and now_ts > 0.0) else datetime.now(timezone.utc).timestamp()
+    best = 0.0
+    for p in paths or ():
+        if not p or not os.path.exists(p):
+            continue
+        try:
+            mt = os.stat(p).st_mtime
+        except OSError:
+            continue
+        if 0.0 < mt <= eff_now + 60.0 and mt > best:
+            best = mt
+    return best
+
+
 def connect_sqlite_db(path: str, *, timeout: float = 20.0) -> sqlite3.Connection:
     """Open a SQLite connection with an explicit busy timeout to prevent transient lock failures."""
     conn = sqlite3.connect(path, timeout=timeout)

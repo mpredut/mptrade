@@ -1023,6 +1023,104 @@ def test_zero_source_age_and_mixed_case_xstock_tca_preservation() -> None:
     assert orders[0]["recommended_front_run_px"] == pytest.approx(100.35)
 
 
+def test_pass17_open_lots_inplace_diff_ms_now_ts_delta_gate_and_reconciler_future_ts(tmp_path, monkeypatch) -> None:
+    """Pure invariants + dependent cross-checks for Pass #17 delta evaluator, delta gate, reconciler, and repair SSOT."""
+    from intelligence.sentiment.evaluators.prompt_delta_evaluator import _resolve_block_age_sec
+    from orchestratorOS.lib.technical_repair_ssot import gather_system_and_vpn_telemetry
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import evaluate_crypto_executor_delta_gate
+
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+
+    # 1. Pure invariant: _resolve_block_age_sec falls back past "0" ts to valid timestamp
+    assert _resolve_block_age_sec({}, "fear_greed", {"ts": "0", "timestamp": t0 - 300.0}, t0) == pytest.approx(300.0)
+
+    # 2. Pure invariant + cross-check: epoch-ms now_ts normalizes cleanly (no OverflowError) and in-place open_lots trim triggers SHOW_NEW
+    s0 = _make_rich_sensors(t0)
+    s0.portfolio_summary["recent_orders"]["BTCUSDC"]["open_lots"] = [
+        {"qty": 0.010, "price": 59000.0},
+        {"qty": 0.005, "price": 60000.0},
+    ]
+    p0 = evaluate_prompt_delta_plan(s0, asset_scope="crypto", now_ts=t0 * 1000.0, is_warm_resume=False, conversation_id="cid-lots")
+    assert p0.mode == "FULL_KEYFRAME"
+
+    t1 = t0 + 360.0
+    s1 = _make_rich_sensors(t1, anchor_ts=t0)
+    # Same lot count (2), but second lot trimmed in place (0.005 -> 0.002) with unchanged last_buy/last_sell
+    s1.portfolio_summary["recent_orders"]["BTCUSDC"]["open_lots"] = [
+        {"qty": 0.010, "price": 59000.0},
+        {"qty": 0.002, "price": 60000.0},
+    ]
+    p1 = evaluate_prompt_delta_plan(
+        s1, asset_scope="crypto", now_ts=t1, is_warm_resume=True, prev_state=p0.next_state, conversation_id="cid-lots"
+    )
+    assert p1.recent_order_actions["BTCUSDC"] == "SHOW_NEW"
+    assert p1.block_actions["recent_orders"] == "SHOW_NEW"
+
+    # 3. Delta-gate cross-check: corrupt far-future prev_meta geo_ts / macro_ts / latest_fill_ts must NOT blind wakeup
+    s_geo = _make_rich_sensors(t1, anchor_ts=t0)
+    s_geo.geopolitical_threat = {"threat_level": "CRITICAL_SHOCK", "risk_score": 0.9, "ts": t1 - 5.0}
+    prev_eval_poisoned = {
+        "ts": t0,
+        "model_used": "gemini-4-neon-medium",
+        "market_trading_decision": {"decision": "HOLD"},
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": s_geo.prices_and_trends["BTCUSDC"]["price"]},
+            "geo_ts": t1 + 86400.0,
+            "geo_verdict": "NORMAL|NONE",
+            "macro_ts": t1 + 86400.0,
+            "macro_verdict": "NEUTRAL|MEDIUM|HOLD|DECOUPLED",
+            "latest_fill_ts": t1 + 86400.0,
+            "open_order_ids": [],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+    skip_geo, reason_geo, esc_geo, _ = evaluate_crypto_executor_delta_gate(s_geo, prev_eval_poisoned, now_ts=t1)
+    assert skip_geo is False
+    assert reason_geo == "geo_update"
+    assert esc_geo is True
+
+    # 4. Reconciler cross-check: corrupt far-future _prompt_invariant_alert_ts must NOT silence ntfy alerts forever
+    reconciler = AutonomousAIReconciler(mode="shadow", workspace_dir=str(tmp_path), notify_enabled=True)
+    reconciler.ntfy_topic_error = "test-err"
+    reconciler._prompt_invariant_alert_ts = {"auto_cryptotrade_executor:PROMPT_NUMERIC_HYGIENE": t1 + 86400.0}
+    sent_alerts: list[str] = []
+    with (
+        patch("orchestratorOS.supervisor.autonomous_ai_reconciler.time.time", return_value=t1),
+        patch(
+            "orchestratorOS.supervisor.autonomous_ai_reconciler.send_supervisor_ntfy_http",
+            side_effect=lambda title, *_a, **_k: sent_alerts.append(title) or True,
+        ),
+    ):
+        viols = reconciler._validate_runtime_prompt_invariants(
+            s0,
+            "LIVE TELEMETRY SNAPSHOT:\n### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n  * Live Tradable Spot Instruments:\n    - [binance] BTCUSDC: free_BTC=6e-05 ($3.70 USD), px=60000.0\n",
+            None,
+            topic_key="auto_cryptotrade_executor",
+            min_usd=10.0,
+        )
+    assert viols
+    assert len(sent_alerts) == 1
+    assert reconciler._prompt_invariant_alert_ts["auto_cryptotrade_executor:PROMPT_NUMERIC_HYGIENE"] == pytest.approx(t1)
+
+    # 5. technical_repair_ssot cross-check: corrupt far-future resource watchdog last_run must NOT emit stale offenders
+    with (
+        patch("orchestratorOS.lib.technical_repair_ssot.time.time", return_value=t1),
+        patch(
+            "orchestratorOS.lib.technical_repair_ssot.OsResourcesWatchdogStateStore.inspect_workspace",
+            return_value=(
+                None,
+                {"last_run": t1 + 7200.0, "tracked": {"bot.py": {"high": 5, "alerted": True, "last_reasons": ["rss"]}}},
+                0.0,
+            ),
+        ),
+        patch("orchestratorOS.lib.technical_repair_ssot.audit_llm_model_catalog_and_binaries", return_value={}),
+    ):
+        sys_tel = gather_system_and_vpn_telemetry(str(tmp_path), base_resources={})
+    assert "resource_watchdog_offenders" not in sys_tel
+
+
+
 
 
 

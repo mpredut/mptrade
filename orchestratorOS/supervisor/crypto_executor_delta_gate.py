@@ -67,20 +67,31 @@ def _extract_geo_verdict_sig(gt: Any) -> str:
     return f"{norm_lvl}|{raw_brk}"
 
 
-def _extract_delta_gate_geo_ts(gt: Any, src_ts_map: Optional[Mapping[str, Any]] = None) -> float:
+def _bounded_past_epoch_s(raw: Any, *, max_ts: Optional[float] = None) -> float:
+    ts_v = normalize_epoch_sec(raw, default=0.0, allow_iso=True) or 0.0
+    if ts_v <= 0.0 or (max_ts is not None and ts_v > max_ts + 60.0):
+        return 0.0
+    return ts_v
+
+
+def _extract_delta_gate_geo_ts(
+    gt: Any,
+    src_ts_map: Optional[Mapping[str, Any]] = None,
+    *,
+    max_ts: Optional[float] = None,
+) -> float:
     s_map = src_ts_map if isinstance(src_ts_map, Mapping) else {}
-    return (
-        first_epoch_sec(
-            gt.get("ts") if isinstance(gt, Mapping) else None,
-            gt.get("evaluated_at_ts") if isinstance(gt, Mapping) else None,
-            gt.get("updated_ts") if isinstance(gt, Mapping) else None,
-            s_map.get("geopolitical"),
-            s_map.get("geopolitical_threat"),
-            default=0.0,
-            allow_iso=True,
-        )
-        or 0.0
-    )
+    for cand in (
+        gt.get("ts") if isinstance(gt, Mapping) else None,
+        gt.get("evaluated_at_ts") if isinstance(gt, Mapping) else None,
+        gt.get("updated_ts") if isinstance(gt, Mapping) else None,
+        s_map.get("geopolitical"),
+        s_map.get("geopolitical_threat"),
+    ):
+        ts_v = _bounded_past_epoch_s(cand, max_ts=max_ts)
+        if ts_v > 0.0:
+            return ts_v
+    return 0.0
 
 
 def _has_unacknowledged_geo_shock(
@@ -89,19 +100,20 @@ def _has_unacknowledged_geo_shock(
     *,
     src_ts_map: Optional[Mapping[str, Any]] = None,
     geo_ts: Optional[float] = None,
+    max_ts: Optional[float] = None,
 ) -> bool:
     if not _is_geopolitical_shock(gt):
         return False
     if not isinstance(prev_eval, Mapping) or not prev_eval:
         return True
-    eff_geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map) if geo_ts is None else geo_ts
+    eff_geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map, max_ts=max_ts) if geo_ts is None else _bounded_past_epoch_s(geo_ts, max_ts=max_ts)
     prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), Mapping) else {}
     if eff_geo_ts <= 0.0:
         cur_verdict = _extract_geo_verdict_sig(gt)
         prev_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
         return bool(not prev_verdict or cur_verdict != prev_verdict)
-    prev_ts = normalize_epoch_sec(prev_eval.get("ts"), default=0.0, allow_iso=True) or 0.0
-    prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_ts = _bounded_past_epoch_s(prev_eval.get("ts"), max_ts=max_ts)
+    prev_geo_ts = _bounded_past_epoch_s(prev_meta.get("geo_ts"), max_ts=max_ts)
     if prev_geo_ts > 0.0:
         return eff_geo_ts > prev_geo_ts + 0.5
     return prev_ts <= 0.0 or eff_geo_ts > prev_ts + 0.5
@@ -132,14 +144,19 @@ def _has_new_fill_since_prev(
     prev_eval: Optional[Mapping[str, Any]],
     *,
     latest_fill_ts: Optional[float] = None,
+    max_ts: Optional[float] = None,
 ) -> bool:
-    eff_latest = _extract_delta_gate_latest_fill_ts(ps_map) if latest_fill_ts is None else latest_fill_ts
+    eff_latest = (
+        _extract_delta_gate_latest_fill_ts(ps_map, max_ts=max_ts)
+        if latest_fill_ts is None
+        else _bounded_past_epoch_s(latest_fill_ts, max_ts=max_ts)
+    )
     if eff_latest <= 0.0:
         return False
     prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
-    prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
+    prev_ts = _bounded_past_epoch_s(prev_map.get("ts"), max_ts=max_ts)
     prev_meta = prev_map.get("delta_gate_meta") if isinstance(prev_map.get("delta_gate_meta"), Mapping) else {}
-    prev_fill_ts = normalize_epoch_sec(prev_meta.get("latest_fill_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_fill_ts = _bounded_past_epoch_s(prev_meta.get("latest_fill_ts"), max_ts=max_ts)
     return bool(
         (prev_fill_ts > 0.0 and eff_latest > prev_fill_ts + 0.5)
         or (prev_ts > 0.0 and eff_latest > prev_ts + 0.5)
@@ -223,7 +240,11 @@ def is_extreme_stakes_delta_gate_wakeup(
     return False
 
 
-def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> float:
+def _extract_delta_gate_latest_fill_ts(
+    portfolio_summary: Mapping[str, Any],
+    *,
+    max_ts: Optional[float] = None,
+) -> float:
     """Extract the newest fill/execution epoch-second timestamp across recent_orders and last_cycle_execution_status."""
     latest = 0.0
     recent_orders = portfolio_summary.get("recent_orders")
@@ -239,7 +260,7 @@ def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> 
                 (oinfo.get("last_sell") or {}).get("ts_ms") if isinstance(oinfo.get("last_sell"), Mapping) else None,
                 (oinfo.get("last_sell") or {}).get("ts") if isinstance(oinfo.get("last_sell"), Mapping) else None,
             ):
-                ts_v = normalize_epoch_sec(cand, default=0.0, allow_iso=True) or 0.0
+                ts_v = _bounded_past_epoch_s(cand, max_ts=max_ts)
                 if ts_v > latest:
                     latest = ts_v
     raw_lces = portfolio_summary.get("last_cycle_execution_status")
@@ -250,16 +271,17 @@ def _extract_delta_gate_latest_fill_ts(portfolio_summary: Mapping[str, Any]) -> 
         st = str(item.get("status") or "").strip().upper()
         if st not in ("FILLED", "PARTIALLY_FILLED", "REJECTED", "FAILED"):
             continue
-        ts_v = first_epoch_sec(
+        for cand in (
             item.get("filled_ts"),
             item.get("updated_ts"),
             item.get("ts_ms"),
             item.get("ts"),
-            default=0.0,
-            allow_iso=True,
-        ) or 0.0
-        if ts_v > latest:
-            latest = ts_v
+        ):
+            ts_v = _bounded_past_epoch_s(cand, max_ts=max_ts)
+            if ts_v > 0.0:
+                if ts_v > latest:
+                    latest = ts_v
+                break
     return latest
 
 
@@ -607,7 +629,7 @@ def evaluate_crypto_executor_delta_gate(
     eff_min_move_pct = safe_pos_float(min_price_move_pct, default=0.35) or 0.35
     eff_max_idle_sec = safe_pos_float(max_idle_sec, default=1080.0) or 1080.0
     eff_high_move_pct = safe_pos_float(high_effort_price_move_pct, default=1.0) or 1.0
-    eff_now = safe_pos_float(now_ts, default=0.0) or time.time()
+    eff_now = normalize_epoch_sec(now_ts, default=None) or time.time()
 
     ps = getattr(sensors, "portfolio_summary", None)
     ps_map = ps if isinstance(ps, Mapping) else {}
@@ -619,18 +641,20 @@ def evaluate_crypto_executor_delta_gate(
     gt = getattr(sensors, "geopolitical_threat", None)
     src_ts = getattr(sensors, "source_timestamps", None)
     src_ts_map = src_ts if isinstance(src_ts, Mapping) else {}
-    macro_ts = first_epoch_sec(
+    macro_ts = 0.0
+    for m_cand in (
         sa.get("ts") if isinstance(sa, Mapping) else None,
         sa.get("evaluated_at_ts") if isinstance(sa, Mapping) else None,
         sa.get("updated_ts") if isinstance(sa, Mapping) else None,
         src_ts_map.get("sentiment_advisor"),
-        default=0.0,
-        allow_iso=True,
-    ) or 0.0
-    geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map)
-    geo_shock = _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts_map, geo_ts=geo_ts)
+    ):
+        if (m_ts := _bounded_past_epoch_s(m_cand, max_ts=eff_now)) > 0.0:
+            macro_ts = m_ts
+            break
+    geo_ts = _extract_delta_gate_geo_ts(gt, src_ts_map, max_ts=eff_now)
+    geo_shock = _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts_map, geo_ts=geo_ts, max_ts=eff_now)
 
-    latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map)
+    latest_fill_ts = _extract_delta_gate_latest_fill_ts(ps_map, max_ts=eff_now)
 
     prev_map = prev_eval if isinstance(prev_eval, Mapping) else {}
     prev_ts = normalize_epoch_sec(prev_map.get("ts"), default=0.0, allow_iso=True) or 0.0
@@ -704,7 +728,7 @@ def evaluate_crypto_executor_delta_gate(
         atr_15m_by_sym=atr_15m_by_sym,
         unactionable_syms=unactionable_syms,
     )
-    has_new_fill = _has_new_fill_since_prev(ps_map, prev_map, latest_fill_ts=latest_fill_ts)
+    has_new_fill = _has_new_fill_since_prev(ps_map, prev_map, latest_fill_ts=latest_fill_ts, max_ts=eff_now)
 
     clean_focus = parse_symbol_list(focus_symbols) if focus_symbols else []
     escalate_high_effort = bool(
@@ -742,7 +766,7 @@ def evaluate_crypto_executor_delta_gate(
     if breach_sym:
         return False, f"price_move({breach_sym}:{breach_move_pct:.2f}%>={breach_thresh_pct:.2f}%)", escalate_high_effort, snapshot_meta
 
-    prev_macro_ts = normalize_epoch_sec(prev_meta.get("macro_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_macro_ts = _bounded_past_epoch_s(prev_meta.get("macro_ts"), max_ts=eff_now)
     prev_macro_verdict = str(prev_meta.get("macro_verdict") or "").strip().upper()
     if macro_ts > 0.0 and (
         (prev_macro_ts > 0.0 and macro_ts > prev_macro_ts + 0.5)
@@ -751,7 +775,7 @@ def evaluate_crypto_executor_delta_gate(
         if not macro_verdict or not prev_macro_verdict or macro_verdict != prev_macro_verdict:
             return False, "macro_update", escalate_high_effort, snapshot_meta
 
-    prev_geo_ts = normalize_epoch_sec(prev_meta.get("geo_ts"), default=0.0, allow_iso=True) or 0.0
+    prev_geo_ts = _bounded_past_epoch_s(prev_meta.get("geo_ts"), max_ts=eff_now)
     prev_geo_verdict = str(prev_meta.get("geo_verdict") or "").strip().upper()
     if geo_shock or (
         geo_ts > 0.0

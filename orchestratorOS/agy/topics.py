@@ -42,6 +42,7 @@ from orchestratorOS.agy.summary_store import (
     daemon_loaded_titles,
     delete_threads,
     get_thread_step_count,
+    latest_valid_file_mtime,
     read_summary_row,
     upsert_ui_visible_summary,
     write_annotation_title,
@@ -608,19 +609,10 @@ def has_pending_ui_turn(
             ui_db = vis_db if os.path.exists(vis_db) else ""
         bot_db = os.path.join(bot_base, "conversations", f"{cid}.db")
         if ui_db and os.path.exists(bot_db):
-            try:
-                ui_mtime = max(
-                    (os.stat(p).st_mtime for p in (ui_db, ui_db + "-wal") if os.path.exists(p)),
-                    default=0.0,
-                )
-                bot_mtime = max(
-                    (os.stat(p).st_mtime for p in (bot_db, bot_db + "-wal") if os.path.exists(p)),
-                    default=0.0,
-                )
-                if ui_mtime > bot_mtime + 2.0:
-                    return True
-            except OSError:
-                pass
+            ui_mtime = latest_valid_file_mtime((ui_db, ui_db + "-wal"))
+            bot_mtime = latest_valid_file_mtime((bot_db, bot_db + "-wal"))
+            if ui_mtime > 0.0 and bot_mtime > 0.0 and ui_mtime > bot_mtime + 2.0:
+                return True
     return False
 
 

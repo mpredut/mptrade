@@ -448,3 +448,39 @@ class OrchestratorZombieDetectionTest(TempDirTestCase, IsolatedAsyncioTestCase):
         self.assertTrue(second_done)
         self.assertEqual(stop_order, ["rtrade", "tradeall", "cacheManager"])
         self.assertEqual(self.manager.processes, {})
+
+    async def test_kill_zombie_bot_always_discards_guard_and_start_bot_uses_monotonic_duration(self):
+        """Pure invariant + cross-check: _kill_zombie_bot clears zombie_killing even on error, and rapid-crash backoff uses monotonic time."""
+        self.manager.zombie_killing.add("hung_bot")
+        self.manager.stop_bot = AsyncMock(side_effect=RuntimeError("transient kill error"))
+        with self.assertRaises(RuntimeError):
+            await self.manager._kill_zombie_bot("hung_bot")
+        self.assertNotIn("hung_bot", self.manager.zombie_killing)
+
+        # Dependent cross-check: wall clock jumping backward by 60s during a 10s run must NOT trigger rapid-crash backoff
+        bot_entry = {
+            "name": "clock_jump_bot",
+            "dir": self.tmp,
+            "cmd": "python -c 'pass'",
+            "log_file": os.path.join(self.tmp, "clock_jump.log"),
+            "hb_file": "",
+            "hb_stale_s": 0.0,
+        }
+        wall_times = iter([2_000_000_000.0, 1_999_999_900.0, 1_999_999_900.0])
+        mono_times = iter([100.0, 112.0])
+        with (
+            patch("asyncio.create_subprocess_shell", new_callable=AsyncMock) as mock_shell,
+            patch("orchestratorTrade.orchestrator.time.time", side_effect=lambda: next(wall_times, 1_999_999_900.0)),
+            patch("orchestratorTrade.orchestrator.time.monotonic", side_effect=lambda: next(mono_times, 112.0)),
+        ):
+            mock_proc = MagicMock()
+            mock_proc.pid = 4321
+            mock_proc.stdout = None
+            mock_proc.returncode = 0
+            mock_proc.wait = AsyncMock(return_value=0)
+            mock_shell.return_value = mock_proc
+
+            await self.manager.start_bot(bot_entry)
+        self.assertEqual(self.manager.restart_backoff.get("clock_jump_bot"), 0)
+        self.assertEqual(self.manager.restart_delays.get("clock_jump_bot"), 5.0)
+

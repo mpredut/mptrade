@@ -32,6 +32,7 @@ from botcore import (
     bool_env,
     canonical_topic_key,
     disable_auto_start_websockets_default,
+    first_epoch_sec,
     float_env,
     is_cache_fresh,
     is_unmocked_llm_query_allowed,
@@ -281,7 +282,7 @@ class AutonomousAIReconciler:
         probe_fn = getattr(self.gemini_auditor, "probe_live_model_quota", None)
         if callable(probe_fn) and is_unmocked_llm_query_allowed():
             ttl_sec = max(30.0, float_env("LLM_QUOTA_CACHE_TTL_SEC", default=30.0) or 30.0)
-            quota_ts = raw.get("checked_ts") if raw.get("checked_ts") is not None else raw.get("ts")
+            quota_ts = first_epoch_sec(raw.get("checked_ts"), raw.get("ts"), default=None)
             if not raw or not is_cache_fresh(quota_ts, time.time(), ttl_sec=ttl_sec):
                 try:
                     live = probe_fn()
@@ -330,8 +331,8 @@ class AutonomousAIReconciler:
         if self.notify_enabled:
             sig = f"{topic_key}:{','.join(sorted({v.code for v in violations}))}"
             now_ts = time.time()
-            last_ts = self._prompt_invariant_alert_ts.get(sig, 0.0)
-            if now_ts - last_ts >= _PROMPT_INVARIANT_ALERT_COOLDOWN_SEC:
+            last_ts = normalize_epoch_sec(self._prompt_invariant_alert_ts.get(sig), default=0.0) or 0.0
+            if last_ts <= 0.0 or last_ts > now_ts + 60.0 or (now_ts - last_ts) >= _PROMPT_INVARIANT_ALERT_COOLDOWN_SEC:
                 self._prompt_invariant_alert_ts[sig] = now_ts
                 target_topic = self.ntfy_topic_error or self.ntfy_topic_server or self.ntfy_topic
                 if target_topic:
@@ -393,7 +394,7 @@ class AutonomousAIReconciler:
             else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors)
         )
 
-        eval_ts = safe_pos_float(getattr(sensors, "evaluated_at_ts", None), default=None)
+        eval_ts = normalize_epoch_sec(getattr(sensors, "evaluated_at_ts", None), default=None)
         iteration_num: Optional[int] = None
         try:
             iteration_num = get_topic_turn_count(topic_key) + 1
@@ -772,7 +773,7 @@ class AutonomousAIReconciler:
                 self._prompt_invariant_alert_ts = {
                     str(k): ts_v
                     for k, v in raw_alert_ts.items()
-                    if (ts_v := safe_pos_float(v, default=None)) is not None
+                    if (ts_v := normalize_epoch_sec(v, default=None)) is not None and ts_v <= now + 60.0
                 }
             prev_eval_was_actionable = eval_doc_was_actionable(prev_eval)
         if resolved_topic in ("auto_cryptotrade_executor", "auto_sharetrade_executor"):

@@ -980,3 +980,53 @@ def test_gemini_client_escalated_high_timeout_steps_down_and_bounds_detached_bud
     assert total_budget_s <= 240.0
     assert load_topic_registry()["auto_cryptotrade_executor"]["conversation_id"] == "detached-claude"
 
+
+def test_pass17_future_mtime_guard_in_summary_store_topics_and_ui_mirror(tmp_path):
+    """Pure invariant + cross-check: corrupt far-future UI DB mtime must not trigger endless has_pending_ui_turn or overwrite bot DB."""
+    from orchestratorOS.agy.summary_store import latest_valid_file_mtime
+    from orchestratorOS.agy.topics import has_pending_ui_turn
+    from orchestratorOS.agy.ui_mirror import sync_topic_thread_from_ui
+
+    now_s = datetime.now(timezone.utc).timestamp()
+    bot_base = str(tmp_path / "bot_cli")
+    ui_base = str(tmp_path / "ui_cli")
+    os.makedirs(os.path.join(bot_base, "conversations"), exist_ok=True)
+    os.makedirs(os.path.join(ui_base, "conversations"), exist_ok=True)
+
+    cid = "cid-future-mtime"
+    bot_conv = os.path.join(bot_base, "conversations", f"{cid}.db")
+    ui_conv = os.path.join(ui_base, "conversations", f"{cid}.db")
+    _make_conv_db(bot_conv)
+    _make_conv_db(ui_conv)
+    os.utime(bot_conv, (now_s - 60.0, now_s - 60.0))
+    os.utime(ui_conv, (now_s + 7200.0, now_s + 7200.0))
+
+    # Pure invariant: latest_valid_file_mtime ignores corrupt far-future mtime
+    assert latest_valid_file_mtime((ui_conv,), now_ts=now_s) == 0.0
+    assert latest_valid_file_mtime((bot_conv,), now_ts=now_s) == pytest.approx(now_s - 60.0, abs=1.0)
+
+    # Dependent cross-checks: same step_count with corrupt future UI mtime must NOT wake LLM or overwrite bot DB
+    _make_summary_db(
+        os.path.join(bot_base, "conversation_summaries.db"),
+        [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 6, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    _make_summary_db(
+        os.path.join(ui_base, "conversation_summaries.db"),
+        [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 6, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    reg_path = str(tmp_path / "topic_reg.json")
+    save_topic_registry(
+        {"auto_cryptotrade_executor": {"topic_key": "auto_cryptotrade_executor", "conversation_id": cid, "step_count": 6}},
+        reg_path,
+    )
+    assert has_pending_ui_turn("auto_cryptotrade_executor", cli_base=bot_base, ui_cli_base=ui_base, registry_path=reg_path) is False
+    assert sync_topic_thread_from_ui(cid, bot_cli_base=bot_base, ui_cli_base=ui_base) is False
+
+    # Valid recent UI edit (+10s newer than bot, within now+60s) still triggers both cleanly
+    os.utime(ui_conv, (now_s - 10.0, now_s - 10.0))
+    assert has_pending_ui_turn("auto_cryptotrade_executor", cli_base=bot_base, ui_cli_base=ui_base, registry_path=reg_path) is True
+    assert sync_topic_thread_from_ui(cid, bot_cli_base=bot_base, ui_cli_base=ui_base) is True
+
+

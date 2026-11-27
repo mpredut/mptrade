@@ -858,10 +858,13 @@ def persist_llm_model_catalog_state(state_path: str, catalog_audit: Mapping[str,
     try:
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
         with generation_file_lock(state_path):
+            now_cat = time.time()
+            raw_cat_ts = normalize_epoch_sec(catalog_audit.get("checked_ts"), default=None)
+            eff_cat_ts = raw_cat_ts if (raw_cat_ts is not None and raw_cat_ts <= now_cat + 60.0) else now_cat
             save_json_state(
                 state_path,
                 {
-                    "checked_ts": safe_float(catalog_audit.get("checked_ts"), time.time()),
+                    "checked_ts": eff_cat_ts,
                     "binary_versions": dict(catalog_audit.get("binary_versions") or {}),
                     "known_models": available_models,
                     "known_families": list(group_model_families(available_models).keys()),
@@ -951,13 +954,20 @@ def gather_system_and_vpn_telemetry(
         read_json_fn=_resolve_repair_json_reader(),
     )
     if isinstance(rw_state, dict) and isinstance(rw_state.get("tracked"), dict):
+        now_rw = time.time()
+        has_explicit_rw_ts = rw_state.get("last_run") is not None
         rw_last_run = normalize_epoch_sec(rw_state.get("last_run"), default=None)
-        if rw_last_run is None and rw_path is not None and os.path.exists(rw_path):
+        if rw_last_run is None and not has_explicit_rw_ts and rw_path is not None and os.path.exists(rw_path):
             try:
                 rw_last_run = os.path.getmtime(rw_path)
             except OSError:
                 rw_last_run = None
-        rw_fresh = rw_last_run is None or (time.time() - rw_last_run) <= 3600.0
+        if has_explicit_rw_ts and rw_last_run is None:
+            rw_fresh = False
+        elif rw_last_run is None:
+            rw_fresh = True
+        else:
+            rw_fresh = -60.0 <= (now_rw - rw_last_run) <= 3600.0
         min_consec = max(2, safe_pos_int(optional_env("RESOURCE_CONSECUTIVE_CHECKS", ""), default=3) or 3)
         procs_map = rw_state.get("processes") if isinstance(rw_state.get("processes"), dict) else {}
         offenders = [

@@ -143,6 +143,7 @@ class BotManager:
 
         logging.info(f"Starting {name} in {directory}: {cmd}")
         start_time = time.time()
+        start_mono = time.monotonic()
         log_fh = None
         task = None
         try:
@@ -215,7 +216,7 @@ class BotManager:
         finally:
             self.process_start_times.pop(name, None)
             self.zombie_killing.discard(name)
-            duration = time.time() - start_time
+            duration = max(0.0, time.monotonic() - start_mono)
             logging.warning(f"Bot {name} exited with code {process.returncode} (ran for {duration:.1f}s)")
 
             # Exponential backoff on rapid crash loop
@@ -282,6 +283,12 @@ class BotManager:
                     except (asyncio.TimeoutError, TimeoutError):
                         pass
             _close_process_transport(proc)
+
+    async def _kill_zombie_bot(self, name: str) -> None:
+        try:
+            await self.stop_bot(name)
+        finally:
+            self.zombie_killing.discard(name)
 
     def _ordered_process_names_reversed(self) -> list[str]:
         manifest_names = [
@@ -516,7 +523,8 @@ class BotManager:
 
         while self.running:
             now = time.time()
-            if now - getattr(self, "last_hb_status_log", 0) >= 300.0:
+            last_hb_log = getattr(self, "last_hb_status_log", 0.0)
+            if last_hb_log > now + 60.0 or (now - last_hb_log) >= 300.0:
                 self.last_hb_status_log = now
                 hb_statuses = []
                 for b in self.bots:
@@ -526,8 +534,12 @@ class BotManager:
                             hbf = resolve_cachedb_filepath(raw_hbf)
                             if os.path.exists(hbf):
                                 try:
-                                    age = max(0.0, now - os.path.getmtime(hbf))
-                                    hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: {age:.1f}s/{b['hb_stale_s']:.0f}s)")
+                                    hb_mtime = os.path.getmtime(hbf)
+                                    if hb_mtime <= 0.0 or hb_mtime > now + 60.0:
+                                        hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: invalid_ts)")
+                                    else:
+                                        age = max(0.0, now - hb_mtime)
+                                        hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: {age:.1f}s/{b['hb_stale_s']:.0f}s)")
                                 except OSError:
                                     hb_statuses.append(f"{b['name']} ({os.path.basename(hbf)}: missing)")
                             else:
@@ -596,7 +608,7 @@ class BotManager:
                                         "high",
                                         self.server._resolve_topic("SERVER")
                                     )
-                                asyncio.create_task(self.stop_bot(name))
+                                asyncio.create_task(self._kill_zombie_bot(name))
             await asyncio.sleep(2)
 
 
