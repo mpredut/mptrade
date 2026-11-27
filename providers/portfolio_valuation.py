@@ -159,9 +159,9 @@ def build_cached_balance_observations(
         res_b, res_q = resolve_assets_fn(p_sym, v.get("base"), v.get("quote"))
         b_u = canonical_balance_asset_key(res_b, venue=v_n)
         q_u = str(res_q or "USD").strip().upper()
-        pos_ts = safe_pos_float(v.get("ts"), default=None)
-        base_ts = safe_pos_float(v.get("base_bal_ts"), default=None) or pos_ts
-        quote_ts = safe_pos_float(v.get("quote_bal_ts"), default=None) or pos_ts
+        pos_ts = normalize_epoch_sec(v.get("ts"), default=None)
+        base_ts = normalize_epoch_sec(v.get("base_bal_ts"), default=None) or pos_ts
+        quote_ts = normalize_epoch_sec(v.get("quote_bal_ts"), default=None) or pos_ts
         b_bucket = round(base_ts, 3) if base_ts is not None else None
         q_bucket = round(quote_ts, 3) if quote_ts is not None else None
         fb = safe_nonneg_float(v.get("free_base") if v.get("free_base") is not None else v.get("free"), default=None)
@@ -202,7 +202,7 @@ def build_cached_balance_observations(
             continue
         cf = safe_nonneg_float(v.get("free"), default=None)
         if cf is not None:
-            c_ts = safe_pos_float(v.get("ts"), default=None)
+            c_ts = normalize_epoch_sec(v.get("ts"), default=None)
             c_lq = safe_nonneg_float(v.get("locked_quote_usd"), default=None)
             va_c = (v_n, a_u)
             if (

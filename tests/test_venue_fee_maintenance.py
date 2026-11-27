@@ -666,4 +666,82 @@ def test_maintain_venue_fees_cli_nonzero_exit_when_all_venues_fail_with_empty_ve
     assert mvf.main(["--json"]) == 1
 
 
+def test_pass25_xstock_fee_spec_preserves_symbol_limits_and_drops_future_alert_carryover(tmp_path, monkeypatch):
+    """[Pass 25] read_persisted_venue_fee_spec matches build_persisted_venue_fee_resolver for Kraken xStock limits, and maintainers drop far-future alert ts."""
+    from providers.venue_fee_maintenance import (
+        KrakenFeeMaintainer,
+        read_persisted_venue_fee_spec,
+    )
+    from state_stores.cache_fee_schedule import CacheFeeScheduleStore
+
+    now_ts = 1_770_300_000.0
+    sched_path = CacheFeeScheduleStore.resolve_schedule_path(str(tmp_path))
+    CacheFeeScheduleStore.save_schedule(
+        sched_path,
+        {
+            "schema_version": 1,
+            "ts": now_ts,
+            "interval_sec": 14400.0,
+            "state_max_age_sec": 86400.0,
+            "venues": {
+                "kraken": {
+                    "ts": now_ts,
+                    "fee_spec": {"fee_tier": "PRO_LIVE", "maker_fee_bps": 20.0, "taker_fee_bps": 35.0},
+                    "symbol_limits": {
+                        "SPCXxUSD": {
+                            "exchange_min_notional_usd": 10.0,
+                            "min_qty": 0.01,
+                            "step_size": 0.0001,
+                            "tick_size": 0.01,
+                        }
+                    },
+                }
+            },
+        },
+        indent=2,
+    )
+
+    # 1. Pure invariant + dependent cross-check: direct reader and memoized resolver return IDENTICAL xStock fee + limits
+    direct = read_persisted_venue_fee_spec("kraken", "SPCXxUSD", cache_dir=str(tmp_path), now_ts=now_ts + 10.0)
+    resolver = build_persisted_venue_fee_resolver(str(tmp_path), now_ts=now_ts + 10.0)
+    resolved = resolver("kraken", "SPCXxUSD")
+    assert direct == resolved
+    assert direct["fee_tier"] == "XSTOCK_ZERO_FEE"
+    assert direct["maker_fee_bps"] == 0.0
+    assert direct["taker_fee_bps"] == 0.0
+    assert direct["min_qty"] == pytest.approx(0.01)
+    assert direct["exchange_min_notional_usd"] == pytest.approx(10.0)
+
+    # Stale schedule still preserves XSTOCK_ZERO_FEE override without stale limits
+    stale_spec = read_persisted_venue_fee_spec("kraken", "SPCXxUSD", cache_dir=str(tmp_path), now_ts=now_ts + 200_000.0)
+    assert stale_spec == {"fee_tier": "XSTOCK_ZERO_FEE", "maker_fee_bps": 0.0, "taker_fee_bps": 0.0}
+
+    # 2. Pure invariant: BinanceFeeMaintainer & KrakenFeeMaintainer do not carry forward corrupt far-future alert timestamps
+    monkeypatch.setattr(botcore, "is_trade_enabled", lambda: False)
+    cli = MagicMock()
+    cli.get_bnb_burn_spot_margin.return_value = {"spotBNBBurn": True}
+    cli.get_account.return_value = {"balances": [{"asset": "BNB", "free": "0.5", "locked": "0.0"}, {"asset": "USDC", "free": "500.0", "locked": "0.0"}]}
+    cli.get_orderbook_ticker.return_value = {"symbol": "BNBUSDC", "bidPrice": "600.0"}
+    cli.get_open_orders.return_value = []
+    cli.get_trade_fee.return_value = []
+    bn_m = BinanceFeeMaintainer(
+        client=cli,
+        bapi_mod=SimpleNamespace(client=cli, _cancel_and_resolve=MagicMock()),
+        placeorder_mod=SimpleNamespace(_submit_binance_order=MagicMock()),
+        audit=ExecutionAudit(directory=str(tmp_path / "audit")),
+    )
+    bn_out = bn_m.maintain(now_ts, {"last_bnb_burn_error_ts": now_ts + 86400.0}, load_fee_maintenance_config(_sample_cfg()))
+    assert "last_bnb_burn_error_ts" not in bn_out
+
+    fake_kp = SimpleNamespace(
+        _client=lambda: SimpleNamespace(_private=lambda *_a, **_kw: {}, asset_pairs=lambda: {}),
+        usd_cash_breakdown=lambda: {"USDC": 0.0},
+    )
+    kr_out = KrakenFeeMaintainer(provider=fake_kp).maintain(
+        now_ts, {"last_idle_usdc_alert_ts": now_ts + 86400.0}, load_fee_maintenance_config(_sample_cfg())
+    )
+    assert "last_idle_usdc_alert_ts" not in kr_out
+
+
+
 

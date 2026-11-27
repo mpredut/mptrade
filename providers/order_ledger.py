@@ -726,15 +726,18 @@ def update_recently_closed(
     prune: bool = True,
 ) -> dict[str, float]:
     """Update deduplication tokens for recently closed orders (shared by reader and reconciler)."""
+    max_valid_ts = (eff_now + 60.0) if (eff_now is not None and eff_now > 0.0) else None
     if prune and eff_now is not None and eff_now > 0.0:
         cutoff = eff_now - ttl_sec
-        pruned = {k: ts_v for k, ts_v in recently_closed.items() if ts_v >= cutoff}
+        pruned = {k: ts_v for k, ts_v in recently_closed.items() if cutoff <= ts_v <= max_valid_ts}
     else:
         pruned = dict(recently_closed)
     for row in summaries:
         if not isinstance(row, dict):
             continue
         row_ts = safe_pos_float(row.get("closed_ts"), default=None) or eff_now or resolve_now_ts()
+        if max_valid_ts is not None and row_ts > max_valid_ts:
+            row_ts = eff_now
         is_filled_row = clean_upper_scalar(row.get("state")) == OrderLedgerState.FILLED.value
         has_partial_fill = (not is_filled_row) and (safe_nonneg_float(row.get("fq"), default=0.0) or 0.0) > 0.0
         for tok in closed_order_tokens(

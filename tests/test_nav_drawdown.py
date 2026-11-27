@@ -651,6 +651,68 @@ def test_pass10_nav_future_poison_bnb_ts_shadowing_and_intent_plan_ts_invariants
     assert plans == []
 
 
+def test_pass25_build_cached_balance_observations_normalizes_epoch_ms_against_layer3():
+    """[Pass 25] Older legacy pos:/cash: epoch-ms timestamps must never outweigh fresher Layer 3 balance caches."""
+    from providers.portfolio_valuation import build_cached_balance_observations
+
+    now_s = 1_750_000_000.0
+    older_ms = (now_s - 3600.0) * 1000.0  # 1 hour OLDER, stored in milliseconds
+
+    layer3_caches = {
+        "binance": {
+            "venue": "binance",
+            "verified_ts": now_s,
+            "items": {
+                "BTC": {"free": 0.25, "locked": 0.05, "ts": now_s},
+                "USDC": {"free": 1500.0, "locked": 100.0, "ts": now_s},
+            },
+        }
+    }
+    legacy_state = {
+        "pos:binance:BTCUSDC": {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "base": "BTC",
+            "quote": "USDC",
+            "free_base": 9.99,
+            "free_quote": 99999.0,
+            "ts": older_ms,
+            "base_bal_ts": older_ms,
+            "quote_bal_ts": older_ms,
+        },
+        "cash:binance:USDC": {
+            "venue": "binance",
+            "asset": "USDC",
+            "free": 88888.0,
+            "ts": older_ms,
+        },
+    }
+
+    # 1. Pure invariant: normalized older legacy ms timestamps lose to fresher Layer 3 seconds timestamps
+    obs = build_cached_balance_observations(
+        legacy_state,
+        resolve_assets_fn=lambda _s, b, q: (b, q),
+        balance_caches=layer3_caches,
+    )
+    assert obs[("binance", "BTC")].free == pytest.approx(0.25)
+    assert obs[("binance", "BTC")].ts == pytest.approx(now_s)
+    assert obs[("binance", "USDC")].free == pytest.approx(1500.0)
+    assert obs[("binance", "USDC")].ts == pytest.approx(now_s)
+
+    # 2. Dependent cross-check: a genuinely NEWER cash:* entry (even in ms) DOES supersede an older Layer 3 cache
+    newer_ms = (now_s + 120.0) * 1000.0
+    legacy_state["cash:binance:USDC"]["ts"] = newer_ms
+    legacy_state["cash:binance:USDC"]["free"] = 2200.0
+    obs2 = build_cached_balance_observations(
+        legacy_state,
+        resolve_assets_fn=lambda _s, b, q: (b, q),
+        balance_caches=layer3_caches,
+    )
+    assert obs2[("binance", "USDC")].free == pytest.approx(2200.0)
+    assert obs2[("binance", "USDC")].ts == pytest.approx(now_s + 120.0)
+
+
+
 
 
 

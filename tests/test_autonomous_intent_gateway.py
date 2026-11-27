@@ -5873,6 +5873,68 @@ def test_intent_execution_pass5_partial_fill_dict_and_canceled_order_status_fail
         assert intent_ok["status"] == "PENDING_EXECUTION"
 
 
+def test_pass25_intent_telemetry_ignores_far_future_timestamps_and_preserves_age():
+    """[Pass 25] Far-future intent or filled_at timestamps cannot hijack last_cycle_execution_status or suppress age fields."""
+    from providers.intent_telemetry import (
+        _attach_intent_age_fields,
+        _resolve_intent_execution_details,
+        build_last_cycle_execution_status,
+    )
+
+    now_ts = 1_795_800_500.0
+    real_intent = {
+        "intent_id": "iid_real_1",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "MARKET",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 180.0,
+        "suggested_notional_usd": 500.0,
+        "execution_payload": {
+            "orderId": "ord_real_1",
+            "status": "FILLED",
+            "executedQty": "0.008",
+            "price": "62500.0",
+            "filled_at": now_ts + 86400.0,  # corrupt far-future filled_at must be ignored
+        },
+        "history": [],
+    }
+    poison_future_intent = {
+        "intent_id": "iid_future_poison",
+        "venue": "binance",
+        "symbol": "ETHUSDC",
+        "decision": "SELL",
+        "order_type": "MARKET",
+        "status": "EXECUTED",
+        "timestamp": now_ts + 86400.0,
+        "suggested_notional_usd": 400.0,
+        "execution_payload": {"orderId": "ord_poison", "status": "FILLED", "executedQty": "0.2", "price": "2000.0"},
+        "history": [],
+    }
+
+    # 1. Pure invariant: corrupt far-future filled_at does not overwrite fill_ts_val or drop age_m
+    det = _resolve_intent_execution_details(
+        real_intent, now_ts, lambda it, default=None: it.get("suggested_notional_usd", default)
+    )
+    assert det["fill_ts_val"] == pytest.approx(now_ts - 180.0)
+    age_out: dict = {}
+    _attach_intent_age_fields(age_out, det, now_ts, unit_sec=60.0, ndigits=1, suffix="m")
+    assert age_out["age_m"] == pytest.approx(3.0)
+
+    # 2. Dependent cross-check: build_last_cycle_execution_status selects real_intent, NOT poison_future_intent
+    status_out = build_last_cycle_execution_status(
+        [real_intent, poison_future_intent],
+        "crypto",
+        now_ts,
+        lambda it, default=None: it.get("suggested_notional_usd", default),
+    )
+    assert isinstance(status_out, dict)
+    assert status_out["symbol"] == "BTCUSDC"
+    assert status_out["order_id"] == "ord_real_1"
+
+
+
 
 
 

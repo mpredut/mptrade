@@ -679,14 +679,16 @@ class BinanceFeeMaintainer(VenueFeeMaintainerBase):
             out["placed_order_id"] = placed_order_id
         if canceled_stale_ids:
             out["canceled_stale_ids"] = canceled_stale_ids
+        prev_burn_ts = safe_pos_float(prev_venue_state.get("last_bnb_burn_error_ts"), default=None)
+        valid_prev_burn_ts = prev_burn_ts if (prev_burn_ts is not None and prev_burn_ts <= now_ts + 60.0) else None
         if bnb_burn_error:
             out["bnb_burn_error"] = bnb_burn_error
             if bnb_burn_alert_fired and not dry_run:
                 out["last_bnb_burn_error_ts"] = round(now_ts, 3)
-            elif prev_venue_state.get("last_bnb_burn_error_ts"):
-                out["last_bnb_burn_error_ts"] = prev_venue_state["last_bnb_burn_error_ts"]
-        elif prev_venue_state.get("last_bnb_burn_error_ts"):
-            out["last_bnb_burn_error_ts"] = prev_venue_state["last_bnb_burn_error_ts"]
+            elif valid_prev_burn_ts is not None:
+                out["last_bnb_burn_error_ts"] = valid_prev_burn_ts
+        elif valid_prev_burn_ts is not None:
+            out["last_bnb_burn_error_ts"] = valid_prev_burn_ts
         return out
 
 
@@ -755,7 +757,8 @@ class KrakenFeeMaintainer(VenueFeeMaintainerBase):
             if isinstance(raw_bd, dict):
                 idle_usdc = safe_nonneg_float(raw_bd.get("USDC"), default=0.0) or 0.0
 
-        last_alert_ts = safe_nonneg_float(prev_venue_state.get("last_idle_usdc_alert_ts"), default=0.0) or 0.0
+        raw_last_alert = safe_nonneg_float(prev_venue_state.get("last_idle_usdc_alert_ts"), default=0.0) or 0.0
+        last_alert_ts = raw_last_alert if raw_last_alert <= now_ts + 60.0 else 0.0
         if (
             idle_usdc >= cfg["kraken_idle_usdc_alert_min"]
             and is_interval_due(now_ts, last_alert_ts, cfg["kraken_idle_usdc_alert_cooldown_sec"])
@@ -968,9 +971,6 @@ def read_persisted_venue_fee_spec(
     v_norm = normalize_venue_name(venue)
     if not v_norm:
         return {}
-    m_cls = VENUE_FEE_MAINTAINER_REGISTRY.get(v_norm)
-    if m_cls is not None and (sym_override := m_cls.static_symbol_fee_override(symbol)):
-        return sym_override
     payload = read_persisted_venue_fee_schedule(cdir)
     return _extract_venue_fee_spec_from_schedule(payload, v_norm, symbol, eff_now=resolve_now_ts(now_ts))
 

@@ -292,26 +292,36 @@ def _resolve_intent_fill_ts_and_reason(
     eff_qty: Optional[float],
     ts_val: float,
     matched_fill_ts_ms: int,
+    now_ts: Optional[float] = None,
 ) -> tuple[float, Optional[str]]:
     """Resolve effective fill timestamp and sanitized failure reason for an intent."""
+    max_valid_ts = (resolve_now_ts(now_ts) + 60.0) if now_ts is not None else None
     fill_ts_val = ts_val
     is_fill_exec = exec_status in ("FILLED", "PARTIALLY_FILLED", "SHADOW_SIMULATED") or (
         eff_qty is not None and eff_qty > 0
     )
     if is_fill_exec and isinstance(exec_pay, dict):
         for _ftk in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
-            if (_f_s := _parse_pos_epoch_s(exec_pay.get(_ftk))) is not None and _f_s >= ts_val:
+            if (
+                (_f_s := _parse_pos_epoch_s(exec_pay.get(_ftk))) is not None
+                and _f_s >= ts_val
+                and (max_valid_ts is None or _f_s <= max_valid_ts)
+            ):
                 fill_ts_val = max(fill_ts_val, _f_s)
                 break
     if is_fill_exec and matched_fill_ts_ms > 0:
         _mf_s = _ts_ms_to_s(safe_pos_float(matched_fill_ts_ms, default=0.0) or 0.0)
-        if _mf_s > fill_ts_val:
+        if _mf_s > fill_ts_val and (max_valid_ts is None or _mf_s <= max_valid_ts):
             fill_ts_val = _mf_s
     if is_fill_exec and fill_ts_val <= ts_val and str(last_hist.get("action") or "") in (
         "RECONCILED_EXECUTED",
         "RECONCILED_PARTIAL",
     ):
-        if (_lh_s := _parse_pos_epoch_s(last_hist.get("ts"))) is not None and _lh_s > fill_ts_val:
+        if (
+            (_lh_s := _parse_pos_epoch_s(last_hist.get("ts"))) is not None
+            and _lh_s > fill_ts_val
+            and (max_valid_ts is None or _lh_s <= max_valid_ts)
+        ):
             fill_ts_val = _lh_s
     fail_reason: Optional[str] = None
     if exec_status not in ("FILLED", "PARTIALLY_FILLED", "OPEN_RESTING", "ACCEPTED", "SHADOW_SIMULATED"):
@@ -539,6 +549,7 @@ def _resolve_intent_execution_details(
         eff_qty=eff_qty,
         ts_val=ts_val,
         matched_fill_ts_ms=matched_fill_ts_ms,
+        now_ts=now_ts,
     )
     filled_notional_usd: Optional[float] = None
     if exec_status == "PARTIALLY_FILLED":
@@ -752,8 +763,11 @@ def build_last_cycle_execution_status(
     if not scoped_intents:
         return None
 
+    max_valid_ts = resolve_now_ts(now_ts) + 60.0
+
     def _eff_intent_ts(intent_obj: dict[str, Any]) -> float:
-        base_t = _parse_pos_epoch_s(intent_obj.get("timestamp")) or 0.0
+        raw_base = _parse_pos_epoch_s(intent_obj.get("timestamp")) or 0.0
+        base_t = raw_base if raw_base <= max_valid_ts else 0.0
         ep = intent_obj.get("execution_payload")
         if isinstance(ep, dict):
             ep_st = str(ep.get("status") or "").strip().upper()
@@ -765,7 +779,7 @@ def build_last_cycle_execution_status(
             )
             if has_fill and ep_st not in TERMINAL_CANCEL_VENUE_STATUSES:
                 for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
-                    if (ft := _parse_pos_epoch_s(ep.get(k))) is not None:
+                    if (ft := _parse_pos_epoch_s(ep.get(k))) is not None and ft <= max_valid_ts:
                         base_t = max(base_t, ft)
         return base_t
 

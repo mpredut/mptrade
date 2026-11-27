@@ -308,15 +308,36 @@ def plan_incremental_bar_fetch(
         )
 
     bars = archive_doc.get("bars") or []
+    max_valid_ms = eff_end + max(interval_ms, 60_000)
     first_ts = safe_pos_int(archive_doc.get("first_ts_ms"), default=None)
-    if first_ts is None and bars and isinstance(bars[0], (list, tuple)) and bars[0]:
-        first_ts = safe_pos_int(bars[0][0], default=None)
+    if (first_ts is None or first_ts > max_valid_ms) and bars:
+        first_ts = next(
+            (
+                b_ts
+                for b in bars
+                if isinstance(b, (list, tuple)) and b
+                and (b_ts := safe_pos_int(b[0], default=None)) is not None
+                and b_ts <= max_valid_ms
+            ),
+            None,
+        )
     last_ts = safe_pos_int(archive_doc.get("last_ts_ms"), default=None)
-    if last_ts is None and bars and isinstance(bars[-1], (list, tuple)) and bars[-1]:
-        last_ts = safe_pos_int(bars[-1][0], default=None)
+    if (last_ts is None or last_ts > max_valid_ms) and bars:
+        last_ts = next(
+            (
+                b_ts
+                for b in reversed(bars)
+                if isinstance(b, (list, tuple)) and b
+                and (b_ts := safe_pos_int(b[0], default=None)) is not None
+                and b_ts <= max_valid_ms
+            ),
+            None,
+        )
     req_from = safe_pos_int(archive_doc.get("requested_from_ms"), default=None)
+    if req_from is not None and req_from > max_valid_ms:
+        req_from = None
 
-    if first_ts is None or last_ts is None:
+    if first_ts is None or last_ts is None or first_ts > max_valid_ms or last_ts > max_valid_ms:
         return BarFetchPlan(
             mode="full",
             fetch_start_ms=eff_need,
@@ -441,9 +462,9 @@ def _archive_doc_is_fresh_and_covered(
     max_bar_age = max(interval_sec * max(2, max_stale_bars), 3600.0)
     if allow_market_closed_stale:
         max_bar_age = max(max_bar_age, _EQUITY_CLOSED_MARKET_STALE_SEC)
-    if (now_ts - last_bar_sec) > max_bar_age:
+    if (now_ts - last_bar_sec) > max_bar_age or last_bar_sec > (now_ts + max(interval_sec, 60.0)):
         return False
-    if updated_ts > 0.0 and (now_ts - updated_ts) > max(max_bar_age, 25_200.0):
+    if updated_ts > 0.0 and ((now_ts - updated_ts) > max(max_bar_age, 25_200.0) or updated_ts > (now_ts + 60.0)):
         return False
     if lookback_days is not None and lookback_days > 0:
         needed_start_ms = max(0, safe_int((now_ts - lookback_days * 86400.0) * 1000.0, default=0))

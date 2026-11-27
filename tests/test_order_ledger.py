@@ -2071,6 +2071,114 @@ def test_pass22_pnl_report_facade_and_backfill_invariants_and_crosschecks(tmp_pa
     assert os.path.getmtime(ev_old_path) <= time.time() + 60.0
 
 
+def test_pass25_order_ledger_future_verified_ts_recently_closed_and_worker_hb(tmp_path, monkeypatch):
+    """[Pass 25] Far-future symbol_verified_ts/recently_closed cannot prematurely close orders, and worker main forces HB transitions."""
+    import order_ledger_reconciler_worker as olw
+    from providers.order_ledger import update_recently_closed
+
+    t0 = 1_750_000_000.0
+
+    # 1. Pure invariant: update_recently_closed prunes far-future tokens and clamps far-future closed_ts
+    rc_out = update_recently_closed(
+        {"binance:btcusdc:vid:bad": t0 + 99999.0, "binance:btcusdc:vid:ok": t0 - 10.0},
+        [{"v": "binance", "sym": "BTCUSDC", "vid": "new1", "state": "FILLED", "closed_ts": t0 + 50000.0}],
+        eff_now=t0,
+        prune=True,
+    )
+    assert "binance:btcusdc:vid:bad" not in rc_out
+    assert rc_out["binance:btcusdc:vid:ok"] == pytest.approx(t0 - 10.0)
+    assert rc_out["binance:btcusdc:vid:new1"] == pytest.approx(t0)
+
+    # 2. Dependent cross-check: poisoned far-future symbol_verified_ts on disk/venue snapshot must NOT close a fresh SUBMITTED order
+    cdb = tmp_path / "cachedb"
+    writer = OrderLedgerWriter(cachedb_dir=str(cdb))
+    reconciler = OrderLedgerReconciler(cachedb_dir=str(cdb), use_singletons=False, reconcile_grace_sec=30.0)
+    reader = OrderLedgerReader(cachedb_dir=str(cdb))
+
+    # Seed orders_active.json with a poisoned far-future symbol_verified_ts
+    reconciler.write_active_snapshot(
+        {
+            "schema_version": 1,
+            "updated_ts": t0 - 5.0,
+            "journal_cursor": {"file": "", "offset": 0, "offsets": {}},
+            "venue_verified_ts": {"binance": t0 + 86400.0},
+            "symbol_verified_ts": {"binance:btcusdc": t0 + 86400.0},
+            "recently_closed": {"binance:btcusdc:vid:ghost": t0 + 86400.0},
+            "orders": {},
+        }
+    )
+    writer.record_event(
+        OrderEventType.SUBMITTED,
+        venue="binance",
+        symbol="BTCUSDC",
+        ts=t0,
+        owner="tradeall",
+        side="BUY",
+        qty=0.01,
+        px=60000.0,
+        iid="iid-p25-fresh",
+        cid="TA_p25_fresh",
+    )
+    # Also inject a corrupt far-future venue open snapshot
+    monkeypatch.setattr(
+        reconciler,
+        "_read_venue_open_snapshot",
+        lambda v: ({}, t0 + 99999.0, {"BTCUSDC": t0 + 99999.0}) if v == "binance" else ({}, 0.0, {}),
+    )
+    reconciler.reconcile_once(now_ts=t0 + 1.0)
+
+    active = {r["key"]: r for r in reader.list_active_orders(apply_tail=False)}
+    assert "binance:iid:iid-p25-fresh" in active
+    assert active["binance:iid:iid-p25-fresh"]["state"] == OrderLedgerState.SUBMITTED.value
+    snap_after = reader.read_active_snapshot()
+    assert "binance:btcusdc" not in snap_after["symbol_verified_ts"]
+    assert "binance:btcusdc:vid:ghost" not in snap_after["recently_closed"]
+
+    # 3. Pure invariant: worker main() passes force=True on ok->error->ok transitions and force=False on steady ticks
+    monkeypatch.setattr(olw, "resolve_worker_poll_sec", lambda: 5.0)
+    monkeypatch.setattr(olw, "single_instance", lambda *_a, **_kw: None)
+    monkeypatch.setattr(olw.sys, "argv", ["order_ledger_reconciler_worker.py"])
+
+    outcomes = iter([
+        {"events_applied": 0, "active_count": 0, "reconciled_open": 0, "reconciled_filled": 0, "reconciled_closed": 0, "orphans_adopted": 0},
+        RuntimeError("disk_io_err"),
+        RuntimeError("still_err"),
+        {"events_applied": 0, "active_count": 0, "reconciled_open": 0, "reconciled_filled": 0, "reconciled_closed": 0, "orphans_adopted": 0},
+    ])
+
+    class _FakeRec:
+        reconcile_grace_sec = 30.0
+        intent_stale_sec = 100.0
+
+        def reconcile_once(self):
+            nxt = next(outcomes)
+            if isinstance(nxt, BaseException):
+                raise nxt
+            return nxt
+
+    hb_calls: list[tuple[dict, bool]] = []
+    sleeps = [0]
+
+    def _fake_sleep(_s):
+        sleeps[0] += 1
+        if sleeps[0] >= 4:
+            raise SystemExit(0)
+
+    monkeypatch.setattr(olw, "OrderLedgerReconciler", lambda: _FakeRec())
+    monkeypatch.setattr(
+        olw,
+        "_touch_ledger_hb",
+        lambda st, **kw: hb_calls.append((dict(st), bool(kw.get("force", False)))),
+    )
+    monkeypatch.setattr(olw.time, "sleep", _fake_sleep)
+    with pytest.raises(SystemExit):
+        olw.main()
+    # startup force=True, then ok(False), error(True), error(False), ok(True)
+    assert [force for _st, force in hb_calls] == [True, False, True, False, True]
+    assert hb_calls[2][0]["status"] == "error"
+
+
+
 
 
 

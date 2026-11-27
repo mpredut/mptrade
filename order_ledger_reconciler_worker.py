@@ -129,7 +129,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             self.intent_stale_sec,
             safe_pos_float(deferred_intent_stale_sec, default=None) or DEFAULT_DEFERRED_INTENT_STALE_SEC,
         )
-        self._file_sigs: dict[str, tuple[int, int]] = {}
+        self._file_sigs: dict[str, tuple[int, int, int]] = {}
 
     @staticmethod
     def _update_recently_closed(
@@ -155,7 +155,7 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             return True
         try:
             st = os.stat(fname)
-            sig = (st.st_mtime_ns, st.st_size)
+            sig = (st.st_mtime_ns, st.st_size, st.st_ino)
         except OSError:
             return False
         if self._file_sigs.get(fname) != sig:
@@ -363,8 +363,13 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             snap = self.read_active_snapshot(repair_files=True)
             orders: dict[str, dict[str, Any]] = snap["orders"]
             cursor: dict[str, Any] = snap["journal_cursor"]
-            venue_verified_ts: dict[str, float] = dict(snap["venue_verified_ts"])
-            symbol_verified_ts: dict[str, float] = dict(snap.get("symbol_verified_ts") or {})
+            max_valid_ts = eff_now + 60.0
+            venue_verified_ts: dict[str, float] = {
+                k: v for k, v in snap["venue_verified_ts"].items() if 0.0 < v <= max_valid_ts
+            }
+            symbol_verified_ts: dict[str, float] = {
+                k: v for k, v in (snap.get("symbol_verified_ts") or {}).items() if 0.0 < v <= max_valid_ts
+            }
             recently_closed: dict[str, float] = dict(snap.get("recently_closed") or {})
             active_file_exists = (
                 os.path.isfile(str(resolve_cachedb_filepath(self.active_path())))
@@ -417,11 +422,11 @@ class OrderLedgerReconciler(FileOrderLedgerBase):
             for venue_key in CacheOrderOpenManager.VENUE_FILENAMES:
                 oo_items, ver_ts, sym_ver_map = self._read_venue_open_snapshot(venue_key)
                 open_by_venue[venue_key] = oo_items
-                if ver_ts > 0.0:
+                if 0.0 < ver_ts <= max_valid_ts:
                     venue_verified_ts[venue_key] = max(venue_verified_ts.get(venue_key, 0.0), ver_ts)
                 for sym_k, s_ts in sym_ver_map.items():
                     _, sym_lc = _norm_sym_lc(sym_k, venue_key)
-                    if sym_lc and s_ts > 0.0:
+                    if sym_lc and 0.0 < s_ts <= max_valid_ts:
                         current_sym_ver[(venue_key, sym_lc)] = max(current_sym_ver.get((venue_key, sym_lc), 0.0), s_ts)
                         sk = f"{venue_key}:{sym_lc}"
                         symbol_verified_ts[sk] = max(symbol_verified_ts.get(sk, 0.0), s_ts)
@@ -756,6 +761,7 @@ def main() -> int:
     single_instance("order_ledger_reconciler_worker")
     print(f"[order_ledger] start (poll={poll_sec:g}s, grace={reconciler.reconcile_grace_sec:g}s, intent_stale={reconciler.intent_stale_sec:g}s)")
     _touch_ledger_hb({"active_count": 0}, poll_sec=poll_sec, force=True)
+    prev_hb_state = "ok"
     while True:
         last_stats = None
         last_error = None
@@ -767,13 +773,16 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             last_error = f"{exc.__class__.__name__}: {exc}"
             print(f"[order_ledger] pass error (continuing): {exc}")
+        cur_state = "error" if last_error is not None else "ok"
         if isinstance(last_stats, dict):
             hb_status = last_stats
         elif last_error is not None:
             hb_status = {"status": "error", "error": last_error}
         else:
             hb_status = {"status": "ok"}
-        _touch_ledger_hb(hb_status, poll_sec=poll_sec)
+        force_hb = cur_state != prev_hb_state
+        prev_hb_state = cur_state
+        _touch_ledger_hb(hb_status, poll_sec=poll_sec, force=force_hb)
         time.sleep(poll_sec)
     return 0
 

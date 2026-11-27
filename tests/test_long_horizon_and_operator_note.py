@@ -1434,3 +1434,89 @@ def test_pass13_operator_regime_note_far_future_mtime_clamp_and_delta_expiry_cro
     assert "Operator_Note(EXPIRED_CLEARED)" in warm_exp
 
 
+def test_pass25_ohlc_bar_archive_rejects_future_freshness_and_recovers_fetch_plan(tmp_path: Path) -> None:
+    """[Pass 25] Far-future updated_ts/last_bar_sec fails freshness check and plan_incremental_bar_fetch avoids empty fetch window."""
+    from providers.ohlc_bar_archive import (
+        load_ohlc_archive_dataset,
+        load_ohlc_archive_points,
+        ohlc_bar_archive_path,
+    )
+    from state_io import save_json_state
+
+    cache_dir = str(tmp_path / "cachedb")
+    now_s = 1_750_000_000.0
+    now_ms = int(now_s * 1000)
+    hour_ms = 3_600_000
+    valid_bars = [
+        [now_ms - (24 - i) * hour_ms, 100.0, 101.0, 99.0, 100.5, 10.0]
+        for i in range(24)
+    ]
+
+    # 1. Pure invariant: archive with far-future updated_ts fails freshness (returns None)
+    path_upd = ohlc_bar_archive_path(cache_dir, "BTCUSDC", "1h")
+    save_json_state(
+        path_upd,
+        {
+            "schema_version": 1,
+            "symbol": "BTCUSDC",
+            "timeframe": "1h",
+            "interval_min": 60,
+            "source": "binance:BTCUSDC",
+            "updated_ts": now_s + 86400.0,
+            "first_ts_ms": valid_bars[0][0],
+            "last_ts_ms": valid_bars[-1][0],
+            "requested_from_ms": valid_bars[0][0],
+            "bar_count": len(valid_bars),
+            "bars": valid_bars,
+        },
+    )
+    assert load_ohlc_archive_points(cache_dir, "BTCUSDC", "1h", lookback_days=1, now_ts=now_s) is None
+    assert load_ohlc_archive_dataset(cache_dir, "BTCUSDC", "1h", lookback_days=1, now_ts=now_s) is None
+
+    # 2. Dependent cross-check: archive with a corrupt far-future trailing bar fails freshness AND
+    # plan_incremental_bar_fetch recovers to the last valid bar (never empty [now_ms .. now_ms])
+    corrupt_bars = valid_bars + [[now_ms + 30 * 86_400_000, 100.0, 101.0, 99.0, 100.5, 10.0]]
+    doc_future = {
+        "schema_version": 1,
+        "symbol": "ETHUSDC",
+        "timeframe": "1h",
+        "interval_min": 60,
+        "source": "binance:ETHUSDC",
+        "updated_ts": now_s,
+        "first_ts_ms": corrupt_bars[0][0],
+        "last_ts_ms": corrupt_bars[-1][0],
+        "requested_from_ms": corrupt_bars[0][0],
+        "bar_count": len(corrupt_bars),
+        "bars": corrupt_bars,
+    }
+    save_json_state(ohlc_bar_archive_path(cache_dir, "ETHUSDC", "1h"), doc_future)
+    assert load_ohlc_archive_points(cache_dir, "ETHUSDC", "1h", lookback_days=1, now_ts=now_s) is None
+
+    plan = plan_incremental_bar_fetch(
+        doc_future,
+        needed_start_ms=valid_bars[0][0],
+        now_ms=now_ms,
+        timeframe="1h",
+    )
+    assert plan.mode == "incremental"
+    assert plan.fetch_start_ms < plan.fetch_end_ms
+    assert plan.fetch_start_ms == valid_bars[-1][0] - 8 * hour_ms
+
+    # All-future archive falls back to mode="full"
+    all_future_doc = {
+        **doc_future,
+        "first_ts_ms": now_ms + 10 * 86_400_000,
+        "last_ts_ms": now_ms + 30 * 86_400_000,
+        "bars": [[now_ms + 30 * 86_400_000, 100.0, 101.0, 99.0, 100.5, 10.0]],
+    }
+    plan_full = plan_incremental_bar_fetch(
+        all_future_doc,
+        needed_start_ms=valid_bars[0][0],
+        now_ms=now_ms,
+        timeframe="1h",
+    )
+    assert plan_full.mode == "full"
+    assert plan_full.fetch_start_ms == valid_bars[0][0]
+
+
+
