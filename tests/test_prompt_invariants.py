@@ -3558,6 +3558,101 @@ def test_cross_venue_arb_and_edge_exact_multiplicative_reciprocity() -> None:
     assert {"PROMPT_CROSS_VENUE_ARB_SYMMETRY", "PROMPT_FLOW_DEPTH_EDGE_MATH"}.issubset(bad_codes)
 
 
+def test_stale_spot_sell_reload_expiry_scorecard_consolidation_and_empty_prompt_guard() -> None:
+    """Verify 24h spot SELL->BUY reload expiry, per-exit-fill scorecard aggregation, 24h planned-SELL MTM bound, and PROMPT_EMPTY."""
+    now_s = 1_800_000_000.0
+    h = 3600.0
+
+    # 1. Two stale (>24h) spot SELL liquidations (72h & 58h ago) must NOT hijack a fresh breakout BUY
+    #    into phantom multi-slice SELL->BUY losses or hide the fresh BUY from open_buys; a fresh <=24h SELL still matches.
+    intents_stale_sell = [
+        {
+            **_filled_intent("s_old_1", now_s - 72.0 * h, "SELL", "ARBUSDC", "binance", 0.1100, 5000.0),
+            "target_px": 0.1050,
+            "invalidation_px": 0.1130,
+        },
+        {
+            **_filled_intent("s_old_2", now_s - 58.0 * h, "SELL", "ARBUSDC", "binance", 0.1090, 5000.0),
+            "target_px": 0.1040,
+            "invalidation_px": 0.1120,
+        },
+        # Fresh breakout BUY 2h ago at 0.1180 (above the stale 3d-old sells): should stay open long, zero SELL->BUY loss.
+        _filled_intent("b_fresh", now_s - 2.0 * h, "BUY", "ARBUSDC", "binance", 0.1180, 10000.0),
+        # Separate symbol with a genuine tactical SELL->BUY reload inside 24h (8h apart -> must match as WIN).
+        _filled_intent("s_tact", now_s - 10.0 * h, "SELL", "TAOUSDC", "binance", 185.0, 5.0),
+        _filled_intent("b_tact", now_s - 2.0 * h, "BUY", "TAOUSDC", "binance", 180.0, 5.0),
+    ]
+    sc_stale = evaluate_ai_decision_scorecard(
+        intents_stale_sell,
+        now_ts=now_s,
+        live_prices={"ARBUSDC": 0.1185, "TAOUSDC": 180.5},
+        window_trades=5,
+        lookback_hours=48.0,
+        scope="crypto",
+    )
+    # Only 2 outcomes: TAO tactical reload WIN (+2.5%) + open ARB BUY_MTM WIN (+0.22% net) — zero phantom SELL->BUY losses!
+    assert sc_stale["total_outcomes"] == 2
+    assert sc_stale["losses"] == 0
+    assert sc_stale["wins"] == 2
+    assert sc_stale["buy_shadow_active"] is False
+    assert sc_stale["net_usd"] > 0.0
+    assert audit_scorecard_temporal_invariants(
+        intents_stale_sell, t_early=now_s - 1.0 * h, t_late=now_s, scope="crypto", lookback_hours=48.0
+    ) == []
+
+    # Attribution: stale >24h unmatched planned SELLs must NOT bleed perpetual short MTM into planned_performance,
+    # while a fresh (<24h) unmatched planned SELL still scores symmetrically.
+    intents_attr = list(intents_stale_sell) + [
+        {
+            **_filled_intent("s_fresh_plan", now_s - 3.0 * h, "SELL", "HYPEUSDC", "hyperliquid", 65.0, 10.0),
+            "target_px": 62.0,
+            "invalidation_px": 67.0,
+        }
+    ]
+    rep = evaluate_ai_attribution(
+        intents_attr,
+        now_ts=now_s,
+        lookback_days=7.0,
+        scope="crypto",
+        live_prices={"ARBUSDC": 0.1185, "TAOUSDC": 180.5, "HYPEUSDC": 63.0},
+    )
+    # Closed trade is ONLY the tactical TAO SELL->BUY; fresh ARB BUY is tracked as open_mtm (NOT swallowed into reloaded_buys).
+    assert rep["ai_summary"]["closed_trades"] == 1
+    assert rep["ai_summary"]["open_mtm"] == 1
+    assert rep["ai_summary"]["realized_net_usd"] > 0.0
+    # Planned performance includes ONLY the fresh HYPE planned SELL MTM (+3.0%), NOT the 2 stale 3d-old ARB SELLs (-7%).
+    p_perf = rep["trade_plan_calibration"]["planned_performance"]
+    assert p_perf["scored"] == 1
+    assert p_perf["total_net_usd"] > 0.0
+
+    # 2. Split-order scorecard consolidation: ONE exit SELL closing 3 stacked DCA BUYs must count as 1 LOSS (not 3L cooldown!).
+    intents_split = [
+        _filled_intent("dca_b1", now_s - 10.0 * h, "BUY", "BTCUSDC", "binance", 62000.0, 0.005),
+        _filled_intent("dca_b2", now_s - 8.0 * h, "BUY", "BTCUSDC", "binance", 61500.0, 0.005),
+        _filled_intent("dca_b3", now_s - 6.0 * h, "BUY", "BTCUSDC", "binance", 61000.0, 0.005),
+        _filled_intent("dca_s_all", now_s - 1.0 * h, "SELL", "BTCUSDC", "binance", 60000.0, 0.015),
+    ]
+    sc_split = evaluate_ai_decision_scorecard(
+        intents_split,
+        now_ts=now_s,
+        window_trades=5,
+        max_loss_streak=3,
+        cooldown_hours=4.0,
+        lookback_hours=48.0,
+        scope="crypto",
+    )
+    assert sc_split["count"] == 1
+    assert sc_split["total_outcomes"] == 1
+    assert sc_split["losses"] == 1
+    assert sc_split["loss_streak"] == 1
+    assert sc_split["buy_shadow_active"] is False
+
+    # 3. Empty/whitespace prompt text must fail closed with PROMPT_EMPTY instead of returning 0 violations.
+    assert [v.code for v in audit_rendered_prompt_text("")] == ["PROMPT_EMPTY"]
+    assert [v.code for v in audit_rendered_prompt_text("   \n\t  ")] == ["PROMPT_EMPTY"]
+
+
+
 
 
 

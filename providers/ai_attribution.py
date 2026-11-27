@@ -25,6 +25,7 @@ from botcore import (
 )
 from cachepaths import matches_asset_scope, normalize_venue_name
 from .ai_survival_guard import (
+    DEFAULT_LIFO_MAX_SELL_RELOAD_HOLD_SEC,
     _LIMIT_PASSIVE_OFFSET_BUCKETS,
     _collect_canceled_order_ids,
     _extract_intent_exec_price,
@@ -813,6 +814,9 @@ def evaluate_ai_attribution(
     planned_sell_mtm_outcomes: list[dict[str, Any]] = []
     for sell_row in open_sells:
         if not sell_row["has_plan"]:
+            continue
+        sell_ts = safe_float(sell_row.get("ts"), default=0.0) or 0.0
+        if sell_ts > 0.0 and (eff_now - sell_ts) > DEFAULT_LIFO_MAX_SELL_RELOAD_HOLD_SEC:
             continue
         if (sell_mtm := _evaluate_open_mtm_row(sell_row, "SELL")) is not None:
             planned_sell_mtm_outcomes.append(sell_mtm)

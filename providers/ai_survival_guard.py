@@ -92,6 +92,7 @@ _RESTING_UNFILLED_GRACE_SEC = 3600.0
 _LIFO_REMAINDER_DUST_USD = 2.0
 _LIFO_REMAINDER_DUST_MAX_FRAC = 0.05
 DEFAULT_LIFO_MAX_PAIR_HOLD_SEC = 7.0 * 86400.0
+DEFAULT_LIFO_MAX_SELL_RELOAD_HOLD_SEC = 24.0 * 3600.0
 
 
 def _is_terminal_or_stale_unfilled_intent(
@@ -280,13 +281,21 @@ def _slice_lifo_row(row: dict[str, Any], matched_qty: float, total_qty: float) -
 
 def match_filled_intent_rows_lifo(
     filled_rows: Sequence[dict[str, Any]],
+    *,
+    max_sell_reload_hold_sec: Optional[float] = None,
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Chronologically match filled rows LIFO per ``inst_key``, consuming executed qty and retaining lot remainders."""
     sorted_rows = sorted(filled_rows, key=lambda r: r["ts"])
+    eff_sell_reload_ttl = (
+        safe_pos_float(max_sell_reload_hold_sec, default=None)
+        if max_sell_reload_hold_sec is not None
+        else None
+    )
     # Each stack item is [row_dict, remaining_qty, original_qty, has_explicit_qty].
     pending_buys: dict[Any, list[list[Any]]] = {}
     reloaded_buys: dict[Any, list[list[Any]]] = {}
     pending_sells: dict[Any, list[list[Any]]] = {}
+    expired_sells: list[dict[str, Any]] = []
     closed_pairs: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     pair_idx_by_src: dict[tuple[str, int, int], tuple[int, float, float, float, float]] = {}
 
@@ -396,6 +405,17 @@ def match_filled_intent_rows_lifo(
         row_qty, row_exp = _extract_lifo_row_qty(row)
         if side == "BUY":
             s_queue = pending_sells.get(ikey)
+            if s_queue and eff_sell_reload_ttl is not None:
+                buy_ts = safe_float(row.get("ts"), default=0.0) or 0.0
+                if buy_ts > 0.0:
+                    fresh_sells: list[list[Any]] = []
+                    for item in s_queue:
+                        sell_ts = safe_float(item[0].get("ts"), default=0.0) or 0.0
+                        if sell_ts > 0.0 and (buy_ts - sell_ts) > eff_sell_reload_ttl:
+                            expired_sells.append(_slice_lifo_row(item[0], item[1], item[2]))
+                        else:
+                            fresh_sells.append(item)
+                    s_queue[:] = fresh_sells
             if s_queue:
                 def _stack_rem_usd(queue: list[list[Any]]) -> float:
                     return sum(
@@ -433,7 +453,7 @@ def match_filled_intent_rows_lifo(
                 pending_sells.setdefault(ikey, []).append([row, rem_sell, row_qty, row_exp])
 
     open_buys = [_slice_lifo_row(it[0], it[1], it[2]) for q in pending_buys.values() for it in q]
-    open_sells = [_slice_lifo_row(it[0], it[1], it[2]) for q in pending_sells.values() for it in q]
+    open_sells = expired_sells + [_slice_lifo_row(it[0], it[1], it[2]) for q in pending_sells.values() for it in q]
     return closed_pairs, open_buys, open_sells
 
 
@@ -442,16 +462,24 @@ def match_filled_intent_rows_lifo_in_window(
     *,
     cutoff_ts: float = 0.0,
     max_pair_hold_sec: Optional[float] = DEFAULT_LIFO_MAX_PAIR_HOLD_SEC,
+    max_sell_reload_hold_sec: Optional[float] = DEFAULT_LIFO_MAX_SELL_RELOAD_HOLD_SEC,
 ) -> tuple[list[tuple[str, dict[str, Any], dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Match a bounded-hydration chronological fill stream LIFO first, then filter outcomes to ``>= cutoff_ts``.
 
     - Hydrating from ``cutoff_ts - max_pair_hold_sec`` preserves genuine cross-boundary entries (preventing
       in-window stop-loss SELLs from inverting into phantom ``SELL->BUY`` wins) while preventing weeks-old
       ghost AI BUYs (already closed on a shared wallet by BOT/MANUAL actors) from poisoning recent PnL.
+    - Bounding unmatched spot ``SELL->BUY`` reload anchors to ``max_sell_reload_hold_sec`` (default 24h)
+      prevents multi-day spot inventory liquidations from hijacking fresh breakout BUYs as phantom short losses.
     """
     eff_max_hold = (
         safe_pos_float(max_pair_hold_sec, default=None)
         if max_pair_hold_sec is not None
+        else None
+    )
+    eff_sell_reload = (
+        safe_pos_float(max_sell_reload_hold_sec, default=None)
+        if max_sell_reload_hold_sec is not None
         else None
     )
     if cutoff_ts > 0.0 and eff_max_hold is not None:
@@ -462,7 +490,9 @@ def match_filled_intent_rows_lifo_in_window(
         ]
     else:
         lifo_stream = list(filled_rows)
-    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(lifo_stream)
+    closed_pairs, open_buys, open_sells = match_filled_intent_rows_lifo(
+        lifo_stream, max_sell_reload_hold_sec=eff_sell_reload
+    )
     if cutoff_ts <= 0.0:
         return closed_pairs, open_buys, open_sells
     win_closed = [
@@ -471,6 +501,11 @@ def match_filled_intent_rows_lifo_in_window(
         and (
             eff_max_hold is None
             or (ex_ts - (safe_float(pair[1].get("ts"), default=0.0) or 0.0)) <= eff_max_hold
+        )
+        and (
+            pair[0] != "SELL->BUY"
+            or eff_sell_reload is None
+            or (ex_ts - (safe_float(pair[1].get("ts"), default=0.0) or 0.0)) <= eff_sell_reload
         )
     ]
     win_open_buys = [
@@ -1249,6 +1284,9 @@ def evaluate_ai_decision_scorecard(
     unmatched_sells = len(open_sells)
     outcomes: list[dict[str, Any]] = []
 
+    # Aggregate LIFO slices closed by the same exit fill into one notional-weighted trade outcome
+    # so a single order matching multiple stacked lots never amplifies loss_streak or fills window_trades.
+    grouped_closed: dict[tuple[Any, ...], dict[str, Any]] = {}
     for kind, entry_row, exit_row in closed_pairs:
         gross_edge_pct = compute_signed_price_edge_pct(entry_row["side"], entry_row["px"], exit_row["px"])
         pair_rt_bps = 0.5 * (
@@ -1259,13 +1297,42 @@ def evaluate_ai_decision_scorecard(
         entry_usd = safe_pos_float(entry_row.get("usd"), default=0.0) or 0.0
         exit_usd = safe_pos_float(exit_row.get("usd"), default=0.0) or 0.0
         matched_usd = entry_usd if entry_usd > 0.0 else resolve_matched_notional_usd(entry_usd, exit_usd)
+        exit_iid = clean_scalar_str(exit_row.get("intent_id")) or ""
+        g_key: tuple[Any, ...] = (
+            (kind, exit_iid)
+            if exit_iid
+            else (kind, exit_row.get("venue"), exit_row.get("symbol"), exit_row["ts"], exit_row.get("px"))
+        )
+        agg = grouped_closed.get(g_key)
+        if agg is None:
+            grouped_closed[g_key] = {
+                "ts": exit_row["ts"],
+                "kind": kind,
+                "symbol": exit_row["symbol"],
+                "matched_usd": matched_usd,
+                "usd_impact": matched_usd * (edge_pct / 100.0),
+                "edge_sum": edge_pct,
+                "slices": 1,
+            }
+        else:
+            agg["matched_usd"] += matched_usd
+            agg["usd_impact"] += matched_usd * (edge_pct / 100.0)
+            agg["edge_sum"] += edge_pct
+            agg["slices"] += 1
+
+    for agg in grouped_closed.values():
+        eff_edge = (
+            (agg["usd_impact"] / agg["matched_usd"]) * 100.0
+            if agg["matched_usd"] > 0.0
+            else (agg["edge_sum"] / max(agg["slices"], 1))
+        )
         outcomes.append({
-            "ts": exit_row["ts"],
-            "kind": kind,
-            "symbol": exit_row["symbol"],
-            "edge_pct": edge_pct,
-            "usd_impact": matched_usd * (edge_pct / 100.0),
-            "grade": _classify(edge_pct),
+            "ts": agg["ts"],
+            "kind": agg["kind"],
+            "symbol": agg["symbol"],
+            "edge_pct": eff_edge,
+            "usd_impact": agg["usd_impact"],
+            "grade": _classify(eff_edge),
         })
 
     for buy_row in open_buys:
@@ -1965,6 +2032,8 @@ def format_ai_calibration_feedback_line(calibration: Any) -> str:
 
 
 __all__ = [
+    "DEFAULT_LIFO_MAX_PAIR_HOLD_SEC",
+    "DEFAULT_LIFO_MAX_SELL_RELOAD_HOLD_SEC",
     "build_intent_live_price_map",
     "build_normalized_filled_ai_intent_row",
     "build_persisted_round_trip_fee_resolver",

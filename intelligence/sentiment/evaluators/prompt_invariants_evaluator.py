@@ -1598,6 +1598,8 @@ def audit_rendered_prompt_text(
     gateway_min_usd: float = 0.0,
 ) -> list[InvariantViolation]:
     """Audit mathematical and structural invariants directly on a rendered LLM prompt string."""
+    if not isinstance(prompt_text, str) or not prompt_text.strip():
+        return [InvariantViolation("PROMPT_EMPTY", "prompt_text", "rendered prompt text is empty or whitespace-only")]
     violations: list[InvariantViolation] = []
     non_trad_u = {str(s).strip().upper() for s in non_tradable_symbols if str(s).strip()}
     gw_min_f = safe_nonneg_float(gateway_min_usd, default=0.0) or 0.0
