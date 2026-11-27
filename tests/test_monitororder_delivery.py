@@ -944,3 +944,49 @@ def test_monitor_orders_isolates_symbol_failure_and_reports_degraded_then_ok_hea
     ]
 
 
+def test_reprice_refusal_cooldown_clamps_clock_rollback_and_unblocks_reprice():
+    """Pass #26 invariant + cross-check: wall-clock rollback clamps reprice refusal cooldown instead of locking repricing for hours."""
+    monitororder.reset_monitororder_state_for_test()
+    t0 = 1_750_000_000.0
+
+    # 1. Pure invariant: transient 30s cooldown rolled back by 1h clamps to 30s and expires after 31s.
+    monitororder._record_reprice_refusal_cooldown("555777", "account_cache_not_fresh", now_ts=t0)
+    rollback_now = t0 - 3600.0
+    cd_clamped = monitororder._active_reprice_refusal_cooldown("555777", now_ts=rollback_now)
+    assert cd_clamped is not None
+    assert cd_clamped[0] == pytest.approx(monitororder._TRANSIENT_REFUSAL_COOLDOWN_SEC)
+    assert cd_clamped[2] == "transient"
+    assert monitororder._active_reprice_refusal_cooldown(
+        "555777", now_ts=rollback_now + monitororder._TRANSIENT_REFUSAL_COOLDOWN_SEC + 1.0
+    ) is None
+
+    # Corrupt non-finite until_ts is pruned cleanly.
+    monitororder._reprice_refusal_cooldowns["555778"] = (float("nan"), "transient_err", "transient")
+    assert monitororder._active_reprice_refusal_cooldown("555778", now_ts=t0) is None
+    assert "555778" not in monitororder._reprice_refusal_cooldowns
+
+    # 2. Dependent cross-check: monitor_open_orders_by_type reprices after bounded rollback cooldown expires.
+    monitororder._record_reprice_refusal_cooldown("555779", "account_cache_not_fresh", now_ts=t0)
+    open_orders = {
+        "555779": {
+            "price": 100.0,
+            "quantity": 2.0,
+            "remainingQty": 2.0,
+        }
+    }
+    clock_now = [rollback_now]
+    with (
+        patch.object(monitororder.time, "time", side_effect=lambda: clock_now[0]),
+        _replacement_env(open_orders, 100.5, order_id="555780", complete_claim=True, silence_notify=True) as (_, placed),
+    ):
+        # First pass at rollback_now sees clamped 30s cooldown -> skips placement.
+        monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+        assert len(placed) == 0
+        # Advancing 31s beyond rollback_now clears the bounded cooldown -> replacement submits cleanly.
+        clock_now[0] = rollback_now + monitororder._TRANSIENT_REFUSAL_COOLDOWN_SEC + 1.0
+        monitororder.monitor_open_orders_by_type("TAOUSDC", "BUY")
+        assert len(placed) == 1
+    monitororder.reset_monitororder_state_for_test()
+
+
+

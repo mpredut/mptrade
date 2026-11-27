@@ -1911,4 +1911,46 @@ def test_assetguardian_cycle_and_run_forever_report_honest_error_heartbeats(monk
     assert hb_calls[2][1]["force"] is True
 
 
+def test_assetguardian_isolates_per_symbol_errors_and_reports_degraded_and_error_heartbeats(monkeypatch):
+    """Pass #26 invariant + cross-check: one failing symbol never starves siblings and heartbeat reports degraded/error/ok."""
+    ag._STOP_EVENT.clear()
+    monkeypatch.setattr(ag, "TRACKED_SYMBOLS", ("BTCUSDC", "ETHUSDC"))
+    monkeypatch.setattr(ag, "_next_check_seconds", lambda: 10.0)
+
+    # 1. Pure invariant: evaluate_and_maybe_sell_or_buy isolates per-symbol exceptions so sibling still runs.
+    visited: list[str] = []
+
+    def _eval_partial(symbol, minutes_back=None):
+        visited.append(symbol)
+        if symbol == "BTCUSDC":
+            raise RuntimeError("corrupt btc cache")
+        return True
+
+    monkeypatch.setattr(ag, "evaluate_symbol", _eval_partial)
+    errs: list[str] = []
+    placed = ag.evaluate_and_maybe_sell_or_buy(symbols=("BTCUSDC", "ETHUSDC"), failed_symbols_out=errs)
+    assert placed is True
+    assert visited == ["BTCUSDC", "ETHUSDC"]
+    assert len(errs) == 1 and "BTCUSDC" in errs[0]
+
+    # 2. Dependent cross-check: _run_assetguardian_cycle surfaces partial failure as degraded even when sibling returns True.
+    hb_deg, sleep_deg = ag._run_assetguardian_cycle()
+    assert hb_deg["status"] == "degraded"
+    assert hb_deg["failed_symbols"] == ["BTCUSDC"]
+    assert "corrupt btc cache" in hb_deg["error"]
+    assert sleep_deg == pytest.approx(10.0)
+
+    # 3. All symbols failing escalates heartbeat to error.
+    monkeypatch.setattr(ag, "evaluate_symbol", lambda sym, minutes_back=None: (_ for _ in ()).throw(RuntimeError(f"{sym} down")))
+    hb_all_err, _ = ag._run_assetguardian_cycle()
+    assert hb_all_err["status"] == "error"
+    assert hb_all_err["failed_symbols"] == ["BTCUSDC", "ETHUSDC"]
+
+    # 4. Full recovery returns clean ok status.
+    monkeypatch.setattr(ag, "evaluate_symbol", lambda sym, minutes_back=None: False)
+    hb_ok, _ = ag._run_assetguardian_cycle()
+    assert hb_ok == {"status": "ok"}
+
+
+
 

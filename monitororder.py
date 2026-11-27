@@ -193,7 +193,7 @@ def _record_reprice_refusal_cooldown(
     reason_s = clean_scalar_str(reason) or "refused"
     cooldown_sec, tier = classify_reprice_refusal_cooldown(reason_s)
     if oid_str:
-        eff_now = time.time() if now_ts is None else now_ts
+        eff_now = safe_pos_float(now_ts, default=None) or time.time()
         lru_dict_put(
             _reprice_refusal_cooldowns,
             oid_str,
@@ -210,9 +210,17 @@ def _active_reprice_refusal_cooldown(
     if entry is None:
         return None
     until_ts, reason_s, tier = entry
-    eff_now = time.time() if now_ts is None else now_ts
-    if eff_now < until_ts:
-        return until_ts - eff_now, reason_s, tier
+    until_f = safe_pos_float(until_ts, default=None)
+    if until_f is None:
+        _reprice_refusal_cooldowns.pop(oid_str, None)
+        return None
+    eff_now = safe_pos_float(now_ts, default=None) or time.time()
+    if eff_now < until_f:
+        tier_cd, _ = classify_reprice_refusal_cooldown(reason_s)
+        if (until_f - eff_now) > tier_cd + 60.0:
+            until_f = eff_now + tier_cd
+            _reprice_refusal_cooldowns[oid_str] = (until_f, reason_s, tier)
+        return until_f - eff_now, reason_s, tier
     _reprice_refusal_cooldowns.pop(oid_str, None)
     return None
 

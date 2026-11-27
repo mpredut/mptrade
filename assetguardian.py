@@ -220,6 +220,8 @@ def _cycle_io_scope():
         "portfolio_growth": {},
         "p3b_loaded": False,
         "p3b_val": None,
+        "symbol_errors": [],
+        "symbols_total": 0,
     }
     _CYCLE_SCOPE.cache = cache
     try:
@@ -2412,29 +2414,62 @@ _STOP_EVENT = threading.Event()
 def evaluate_and_maybe_sell_or_buy(
     minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT,
     symbols=None,
+    *,
+    failed_symbols_out=None,
 ):
     """Evaluate configured assets independently, accepting at most one order/cycle."""
     selected = tuple(symbols) if symbols is not None else TRACKED_SYMBOLS
+    cycle = getattr(_CYCLE_SCOPE, "cache", None)
+    if isinstance(cycle, dict):
+        cycle["symbols_total"] = len(selected)
     for symbol in selected:
         if _STOP_EVENT.is_set():
             break
-        if evaluate_symbol(symbol, minutes_back=minutes_back):
-            return True
+        try:
+            if evaluate_symbol(symbol, minutes_back=minutes_back):
+                return True
+        except Exception as exc:
+            err_msg = f"{type(exc).__name__}: {str(exc)[:160]}"
+            print(f"[{symbol}] Runtime ERROR: {exc}")
+            if isinstance(cycle, dict):
+                cycle.setdefault("symbol_errors", []).append((symbol, err_msg))
+            if isinstance(failed_symbols_out, list):
+                failed_symbols_out.append(f"{symbol}: {err_msg}")
     return False
+
+
+def _build_assetguardian_hb_status(
+    cycle_err: str | None,
+    sym_errors: list[tuple[str, str]],
+    sym_total: int,
+) -> dict:
+    if cycle_err:
+        return {"status": "error", "error": cycle_err}
+    if sym_errors:
+        hb_state = "error" if (sym_total > 0 and len(sym_errors) >= sym_total) else "degraded"
+        err_summary = "; ".join(f"{sym_k}: {msg}" for sym_k, msg in sym_errors[:5])[:200]
+        return {
+            "status": hb_state,
+            "error": err_summary,
+            "failed_symbols": [sym_k for sym_k, _ in sym_errors],
+        }
+    return {"status": "ok"}
 
 
 def _run_assetguardian_cycle(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT) -> tuple[dict, float]:
     """Run one AssetGuardian cycle and return ``(heartbeat_status, sleep_seconds)``."""
     cycle_err: str | None = None
-    with _cycle_io_scope():
+    with _cycle_io_scope() as cycle_cache:
         try:
             evaluate_and_maybe_sell_or_buy(minutes_back=minutes_back)
         except Exception as e:
             cycle_err = str(e)[:200]
             print(f" Runtime ERROR: {e}")
+        sym_errors = list(cycle_cache.get("symbol_errors") or ())
+        sym_total = exact_nonneg_int(cycle_cache.get("symbols_total"), default=0) or 0
         if _STOP_EVENT.is_set():
             return (
-                {"status": "error", "error": cycle_err} if cycle_err else {"status": "ok"},
+                _build_assetguardian_hb_status(cycle_err, sym_errors, sym_total),
                 CHECK_INTERVAL_SECONDS,
             )
         try:
@@ -2444,7 +2479,7 @@ def _run_assetguardian_cycle(minutes_back=ASSET_REFERENCE_MINUTES_BACK_DEFAULT) 
                 cycle_err = str(e)[:200]
             print(f" Runtime ERROR computing next check interval: {e}")
             sleep_seconds = CHECK_INTERVAL_SECONDS
-    hb_status = {"status": "error", "error": cycle_err} if cycle_err else {"status": "ok"}
+    hb_status = _build_assetguardian_hb_status(cycle_err, sym_errors, sym_total)
     return hb_status, sleep_seconds
 
 

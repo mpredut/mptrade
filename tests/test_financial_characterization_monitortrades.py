@@ -2299,3 +2299,70 @@ def test_monitortrades_cycle_isolates_precheck_failures_and_reports_honest_heart
     )
     assert hb_ok == {"status": "ok"}
 
+
+def test_monitortrades_load_mt_state_sanitizes_future_and_stale_reentry_state(monkeypatch, tmp_path):
+    """Pass #26 invariant + cross-check: _load_mt_state clamps future reentry started_at and rejects corrupt/future/stale sell_time."""
+    mt_state_file = tmp_path / "mt_reentry_state.json"
+    now_s = 1_750_000_000.0
+    mt_state_file.write_text(
+        json.dumps({
+            "reentry_state": {
+                "BTCUSDC": {
+                    "trough": 95000.0,
+                    "peak": 100000.0,
+                    "peak_bounce": 96000.0,
+                    "started_at": now_s + 5000.0,
+                    "sell_time": now_s - 120.0,
+                },
+                "ETHUSDC": {
+                    "trough": 3000.0,
+                    "peak": 3200.0,
+                    "started_at": now_s - 60.0,
+                    "sell_time": now_s + 9000.0,
+                },
+                "SOLUSDC": {
+                    "trough": 150.0,
+                    "peak": 160.0,
+                    "started_at": now_s - 10 * 86400.0,
+                    "sell_time": now_s - 10 * 86400.0,
+                },
+                "TAOUSDC": {
+                    "trough": 300.0,
+                    "peak": 320.0,
+                    "started_at": now_s - 30.0,
+                    "sell_time": "0",
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mt, "_MT_PERSISTENCE_ENABLED", True)
+    monkeypatch.setattr(mt, "_MT_STATE_FILE", str(mt_state_file))
+    mt._REENTRY_STATE.clear()
+    mt._LAST_EXIT_KIND.clear()
+
+    # 1. Pure invariant: future started_at is clamped to now_s; far-future/stale/non-positive sell_time entries are dropped.
+    mt._load_mt_state(now_curr=now_s)
+    assert "BTCUSDC" in mt._REENTRY_STATE
+    assert mt._REENTRY_STATE["BTCUSDC"]["started_at"] == pytest.approx(now_s)
+    assert mt._REENTRY_STATE["BTCUSDC"]["sell_time"] == pytest.approx(now_s - 120.0)
+    assert "ETHUSDC" not in mt._REENTRY_STATE
+    assert "SOLUSDC" not in mt._REENTRY_STATE
+    assert "TAOUSDC" not in mt._REENTRY_STATE
+
+    # 2. Dependent cross-check: _update_mt_reentry_state preserves sanitized BTCUSDC anchor and updates trough cleanly.
+    updated = mt._update_mt_reentry_state(
+        "BTCUSDC",
+        100000.0,
+        94000.0,
+        now_s + 10.0,
+        now_s - 120.0,
+        mt._REENTRY_STATE,
+        mt._LAST_EXIT_KIND,
+    )
+    assert updated["started_at"] == pytest.approx(now_s)
+    assert updated["sell_time"] == pytest.approx(now_s - 120.0)
+    assert updated["trough"] == pytest.approx(94000.0)
+    mt._REENTRY_STATE.clear()
+
+

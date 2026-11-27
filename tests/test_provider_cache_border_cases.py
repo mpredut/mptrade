@@ -8793,3 +8793,82 @@ def test_wave50_anchored_id_memos_and_market_regime_scalar_ssot(tmp_path, monkey
     assert [x["id"] for x in oq_mod._without_superseded_accepted(kept_items, "BTCUSDC", "999")] == ["a1", "a2"]
 
 
+def test_normalize_open_order_rejects_future_ts_and_falls_back_to_ts_map():
+    """Pass #26 invariant + cross-check: normalize_open_order bounds ts_ms to <= now + 60s across venue, CID, and map sources."""
+    now_s = 1_750_000_000.0
+    real_created_s = now_s - 3600.0
+
+    # 1. Pure invariant: bogus future 10-digit CID token (year 2033) is rejected and falls back to order_ts_map.
+    norm_cid_fallback = normalize_open_order(
+        {
+            "orderId": "801",
+            "side": "SELL",
+            "price": "100.0",
+            "origQty": "1.0",
+            "clientOrderId": "AI_1999999999_sell",
+        },
+        venue="binance",
+        symbol="TAOUSDC",
+        now_ts=now_s,
+        order_ts_map={"801": real_created_s},
+    )
+    assert norm_cid_fallback is not None
+    assert norm_cid_fallback["created_ts"] == pytest.approx(real_created_s)
+    assert norm_cid_fallback["age_min"] == pytest.approx(60.0)
+    assert norm_cid_fallback["age"] == "1.0h"
+
+    # 2. Pure invariant: far-future venue timestamp (> now + 60s) is rejected instead of fabricating age 0.0m.
+    norm_future_venue = normalize_open_order(
+        {
+            "orderId": "802",
+            "side": "BUY",
+            "price": "100.0",
+            "origQty": "1.0",
+            "time": (now_s + 7200.0) * 1000.0,
+        },
+        venue="binance",
+        symbol="TAOUSDC",
+        now_ts=now_s,
+        order_ts_map={"802": now_s + 9000.0},
+    )
+    assert norm_future_venue is not None
+    assert "created_ts" not in norm_future_venue
+    assert "age_min" not in norm_future_venue
+    assert "age" not in norm_future_venue
+
+    # 3. Dependent cross-check: slight <=60s clock jitter is still accepted and clamped to 0.0m, while >60s falls back to map.
+    norm_small_jitter = normalize_open_order(
+        {
+            "orderId": "803",
+            "side": "BUY",
+            "price": "100.0",
+            "origQty": "1.0",
+            "time": (now_s + 15.0) * 1000.0,
+        },
+        venue="binance",
+        symbol="TAOUSDC",
+        now_ts=now_s,
+    )
+    assert norm_small_jitter is not None
+    assert norm_small_jitter["age_min"] == pytest.approx(0.0)
+    assert norm_small_jitter["age"] == "0.0m"
+
+    norm_venue_fallback = normalize_open_order(
+        {
+            "orderId": "804",
+            "side": "BUY",
+            "price": "100.0",
+            "origQty": "1.0",
+            "time": (now_s + 5000.0) * 1000.0,
+        },
+        venue="binance",
+        symbol="TAOUSDC",
+        now_ts=now_s,
+        order_ts_map={"804": now_s - 900.0},
+    )
+    assert norm_venue_fallback is not None
+    assert norm_venue_fallback["age_min"] == pytest.approx(15.0)
+    assert norm_venue_fallback["age"] == "15.0m"
+
+
+

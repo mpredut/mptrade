@@ -1987,3 +1987,134 @@ def test_rtrade_whale_flow_and_adjustment_route_per_symbol_venue(monkeypatch):
     assert bin_blocked is True
     assert rtrade._effective_adjustment_fraction("TAOUSDC", 0.004) == pytest.approx(0.006)
 
+
+def test_rtrade_recover_intent_heals_clock_rollback_and_coordinator_heartbeat_honesty(monkeypatch):
+    """Pass #26 invariant + cross-check: recover_intent heals far-future rollback timers and coordinator heartbeat skips all-failing step ticks."""
+    from order_lifecycle import OrderStatus
+
+    # 1. Pure invariant on _LivePairVenue.recover_intent: far-future next_recovery_at & recovery_started_at heal after clock rollback.
+    persisted: list[dict] = []
+    now_s = 1_750_000_000.0
+    venue = rtrade._LivePairVenue.__new__(rtrade._LivePairVenue)
+    venue.symbol = "TAOUSDC"
+    venue._recovery_clock = lambda: now_s
+    venue._intent_id = lambda pid, sd, kd: f"{pid}:{kd}:{sd}"
+    venue._persist_callback = lambda *_a, **_kw: (lambda snap: persisted.append(dict(snap)))
+    venue.current_price = lambda: 300.0
+
+    reconcile_calls: list[dict] = []
+
+    def _fake_reconcile(pending, *, persist):
+        reconcile_calls.append(dict(pending))
+        resolved = {**pending, "order_id": "998877"}
+        persist(resolved)
+        return SimpleNamespace(
+            outcome="open",
+            intent=resolved,
+            status=OrderStatus("open", 0.0, 0.0, 0.0),
+        )
+
+    venue.order_lifecycle = SimpleNamespace(reconcile=_fake_reconcile)
+    pair_rec = {"pair_id": "p-roll", "symbol": "TAOUSDC", "start_side": "BUY", "qty": 1.0, "created_ts": now_s - 60.0}
+
+    # Normal near-future next_recovery_at is still respected.
+    near_stored = {
+        "client_order_id": "cid-near",
+        "side": "BUY",
+        "kind": "limit",
+        "requested_qty": 1.0,
+        "requested_price": 300.0,
+        "recovery_started_at": now_s - 5.0,
+        "next_recovery_at": now_s + 2.0,
+    }
+    with pytest.raises(rtrade._IntentRecoveryPending, match="not due yet"):
+        venue.recover_intent(pair_rec, near_stored)
+    assert reconcile_calls == []
+
+    # Far-future rollback next_recovery_at & recovery_started_at heal immediately instead of wedging forever.
+    rollback_stored = {
+        "client_order_id": "cid-roll",
+        "side": "BUY",
+        "kind": "limit",
+        "requested_qty": 1.0,
+        "requested_price": 300.0,
+        "recovery_started_at": now_s + 7200.0,
+        "next_recovery_at": now_s + 7200.0,
+    }
+    ticket, snap = venue.recover_intent(pair_rec, rollback_stored)
+    assert ticket is not None and ticket.order_id == "998877"
+    assert snap.status == "open"
+    assert len(reconcile_calls) == 1
+    assert reconcile_calls[0]["recovery_started_at"] == pytest.approx(now_s)
+    assert reconcile_calls[0]["next_recovery_at"] == pytest.approx(now_s)
+
+    # 2. Dependent cross-check on _run_coordinator_forever: do not stamp heartbeat when all active coordinators fail step().
+    step_count = {"n": 0}
+    hb_touches: list[float] = []
+
+    class _FlakyCoord:
+        pair_id = "pair-hb"
+        phase = "quoting"
+        tickets = []
+
+        def step(self, now=None):
+            step_count["n"] += 1
+            if step_count["n"] == 1:
+                raise RuntimeError("venue step outage")
+            return SimpleNamespace(
+                terminal=False,
+                pair_id=self.pair_id,
+                phase="quoting",
+                shock=False,
+                fill_latency_sec=None,
+                buy_qty=0.0,
+                sell_qty=0.0,
+                net_qty=0.0,
+                gross_pnl=0.0,
+                fees=0.0,
+                reason=None,
+            )
+
+        def export_state(self):
+            return {"pair_id": self.pair_id, "phase": self.phase}
+
+    fake_store = SimpleNamespace(
+        active=lambda _sym: [{"pair_id": "pair-hb", "symbol": "TAOUSDC", "qty": 1.0, "start_side": "BUY"}],
+        checkpoint_many=lambda _items: None,
+    )
+    fake_venue = SimpleNamespace(
+        recovery_blocked=False,
+        _recovery_blocked_pairs=set(),
+        executor=SimpleNamespace(open_orders=lambda _sym: []),
+        current_price=lambda: 300.0,
+        _set_pair_recovery_blocked=lambda _pid, _b=True: None,
+    )
+
+    ticks = iter([100.0, 105.0, 110.0])
+    sleep_calls = {"n": 0}
+
+    def _stop_after_two(_sec):
+        sleep_calls["n"] += 1
+        if sleep_calls["n"] >= 2:
+            raise SystemExit(0)
+
+    bot = rtrade.TradingBot.__new__(rtrade.TradingBot)
+    bot.symbol = "TAOUSDC"
+    bot.DEFAULT_ADJUSTMENT_PERCENT = 0.004
+    bot.pair_store = fake_store
+
+    monkeypatch.setattr(rtrade, "_LivePairVenue", lambda _sym, pair_store=None: fake_venue)
+    monkeypatch.setattr(bot, "_adopt_pair_record", lambda *_a, **_kw: _FlakyCoord())
+    monkeypatch.setattr(bot, "_cleanup_orphan_rt_orders", lambda *_a, **_kw: False)
+    monkeypatch.setattr(rtrade, "_rtrade_monotonic_time", lambda: next(ticks))
+    monkeypatch.setattr(rtrade, "_touch_rtrade_heartbeat", lambda *, force=False, now=None: hb_touches.append(now))
+    monkeypatch.setattr(rtrade, "_trend_too_strong", lambda _sym: True)
+    monkeypatch.setattr(rtrade.time, "sleep", _stop_after_two)
+
+    with pytest.raises(SystemExit):
+        bot._run_coordinator_forever()
+
+    # Tick 1 (now=100.0) had 1/1 failing coordinator -> NO heartbeat touch; Tick 2 (now=105.0) succeeded -> heartbeat touched!
+    assert hb_touches == [105.0]
+
+

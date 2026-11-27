@@ -393,17 +393,23 @@ def normalize_open_order(
     if cid:
         rec["clientOrderId"] = cid
         rec["client_order_id"] = cid
+    eff_now_s = resolve_now_ts(now_ts)
+    max_valid_ms = (eff_now_s + 60.0) * 1000.0
     ts_ms = extract_timestamp_ms(order, default=None)
+    if ts_ms is not None and not (0.0 < ts_ms <= max_valid_ms):
+        ts_ms = None
     if ts_ms is None and cid:
         if m_ts := _CID_EPOCH_TS_RE.search(str(cid)):
-            ts_ms = normalize_timestamp_ms(m_ts.group(1), default=None)
+            cand_ts = normalize_timestamp_ms(m_ts.group(1), default=None)
+            if cand_ts is not None and 0.0 < cand_ts <= max_valid_ms:
+                ts_ms = cand_ts
     if ts_ms is None and isinstance(order_ts_map, dict):
         for tk in (str(oid) if oid is not None else "", str(cid or ""), str(cid or "").lower()):
             if tk and (mapped_ts := normalize_timestamp_ms(order_ts_map.get(tk), default=None)) is not None:
-                ts_ms = mapped_ts
-                break
+                if 0.0 < mapped_ts <= max_valid_ms:
+                    ts_ms = mapped_ts
+                    break
     if ts_ms is not None and ts_ms > 0:
-        eff_now_s = resolve_now_ts(now_ts)
         age_m = round(max(0.0, (eff_now_s * 1000.0 - ts_ms) / 60000.0), 1)
         rec["created_ts"] = round(ts_ms / 1000.0, 1)
         rec["age_min"] = age_m

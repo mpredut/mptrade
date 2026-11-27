@@ -388,6 +388,9 @@ class _LivePairVenue:
                 return val_f
 
             r_started = _pending_ts("recovery_started_at", "recovery timing")
+            if r_started is not None and r_started > now + 60.0:
+                r_started = now
+                pending["recovery_started_at"] = now
             rec_state = pending.get("recovery_state")
             terminal_state = rec_state in {"absence_confirmed_no_reuse", "horizon_exhausted"}
             newly_exhausted = (
@@ -404,8 +407,12 @@ class _LivePairVenue:
                     f"{kind}:{side} {'recovery horizon is exhausted' if newly_exhausted else 'requires manual reconciliation'}"
                 )
             n_rec = _pending_ts("next_recovery_at", "next recovery time")
-            if n_rec is not None and now < n_rec:
-                raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
+            if n_rec is not None:
+                max_next_delay = max(RTRADE_PAIR_POLL_SEC, 1.0) + 60.0
+                if n_rec > now + max_next_delay:
+                    pending["next_recovery_at"] = now
+                elif now < n_rec:
+                    raise _IntentRecoveryPending(f"{kind}:{side} reconciliation is not due yet")
 
         retained = dict(pending)
 
@@ -1465,13 +1472,9 @@ class TradingBot:
                     print(f"[{self.symbol}] RECOVERY UNBLOCKED: all pairs clear, resuming trading.")
                     recovery_blocked_since = None
 
-                if not is_recovery_blocked:
-                    _touch_rtrade_heartbeat(now=now)
-                    if now - last_active_summary_log >= 120.0:
-                        last_active_summary_log = now
-                        print(f"[{self.symbol}] health: active rounds={len(active)} heartbeat touched.")
-
                 survivors, checkpoints = [], []
+                active_before = len(active)
+                stepped_ok = 0
                 for coordinator in active:
                     try:
                         outcome = coordinator.step(now=now)
@@ -1479,6 +1482,7 @@ class TradingBot:
                         print(f"[{self.symbol}] pair={coordinator.pair_id} step error: {step_exc}")
                         survivors.append(coordinator)
                         continue
+                    stepped_ok += 1
                     export_state = getattr(coordinator, "export_state", None)
                     if callable(export_state):
                         checkpoints.append((coordinator.pair_id, export_state(), outcome.terminal))
@@ -1497,6 +1501,12 @@ class TradingBot:
                         survivors.append(coordinator)
                 pair_store.checkpoint_many(checkpoints)
                 active = survivors
+
+                if not is_recovery_blocked and (active_before == 0 or stepped_ok > 0):
+                    _touch_rtrade_heartbeat(now=now)
+                    if now - last_active_summary_log >= 120.0:
+                        last_active_summary_log = now
+                        print(f"[{self.symbol}] health: active rounds={len(active)} heartbeat touched.")
 
                 can_start = (
                     not recovery_blocked

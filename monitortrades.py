@@ -457,8 +457,23 @@ def _load_mt_state(now_curr: float | None = None):
         raw_reentry = data.get("reentry_state")
         if isinstance(raw_reentry, dict):
             for s_name, state in raw_reentry.items():
-                if isinstance(state, dict) and (norm_s := _mt_state_symbol_key(s_name)):
-                    _REENTRY_STATE[norm_s] = state
+                if not isinstance(state, dict) or not (norm_s := _mt_state_symbol_key(s_name)):
+                    continue
+                st_clean = dict(state)
+                if "started_at" in st_clean and st_clean.get("started_at") is not None:
+                    started_r = safe_pos_float(st_clean.get("started_at"), default=None)
+                    if started_r is None:
+                        continue
+                    if started_r > now_curr:
+                        st_clean["started_at"] = now_curr
+                        started_r = now_curr
+                    if (now_curr - started_r) >= 7 * 86400:
+                        continue
+                if "sell_time" in st_clean and st_clean.get("sell_time") is not None:
+                    st_sell = safe_pos_float(st_clean.get("sell_time"), default=None)
+                    if st_sell is None or st_sell > now_curr + 60.0 or (now_curr - st_sell) >= 7 * 86400:
+                        continue
+                _REENTRY_STATE[norm_s] = st_clean
         raw_exit_kind = data.get("last_exit_kind")
         if isinstance(raw_exit_kind, dict):
             for s_name, kind in raw_exit_kind.items():
