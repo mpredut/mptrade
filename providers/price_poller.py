@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import asyncio
 import builtins
 import concurrent.futures as _futures
+from dataclasses import dataclass
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -13,6 +14,7 @@ import websockets as _websockets
 
 from botcore import (
     PRICE_FALLBACK_HTTP_DEADLINE_SEC,
+    PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
     _parse_bool_flag,
     clean_scalar_str,
@@ -49,8 +51,10 @@ _NB_FETCH_DEADLINE_SEC = PRICE_FALLBACK_HTTP_DEADLINE_SEC
 
 __all__ = [
     "HyperliquidPriceStream",
+    "InFlightRestSlot",
     "KrakenPriceStream",
     "NonBinanceTrendPoller",
+    "NonBlockingRestSlotTracker",
     "VenuePriceStreamBase",
     "_NB_FETCH_DEADLINE_SEC",
     "_NonBinanceTrendPoller",
@@ -460,19 +464,150 @@ def fetch_price_with_deadline(
 _fetch_price_with_deadline = fetch_price_with_deadline
 
 
+@dataclass(slots=True)
+class InFlightRestSlot:
+    """Single per-symbol in-flight REST fallback request tracked without blocking poll loops."""
+
+    future: _futures.Future
+    submit_mono: float
+    submit_wall_ts: float
+    meta: Any = None
+
+
+class NonBlockingRestSlotTracker:
+    """Thread-safe SSOT tracker for non-blocking per-symbol REST fallback slots.
+
+    Guarantees at most one active REST request per symbol without blocking poll loops on a
+    short deadline: loops revisit slots non-blockingly, harvest completed results or real
+    socket errors, and evict/reset genuinely wedged requests only after ``hard_timeout_sec``.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots: dict[str, InFlightRestSlot] = {}
+
+    @property
+    def slots(self) -> dict[str, InFlightRestSlot]:
+        return self._slots
+
+    def active_symbols(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._slots.keys())
+
+    def has_active(self) -> bool:
+        with self._lock:
+            return bool(self._slots)
+
+    def has_done(self) -> bool:
+        with self._lock:
+            return any(slot.future.done() for slot in self._slots.values())
+
+    def next_hard_timeout_remaining(
+        self, *, now_mono: float, hard_timeout_sec: float
+    ) -> Optional[float]:
+        with self._lock:
+            if not self._slots:
+                return None
+            return min(
+                max(0.0, (slot.submit_mono + hard_timeout_sec) - now_mono)
+                for slot in self._slots.values()
+            )
+
+    def inspect_and_harvest(
+        self,
+        symbol: str,
+        *,
+        now_mono: float,
+        hard_timeout_sec: float,
+    ) -> tuple[str, Any, Optional[InFlightRestSlot]]:
+        """Inspect ``symbol``'s slot without blocking.
+
+        Returns ``(state, payload_or_exc, slot)`` where ``state`` is one of:
+        ``IDLE``, ``IN_FLIGHT``, ``HARD_TIMEOUT``, ``DONE_OK``, ``DONE_ERR``, ``DONE_CANCELLED``.
+        """
+        with self._lock:
+            slot = self._slots.get(symbol)
+            if slot is None:
+                return "IDLE", None, None
+            if not slot.future.done():
+                if (now_mono - slot.submit_mono) >= hard_timeout_sec:
+                    self._slots.pop(symbol, None)
+                    slot.future.cancel()
+                    return "HARD_TIMEOUT", None, slot
+                return "IN_FLIGHT", None, slot
+            self._slots.pop(symbol, None)
+        if slot.future.cancelled():
+            return "DONE_CANCELLED", None, slot
+        try:
+            return "DONE_OK", slot.future.result(), slot
+        except Exception as exc:  # noqa: BLE001
+            return "DONE_ERR", exc, slot
+
+    def submit(
+        self,
+        symbol: str,
+        pool: _futures.ThreadPoolExecutor,
+        fn: Callable[[], Any],
+        *,
+        now_mono: float,
+        now_wall_ts: float,
+        meta: Any = None,
+        on_done: Optional[Callable[[_futures.Future], None]] = None,
+    ) -> Optional[InFlightRestSlot]:
+        """Submit ``fn`` for ``symbol`` if idle; returns the new slot or ``None`` if already active."""
+        with self._lock:
+            existing = self._slots.get(symbol)
+            if existing is not None and not existing.future.done():
+                return None
+            fut = pool.submit(fn)
+            slot = InFlightRestSlot(
+                future=fut,
+                submit_mono=now_mono,
+                submit_wall_ts=now_wall_ts,
+                meta=meta,
+            )
+            self._slots[symbol] = slot
+        if callable(on_done):
+            fut.add_done_callback(on_done)
+        return slot
+
+    def clear(self) -> None:
+        with self._lock:
+            for slot in self._slots.values():
+                slot.future.cancel()
+            self._slots.clear()
+
+
 class NonBinanceTrendPoller:
     """Own the non-Binance WebSocket streams, fallback poller thread, and executor lifecycle."""
 
-    def __init__(self, thread, pool, stop_event, ws_streams=None, *, cpm=None, delegated_symbols=()):
+    def __init__(
+        self,
+        thread,
+        pool,
+        stop_event,
+        ws_streams=None,
+        *,
+        cpm=None,
+        delegated_symbols=(),
+        wake_event: Optional[threading.Event] = None,
+        slot_tracker: Optional[NonBlockingRestSlotTracker] = None,
+    ):
         self.thread = thread
         self.pool = pool
         self.stop_event = stop_event
         self.ws_streams = tuple(ws_streams or ())
         self._cpm = cpm
         self._delegated_symbols = tuple(delegated_symbols or ())
+        self._wake_event = wake_event
+        self._slot_tracker = slot_tracker
 
     def request_stop(self) -> None:
         self.stop_event.set()
+        if self._wake_event is not None:
+            self._wake_event.set()
+        if self._slot_tracker is not None:
+            self._slot_tracker.clear()
         delegated = getattr(self._cpm, "_delegated_poller_symbols", None)
         if isinstance(delegated, set):
             for sym_key in self._delegated_symbols:
@@ -524,15 +659,20 @@ def start_nonbinance_trend_poller(
     provider_names=None,
     *,
     start_ws=None,
+    hard_timeout_sec=None,
 ):
-    """Feed short trends for non-Binance symbols using WebSocket-first + REST fallback."""
+    """Feed short trends for non-Binance symbols using WebSocket-first + non-blocking REST fallback."""
     if isinstance(symbols, (str, bytes, bool, dict)) or not hasattr(symbols, "__iter__"):
         raise ValueError("symbols must be an iterable of symbol strings")
     if provider_names is not None and not hasattr(provider_names, "items"):
         raise ValueError("provider_names must be a mapping")
     symbols = tuple(clean_scalar_str(symbol) or "" for symbol in symbols)
     eff_interval = safe_pos_float(interval_sec, default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
-    eff_deadline = safe_pos_float(fetch_deadline_sec, default=_NB_FETCH_DEADLINE_SEC) or _NB_FETCH_DEADLINE_SEC
+    _ = safe_pos_float(fetch_deadline_sec, default=_NB_FETCH_DEADLINE_SEC)
+    eff_hard_timeout = (
+        safe_pos_float(hard_timeout_sec, default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC)
+        or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
+    )
     bindings = {
         sym_k: (clean_scalar_str(provider_name) or "")
         for symbol, provider_name in (provider_names.items() if provider_names is not None else ())
@@ -587,9 +727,11 @@ def start_nonbinance_trend_poller(
                 ws_streams.append(ws_inst)
 
     pool = _futures.ThreadPoolExecutor(
-        max_workers=max(2, len(symbols)), thread_name_prefix="NBTrendFetch"
+        max_workers=max(3, len(symbols) + 2), thread_name_prefix="NBTrendFetch"
     )
     stop_event = threading.Event()
+    wake_event = threading.Event()
+    slot_tracker = NonBlockingRestSlotTracker()
 
     has_cls_mark_ws = callable(getattr(type(cpm), "mark_symbol_ws_event", None))
 
@@ -598,8 +740,8 @@ def start_nonbinance_trend_poller(
         empty_backoff_ts: dict[str, float] = {}
         err_backoff_until: dict[str, float] = {}
         err_streaks: dict[str, int] = {}
-        in_flight_futs: dict[str, tuple[_futures.Future, bool, float]] = {}
         last_equity_poll_ts: dict[str, float] = {}
+        next_poll_mono: dict[str, float] = {}
         equity_min_gap_sec = max(eff_interval, 6.0)
         equity_ext_gap_sec = max(60.0, equity_min_gap_sec)
         cpm_cache = getattr(cpm, "cache", None)
@@ -631,6 +773,20 @@ def start_nonbinance_trend_poller(
                 delay_s = min(30.0, max(eff_interval * 2.0, 0.5) * (2.0 ** min(streak - 1, 5)))
             err_backoff_until[sym_item] = time.time() + delay_s
             return delay_s
+
+        def _was_ws_fresh_or_preempted(sym_item: str, submit_wall_ts: float) -> bool:
+            ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
+            if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(sym_item), False):
+                return True
+            ws_stream_map = getattr(cpm, "_ws_stream_event_ts_per_symbol", None)
+            if isinstance(ws_stream_map, dict):
+                ws_ts = max(
+                    safe_nonneg_float(ws_stream_map.get(sym_item), default=0.0) or 0.0,
+                    safe_nonneg_float(ws_stream_map.get(sym_item.upper()), default=0.0) or 0.0,
+                )
+                if ws_ts >= submit_wall_ts:
+                    return True
+            return False
 
         def _apply_fetched_price(sym_item: str, raw_px: Any, *, is_eq: bool) -> None:
             pf = safe_pos_float(raw_px, default=None)
@@ -668,39 +824,52 @@ def start_nonbinance_trend_poller(
             return None
 
         while not stop_event.is_set():
-            pending_polls: list[tuple[str, str, bool, bool]] = []
+            wake_event.clear()
+            now_mono = time.monotonic()
+            now_ts = time.time()
             for s in symbols:
                 if stop_event.is_set():
                     break
-                if (prev_entry := in_flight_futs.get(s)) is not None:
-                    prev_fut, prev_is_eq, prev_sub_ts = prev_entry
-                    if not prev_fut.done():
+                state, res_val, slot = slot_tracker.inspect_and_harvest(
+                    s, now_mono=now_mono, hard_timeout_sec=eff_hard_timeout
+                )
+                if state == "IN_FLIGHT":
+                    continue
+                if state == "HARD_TIMEOUT":
+                    builtins.print(
+                        f"[NB-trend] {s}: REST hard-timeout >{eff_hard_timeout:.1f}s -- resetting slot"
+                    )
+                elif state == "DONE_ERR":
+                    delay_s = _record_poll_error_backoff(s, res_val)
+                    builtins.print(f"[NB-trend] {s}: {res_val} (backoff {delay_s:.1f}s)")
+                    continue
+                elif state == "DONE_OK" and slot is not None:
+                    if _was_ws_fresh_or_preempted(s, slot.submit_wall_ts):
+                        empty_backoff_ts.pop(s, None)
+                        err_streaks.pop(s, None)
+                        err_backoff_until.pop(s, None)
+                        next_poll_mono[s] = now_mono + eff_interval
                         continue
-                    in_flight_futs.pop(s, None)
-                    if not prev_fut.cancelled():
-                        try:
-                            late_px = prev_fut.result()
-                        except Exception as late_exc:
-                            delay_s = _record_poll_error_backoff(s, late_exc)
-                            builtins.print(f"[NB-trend] {s}: {late_exc} (backoff {delay_s:.1f}s)")
-                            continue
-                        max_late_age = max(15.0, eff_interval * 2.0, eff_deadline * 4.0)
-                        if safe_pos_float(late_px, default=None) is None:
-                            empty_backoff_ts[s] = time.time()
-                        elif (time.time() - prev_sub_ts) <= max_late_age:
-                            _apply_fetched_price(s, late_px, is_eq=prev_is_eq)
-                            continue
+                    if safe_pos_float(res_val, default=None) is None:
+                        empty_backoff_ts[s] = time.time()
+                        continue
+                    if (now_mono - slot.submit_mono) <= eff_hard_timeout:
+                        _apply_fetched_price(s, res_val, is_eq=bool(slot.meta))
+                        next_poll_mono[s] = now_mono + eff_interval
+                        continue
+
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
                 if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(s), False):
+                    continue
+                if now_ts < err_backoff_until.get(s, 0.0):
+                    continue
+                if now_mono < next_poll_mono.get(s, 0.0):
                     continue
                 prov_name = bindings[s.upper()]
                 is_eq = is_equity_venue(prov_name) or is_equity_symbol(s)
                 rth_gate_active = is_rth_gate_enabled(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
-                now_ts = time.time()
-                if now_ts < err_backoff_until.get(s, 0.0):
-                    continue
                 last_empty = empty_backoff_ts.get(s, 0.0)
                 market_open = not rth_gate_active or is_symbol_market_open(s, now_ts)
                 is_ext_open = bool(is_eq and rth_gate_active and not market_open and is_us_extended_hours_open(now_ts))
@@ -721,41 +890,51 @@ def start_nonbinance_trend_poller(
                 # during both US RTH and extended hours to prevent multi-minute broker-mark freezes on held tickers
                 # while falling back automatically to the provider's broker mark if the public quote is unavailable.
                 prefer_public_eq = bool(is_eq and (market_open or is_ext_open))
-                pending_polls.append((s, prov_name, is_eq, prefer_public_eq))
 
-            if pending_polls:
-                fut_map = {}
-                submit_ts = time.time()
-                for s_item, prov_item, is_eq_item, use_ext_item in pending_polls:
-                    def _poll_item(_sym=s_item, _prov=prov_item, _ext=use_ext_item):
-                        with live_price_fetch_context():
-                            if _ext:
-                                try:
-                                    return cpm.market_api.get_current_price(
-                                        symbol=_sym, provider_name=_prov, prefer_public_extended=True
-                                    )
-                                except TypeError:
-                                    pass
-                            return cpm.market_api.get_current_price(symbol=_sym, provider_name=_prov)
-                    fut_map[pool.submit(_poll_item)] = (s_item, is_eq_item)
-                done, not_done = _futures.wait(fut_map.keys(), timeout=eff_deadline)
-                for fut in done:
-                    s_done, is_eq_done = fut_map[fut]
-                    try:
-                        _apply_fetched_price(s_done, fut.result(), is_eq=is_eq_done)
-                    except Exception as _e:
-                        delay_s = _record_poll_error_backoff(s_done, _e)
-                        builtins.print(f"[NB-trend] {s_done}: {_e} (backoff {delay_s:.1f}s)")
-                for fut in not_done:
-                    fut.cancel()
-                    s_slow, is_eq_slow = fut_map[fut]
-                    if not fut.done():
-                        in_flight_futs[s_slow] = (fut, is_eq_slow, submit_ts)
-                    builtins.print(
-                        f"[NB-trend] {s_slow}: fetch BLOCKED >{eff_deadline}s "
-                        f"(poll deadline -- probably DNS or the network) -- skipping, retrying next cycle"
+                def _poll_item(_sym=s, _prov=prov_name, _ext=prefer_public_eq):
+                    with live_price_fetch_context():
+                        if _ext:
+                            try:
+                                return cpm.market_api.get_current_price(
+                                    symbol=_sym, provider_name=_prov, prefer_public_extended=True
+                                )
+                            except TypeError:
+                                pass
+                        return cpm.market_api.get_current_price(symbol=_sym, provider_name=_prov)
+
+                if (
+                    slot_tracker.submit(
+                        s,
+                        pool,
+                        _poll_item,
+                        now_mono=now_mono,
+                        now_wall_ts=now_ts,
+                        meta=is_eq,
+                        on_done=lambda _f: wake_event.set(),
                     )
-            stop_event.wait(eff_interval)
+                    is not None
+                ):
+                    next_poll_mono[s] = now_mono + eff_interval
+
+            if stop_event.is_set():
+                break
+            if slot_tracker.has_done():
+                continue
+            now_after = time.monotonic()
+            wait_s = eff_interval
+            next_ht = slot_tracker.next_hard_timeout_remaining(
+                now_mono=now_after, hard_timeout_sec=eff_hard_timeout
+            )
+            if next_ht is not None:
+                wait_s = min(wait_s, max(0.005, next_ht))
+            active_now = set(slot_tracker.active_symbols())
+            for s in symbols:
+                if s in active_now:
+                    continue
+                due_at = next_poll_mono.get(s, 0.0)
+                if due_at > now_after:
+                    wait_s = min(wait_s, max(0.005, due_at - now_after))
+            wake_event.wait(timeout=wait_s)
 
     t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
     t.start()
@@ -766,6 +945,8 @@ def start_nonbinance_trend_poller(
         ws_streams=ws_streams,
         cpm=cpm,
         delegated_symbols=symbols,
+        wake_event=wake_event,
+        slot_tracker=slot_tracker,
     )
 
 

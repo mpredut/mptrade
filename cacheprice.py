@@ -28,7 +28,7 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
-    PRICE_FALLBACK_HTTP_DEADLINE_SEC,
+    PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
@@ -111,6 +111,7 @@ from providers.price_poller import (  # noqa: F401
     HyperliquidPriceStream,
     KrakenPriceStream,
     NonBinanceTrendPoller as _NonBinanceTrendPoller,
+    NonBlockingRestSlotTracker,
     VenuePriceStreamBase as _VenuePriceStreamBase,
     _NB_FETCH_DEADLINE_SEC,
     fetch_price_with_deadline as _fetch_price_with_deadline,
@@ -2243,7 +2244,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self._price_anchor_confirmations: dict[str, int] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
-        self._in_flight_http_futs: dict[str, Any] = {}
+        self._rest_slot_tracker = NonBlockingRestSlotTracker()
+        self._in_flight_http_futs = self._rest_slot_tracker.slots
         self._first_sleep = True
         self._tick_ipc_lock = threading.Lock()
         self._tick_ipc_stop = threading.Event()
@@ -2599,7 +2601,11 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         with self._fallback_pool_lock:
             pool = self._fallback_pool
             self._fallback_pool = None
-            self._in_flight_http_futs.clear()
+            tracker = getattr(self, "_rest_slot_tracker", None)
+            if tracker is not None:
+                tracker.clear()
+            else:
+                self._in_flight_http_futs.clear()
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
             try:
@@ -2667,6 +2673,18 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         sym_u = str(symbol or "").strip().upper()
         return symbol in delegated or (bool(sym_u) and sym_u in delegated)
 
+    def _was_ws_updated_since(self, symbol: str, since_wall_ts: float) -> bool:
+        """Return True when a real WebSocket tick arrived for ``symbol`` at or after ``since_wall_ts``."""
+        ws_map = getattr(self, "_ws_stream_event_ts_per_symbol", None)
+        if not isinstance(ws_map, dict):
+            return False
+        sym_u = str(symbol or "").strip().upper()
+        ws_ts = max(
+            safe_nonneg_float(ws_map.get(symbol), default=0.0) or 0.0,
+            safe_nonneg_float(ws_map.get(sym_u), default=0.0) or 0.0,
+        )
+        return ws_ts > 0.0 and ws_ts >= since_wall_ts
+
     def _symbol_ws_and_cache_fresh(
         self, symbol: str, *, is_live_daemon_poll: bool, now_ms: Optional[float] = None
     ) -> bool:
@@ -2724,10 +2742,13 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             0.45,
             min(safe_pos_float(self.sync_ts, default=0.8) or 0.8, 0.75),
         )
-        in_flight_map = getattr(self, "_in_flight_http_futs", None)
-        poll_deadline = min(
-            safe_pos_float(PRICE_FALLBACK_HTTP_DEADLINE_SEC, default=1.2) or 1.2,
-            1.2,
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        hard_timeout_sec = (
+            safe_pos_float(
+                getattr(self, "_rest_hard_timeout_sec", None),
+                default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
+            )
+            or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
         )
 
         def _apply_remote_items(sym_done: str, new_items: Any, is_rth_done: bool) -> None:
@@ -2741,48 +2762,67 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             elif is_rth_done:
                 self._rth_empty_backoff_ts[sym_done] = _now_time()
 
-        harvested_syms: set[str] = set()
-        if is_live_daemon_poll and isinstance(in_flight_map, dict) and in_flight_map:
-            completed_late: list[tuple[str, Any, bool, float]] = []
-            with self._fallback_pool_lock:
-                for sym_k, entry in list(in_flight_map.items()):
-                    prev_fut, prev_is_rth, prev_sub_ts = (
-                        entry if isinstance(entry, tuple) and len(entry) == 3 else (entry, False, 0.0)
-                    )
-                    if prev_fut.done():
-                        in_flight_map.pop(sym_k, None)
-                        completed_late.append((sym_k, prev_fut, prev_is_rth, prev_sub_ts))
-            max_late_age = max(15.0, poll_deadline * 4.0)
-            for sym_k, prev_fut, prev_is_rth, prev_sub_ts in completed_late:
-                if prev_fut.cancelled():
+        def _harvest_slots(target_syms: Sequence[str], *, cur_mono: float, cur_wall: float) -> set[str]:
+            handled: set[str] = set()
+            if tracker is None:
+                return handled
+            for sym_k in target_syms:
+                state, val, slot = tracker.inspect_and_harvest(
+                    sym_k, now_mono=cur_mono, hard_timeout_sec=hard_timeout_sec
+                )
+                if state == "IN_FLIGHT":
+                    handled.add(sym_k)
                     continue
-                try:
-                    late_items = prev_fut.result()
-                except Exception as exc:
-                    self._log_remote_fetch_error("HTTP fetch", sym_k, exc)
+                if state == "HARD_TIMEOUT":
+                    builtins.print(
+                        f"[{self.cls_name}] {sym_k}: REST hard-timeout >{hard_timeout_sec:.1f}s -- resetting slot"
+                    )
+                    continue
+                if state == "DONE_ERR":
+                    self._log_remote_fetch_error("HTTP fetch", sym_k, val)
                     if is_live_net:
                         self._record_empty_http_result(sym_k, ok=False)
+                    handled.add(sym_k)
                     continue
-                if late_items and (prev_sub_ts <= 0.0 or (_now_time() - prev_sub_ts) <= max_late_age):
-                    _apply_remote_items(sym_k, late_items, prev_is_rth)
-                    harvested_syms.add(sym_k)
+                if state == "DONE_OK" and slot is not None:
+                    ws_preempted = self._was_ws_updated_since(
+                        sym_k, slot.submit_wall_ts
+                    ) or self._symbol_ws_and_cache_fresh(
+                        sym_k, is_live_daemon_poll=True, now_ms=cur_wall * 1000.0
+                    )
+                    if ws_preempted:
+                        if is_live_net:
+                            self._record_empty_http_result(sym_k, ok=True)
+                        handled.add(sym_k)
+                        continue
+                    if (cur_mono - slot.submit_mono) <= hard_timeout_sec:
+                        _apply_remote_items(sym_k, val, bool(slot.meta))
+                        handled.add(sym_k)
+            return handled
+
+        now_mono = _monotonic_time()
+        now_wall = _now_time()
+        skip_submit_syms: set[str] = (
+            _harvest_slots(tracker.active_symbols(), cur_mono=now_mono, cur_wall=now_wall)
+            if (is_live_daemon_poll and tracker is not None and tracker.has_active())
+            else set()
+        )
 
         pending_polls: list[tuple[str, Any, bool]] = []
-        now_ms_scan = _now_time() * 1000.0
+        now_ms_scan = now_wall * 1000.0
         for symbol in list(self.symbols):
-            if symbol in harvested_syms or self._is_delegated_poller_symbol(symbol):
+            if symbol in skip_submit_syms or self._is_delegated_poller_symbol(symbol):
                 continue
             if self._symbol_ws_and_cache_fresh(
                 symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
             ):
                 continue
-            if is_live_net and self._is_empty_http_backed_off(symbol, now_ms_scan / 1000.0):
+            if is_live_net and self._is_empty_http_backed_off(symbol, now_wall):
                 continue
             is_rth_sym = self._is_equity_instrument(symbol)
-            if is_rth_sym and self._should_skip_equity_poll_for_session(symbol, _now_time()):
+            if is_rth_sym and self._should_skip_equity_poll_for_session(symbol, now_wall):
                 continue
             if is_live_daemon_poll:
-                now_s = _now_time()
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
                 eff_gap = (
                     max(min_poll_gap, round(self.ws_timeout_sec_for(symbol) * 0.4, 3))
@@ -2794,9 +2834,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     if is_rth_sym
                     else 1_800.0
                 )
-                if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < eff_gap:
+                if last_poll > 0.0 and 0.0 <= (now_wall - last_poll) < eff_gap:
                     cur_ts_ms = self._cached_entry_ts_ms(symbol)
-                    if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < eff_fresh_ms:
+                    if cur_ts_ms is not None and -5_000.0 <= (now_wall * 1000.0 - cur_ts_ms) < eff_fresh_ms:
                         continue
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
@@ -2806,7 +2846,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if not pending_polls:
             return True
 
-        if not is_live_daemon_poll:
+        if not is_live_daemon_poll or tracker is None:
             stop_ev = getattr(self, "_stop_event", None)
             for symbol, startTime, is_rth_sym in pending_polls:
                 if stop_ev is not None and stop_ev.is_set():
@@ -2822,35 +2862,29 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             return True
 
         pool = self._get_or_create_fallback_pool(len(pending_polls))
-        fut_map: dict[Any, tuple[str, Any, bool]] = {}
-        submit_ts = _now_time()
-        with self._fallback_pool_lock:
-            for sym_item, st_item, is_rth_sym in pending_polls:
-                if isinstance(in_flight_map, dict) and (prev_entry := in_flight_map.get(sym_item)) is not None:
-                    prev_fut = prev_entry[0] if isinstance(prev_entry, tuple) else prev_entry
-                    if not prev_fut.done():
-                        continue
-                    in_flight_map.pop(sym_item, None)
-                fut_map[pool.submit(self.get_remote_items, sym_item, st_item)] = (sym_item, st_item, is_rth_sym)
-        if not fut_map:
-            return True
-        done, not_done = _futures.wait(fut_map.keys(), timeout=poll_deadline)
-        for fut in done:
-            sym_done, _, is_rth_done = fut_map[fut]
-            try:
-                new_items = fut.result()
-            except Exception as exc:
-                self._log_remote_fetch_error("HTTP fetch", sym_done, exc)
-                new_items = []
-            _apply_remote_items(sym_done, new_items, is_rth_done)
-        for fut in not_done:
-            fut.cancel()
-            sym_slow, _, is_rth_slow = fut_map[fut]
-            if isinstance(in_flight_map, dict) and not fut.done():
-                with self._fallback_pool_lock:
-                    in_flight_map[sym_slow] = (fut, is_rth_slow, submit_ts)
-            if is_live_net:
-                self._record_empty_http_result(sym_slow, ok=False)
+        submit_mono = _monotonic_time()
+        submit_wall = _now_time()
+        submitted_futs: dict[_futures.Future, str] = {}
+        for sym_item, st_item, is_rth_sym in pending_polls:
+            slot = tracker.submit(
+                sym_item,
+                pool,
+                lambda _s=sym_item, _st=st_item: self.get_remote_items(_s, _st),
+                now_mono=submit_mono,
+                now_wall_ts=submit_wall,
+                meta=is_rth_sym,
+            )
+            if slot is not None:
+                submitted_futs[slot.future] = sym_item
+        if submitted_futs:
+            micro_wait = min(0.05, max(0.01, PRICE_STREAM_POLL_INTERVAL_SEC * 0.1))
+            done_now, _ = _futures.wait(submitted_futs.keys(), timeout=micro_wait)
+            if done_now:
+                _harvest_slots(
+                    [submitted_futs[f] for f in done_now],
+                    cur_mono=_monotonic_time(),
+                    cur_wall=_now_time(),
+                )
         return True
 
     def get_remote_items(self, symbol, startTime):
@@ -2899,6 +2933,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         self.push_price(symbol, price, ts_ms=ts_ms)
 
     def _should_poll(self):
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_active():
+            return True
         if not self._ws_is_healthy():
             return True
         if not self._is_live_daemon_poll_mode():
@@ -2919,6 +2956,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             base_wait = 0.8
         if not self.save_state or base_wait > 5.0:
             return base_wait
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_done():
+            return min(base_wait, 0.02)
         persisted_snap_ts = safe_nonneg_int(
             getattr(self, "_last_persisted_snapshot_max_ts", 0), default=0
         ) or 0

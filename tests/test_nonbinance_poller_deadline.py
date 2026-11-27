@@ -630,11 +630,12 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             poller_rl.stop(timeout=2.0)
 
-    def test_cpm_fallback_deduplicates_in_flight_timeouts_and_backs_off(self):
-        """CacheCurrentPriceManager live fallback pool must not pile up duplicate hung futures and must back off timed-out symbols."""
+    def test_cpm_fallback_nonblocking_dedup_ws_preemption_and_hard_timeout_reset(self):
+        """CacheCurrentPriceManager live fallback must never block on slow HTTP, never apply false backoff while in-flight, let WS preempt stale REST, and reset wedged slots after hard timeout."""
         import threading
 
         release_hang = threading.Event()
+        btc_started = threading.Event()
         calls_by_sym = {"BTCUSDC": 0, "ETHUSDC": 0}
         cpm = cm.CacheCurrentPriceManager(
             sync_ts=1.0,
@@ -649,37 +650,159 @@ class TestFetchDeadline(TempDirTestCase):
         def _fake_remote(symbol, _start_time):
             calls_by_sym[symbol] = calls_by_sym.get(symbol, 0) + 1
             if symbol == "BTCUSDC":
+                btc_started.set()
                 release_hang.wait(timeout=5.0)
                 return [[int(time.time() * 1000), 60000.0]]
             return [[int(time.time() * 1000), 1700.0]]
 
         cpm.get_remote_items = _fake_remote
-        orig_deadline = cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC
-        cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC = 0.08
         try:
+            # 1. Non-blocking micro-wait (~0.05s): fast ETHUSDC is harvested immediately in the same call,
+            #    while slow BTCUSDC stays deduplicated in flight with ZERO premature backoff.
+            t0 = time.monotonic()
             self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertLess(time.monotonic() - t0, 0.25)
+            self.assertTrue(btc_started.wait(timeout=2.0))
             self.assertEqual(calls_by_sym["BTCUSDC"], 1)
             self.assertEqual(calls_by_sym["ETHUSDC"], 1)
+            self.assertAlmostEqual(cpm.cache["ETHUSDC"][0][1], 1700.0)
             self.assertIn("BTCUSDC", cpm._in_flight_http_futs)
-            self.assertIn("BTCUSDC", cpm._empty_http_backoff_ts)
+            self.assertNotIn("ETHUSDC", cpm._in_flight_http_futs)
+            self.assertNotIn("BTCUSDC", cpm._empty_http_backoff_ts)
+            self.assertTrue(cpm._should_poll())
 
-            # Immediate second cycle while BTCUSDC is still hanging must NOT submit a second BTCUSDC call.
+            # Immediate revisit while BTCUSDC is still hanging must NOT submit a second BTCUSDC call.
             self.assertTrue(cpm.query_remote_and_update_cache())
             self.assertEqual(calls_by_sym["BTCUSDC"], 1)
 
-            # Once the in-flight BTCUSDC future completes, the next cycle harvests its price and clears premature backoff without re-polling.
+            # 2. Once BTCUSDC finishes, _next_sync_wait_sec() wakes immediately and the next cycle harvests its price without re-polling.
             release_hang.set()
-            fut_entry = cpm._in_flight_http_futs["BTCUSDC"]
-            (fut_entry[0] if isinstance(fut_entry, tuple) else fut_entry).result(timeout=2.0)
+            cpm._in_flight_http_futs["BTCUSDC"].future.result(timeout=2.0)
+            self.assertLessEqual(cpm._next_sync_wait_sec(), 0.03)
             self.assertTrue(cpm.query_remote_and_update_cache())
             self.assertEqual(calls_by_sym["BTCUSDC"], 1)
             self.assertNotIn("BTCUSDC", cpm._in_flight_http_futs)
             self.assertNotIn("BTCUSDC", cpm._empty_http_backoff_ts)
             self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 60000.0)
+
+            # 3. WS preemption: if a real WS tick arrives while REST is in flight, WS price wins and older REST is discarded.
+            release_ws_race = threading.Event()
+            cpm._last_http_poll_ts_per_symbol.clear()
+            cpm.get_remote_items = lambda sym, _st: (
+                release_ws_race.wait(timeout=5.0),
+                [[int(time.time() * 1000), 58000.0]],
+            )[1] if sym == "BTCUSDC" else [[int(time.time() * 1000), 1705.0]]
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertIn("BTCUSDC", cpm._in_flight_http_futs)
+            ws_now_ms = int(time.time() * 1000) + 50
+            cpm.on_items_update("BTCUSDC", [[ws_now_ms, 61500.0]])
+            release_ws_race.set()
+            cpm._in_flight_http_futs["BTCUSDC"].future.result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 61500.0)
+            self.assertNotIn("BTCUSDC", cpm._in_flight_http_futs)
+
+            # 4. Hard-timeout reset: a truly wedged REST call exceeding _rest_hard_timeout_sec is evicted and retried fresh.
+            wedged_ev = threading.Event()
+            retry_calls = [0]
+
+            def _wedged_then_ok(sym, _st):
+                if sym != "BTCUSDC":
+                    return [[int(time.time() * 1000), 1710.0]]
+                retry_calls[0] += 1
+                if retry_calls[0] == 1:
+                    wedged_ev.wait(timeout=5.0)
+                    return [[int(time.time() * 1000), 50000.0]]
+                return [[int(time.time() * 1000), 62200.0]]
+
+            cpm._ws_last_event_ts_per_symbol.clear()
+            cpm._ws_stream_event_ts_per_symbol.clear()
+            cpm._last_http_poll_ts_per_symbol.clear()
+            cpm._rest_hard_timeout_sec = 0.08
+            cpm.get_remote_items = _wedged_then_ok
+            try:
+                self.assertTrue(cpm.query_remote_and_update_cache())
+                self.assertIn("BTCUSDC", cpm._in_flight_http_futs)
+                time.sleep(0.11)
+                # Exceeded hard timeout -> evicts wedged slot #1 and immediately submits & harvests fresh retry #2.
+                self.assertTrue(cpm.query_remote_and_update_cache())
+                if "BTCUSDC" in cpm._in_flight_http_futs:
+                    cpm._in_flight_http_futs["BTCUSDC"].future.result(timeout=2.0)
+                    self.assertTrue(cpm.query_remote_and_update_cache())
+                self.assertEqual(retry_calls[0], 2)
+                self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 62200.0)
+            finally:
+                wedged_ev.set()
         finally:
-            cacheprice.PRICE_FALLBACK_HTTP_DEADLINE_SEC = orig_deadline
             release_hang.set()
             cpm._shutdown_fallback_pool()
+
+    def test_poller_ws_preemption_and_hard_timeout_reset(self):
+        """NonBinanceTrendPoller must discard stale REST results preempted by WS and reset genuinely wedged REST slots on hard_timeout_sec."""
+        import threading
+
+        # 1. WS preemption: while REST is in flight, real WS updates HYPEUSD -> slow REST result must NOT overwrite WS.
+        release_rest = threading.Event()
+        ws_healthy = [False]
+        pushed = []
+
+        class _SlowRestApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                release_rest.wait(timeout=5.0)
+                return 40.0
+
+        cpm_ws = _StubCpm(_SlowRestApi(), pushed=pushed)
+        cpm_ws.is_real_ws_healthy = lambda _s: ws_healthy[0]
+        cpm_ws._ws_stream_event_ts_per_symbol = {}
+        poller_ws = cm._start_nonbinance_trend_poller(
+            cpm_ws,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            time.sleep(0.06)
+            ws_healthy[0] = True
+            cpm_ws._ws_stream_event_ts_per_symbol["HYPEUSD"] = time.time()
+            release_rest.set()
+            time.sleep(0.15)
+            self.assertEqual(pushed, [])
+        finally:
+            release_rest.set()
+            poller_ws.stop(timeout=2.0)
+
+        # 2. Hard-timeout reset: wedged call #1 is evicted after hard_timeout_sec and fresh call #2 recovers HYPEUSD.
+        wedged_ev = threading.Event()
+        pushed_ht = []
+        ht_calls = [0]
+
+        class _WedgedOnceApi:
+            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
+                ht_calls[0] += 1
+                if ht_calls[0] == 1:
+                    wedged_ev.wait(timeout=5.0)
+                    return 10.0
+                return 77.5
+
+        cpm_ht = _StubCpm(_WedgedOnceApi(), pushed=pushed_ht)
+        poller_ht = cm._start_nonbinance_trend_poller(
+            cpm_ht,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            hard_timeout_sec=0.12,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not pushed_ht:
+                time.sleep(0.03)
+            self.assertGreaterEqual(ht_calls[0], 2)
+            self.assertTrue(any(s == "HYPEUSD" and p == 77.5 for s, p in pushed_ht))
+        finally:
+            wedged_ev.set()
+            poller_ht.stop(timeout=2.0)
 
     def test_poller_harvests_late_valid_price_and_late_429_backoff(self):
         """Slow responses exceeding fetch_deadline_sec must still apply valid prices and record 429 backoff on late exceptions."""
