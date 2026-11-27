@@ -123,7 +123,7 @@ def cleanup_stale_staging_siblings(
                 continue
             cand_path = os.path.join(directory, entry)
             try:
-                if (now_s - os.path.getmtime(cand_path)) < max_age_sec:
+                if -60.0 <= (now_s - os.path.getmtime(cand_path)) < max_age_sec:
                     continue
                 if dirs_only:
                     if os.path.isdir(cand_path):
@@ -657,13 +657,13 @@ def read_tail_lines(
 
 def _extract_jsonl_record_ts_ms(rec: Any) -> float | None:
     item = rec.get("i") if isinstance(rec, dict) and "i" in rec else rec
+    val: float | None = None
     if isinstance(item, (list, tuple)) and item:
-        raw_t = item[0]
+        val = safe_pos_float(item[0], default=None)
     elif isinstance(rec, dict):
-        raw_t = rec.get("ts_ms") or rec.get("ts") or rec.get("timestamp")
-    else:
-        return None
-    val = safe_pos_float(raw_t, default=None)
+        for cand in (rec.get("ts_ms"), rec.get("ts"), rec.get("timestamp")):
+            if (val := safe_pos_float(cand, default=None)) is not None:
+                break
     if val is None:
         return None
     return val * 1000.0 if val < 1e11 else val

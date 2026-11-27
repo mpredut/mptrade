@@ -903,7 +903,7 @@ def _clean_stale_staging_in_dir(
             try:
                 if os.path.isdir(item_path) and not os.path.islink(item_path):
                     shutil.rmtree(item_path, ignore_errors=True)
-                elif (now - os.path.getmtime(item_path)) >= min_file_age_sec:
+                elif not (-60.0 <= (now - os.path.getmtime(item_path)) < min_file_age_sec):
                     os.unlink(item_path)
             except OSError:
                 pass

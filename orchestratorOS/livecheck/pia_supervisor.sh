@@ -35,7 +35,7 @@ isp_healthy() { curl -4 -s -m 5 -o /dev/null https://api.binance.com/api/v3/time
 
 prewarm_dns() {
     local now; now=$(date +%s)
-    if [ $((now - last_prewarm)) -ge "$PREWARM_INTERVAL" ]; then
+    if [ "$now" -lt "$last_prewarm" ] || [ $((now - last_prewarm)) -ge "$PREWARM_INTERVAL" ]; then
         last_prewarm=$now
         for d in api.binance.com stream.binance.com api.kraken.com api.hyperliquid.xyz live.trading212.com ntfy.sh; do
             timeout 5 getent ahostsv4 "$d" >/dev/null 2>&1 &
@@ -297,7 +297,7 @@ while true; do
             current_restore_interval="$RESTORE_INTERVAL"
         elif [ -n "$REG_DED_DE" ] && [ "$current_reg" != "$REG_DED_DE" ]; then
             now=$(date +%s)
-            if [ $((now - last_restore_attempt)) -ge "$current_restore_interval" ]; then
+            if [ "$now" -lt "$last_restore_attempt" ] || [ $((now - last_restore_attempt)) -ge "$current_restore_interval" ]; then
                 last_restore_attempt=$now
                 prev_reg="$current_reg"
                 if ! dip_endpoint_reachable "$REG_DED_DE"; then

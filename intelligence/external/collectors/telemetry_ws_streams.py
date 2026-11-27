@@ -109,7 +109,7 @@ class BinanceFuturesMarkPriceStream(JsonPublicWsStreamBase):
             "connected": bool(conn),
             "tracked": len(self._symbols),
             "ready": ready,
-            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if last_ts > 0.0 else None,
+            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if 0.0 < last_ts <= eff_now + 60.0 else None,
         }
 
 
@@ -191,7 +191,7 @@ class HyperliquidAssetCtxStream(JsonPublicWsStreamBase):
             "connected": bool(conn),
             "tracked": len(self._coins),
             "ready": ready,
-            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if last_ts > 0.0 else None,
+            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if 0.0 < last_ts <= eff_now + 60.0 else None,
         }
 
 
@@ -332,7 +332,7 @@ class BinanceSpotKline5mStream(JsonPublicWsStreamBase):
             "connected": bool(conn),
             "tracked": len(self._symbols),
             "ready": ready_3bars,
-            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if last_ts > 0.0 else None,
+            "last_msg_age_sec": round(max(0.0, eff_now - last_ts), 1) if 0.0 < last_ts <= eff_now + 60.0 else None,
         }
 
 

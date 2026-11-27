@@ -564,7 +564,7 @@ def make_closed_summary(key: str, rec: dict[str, Any], *, closed_ts: float) -> d
         "v": _norm_venue(rec.get("v")),
         "sym": _norm_symbol(rec.get("sym"), venue=rec.get("v")),
         "state": str(rec.get("state") or OrderLedgerState.FAILED.value),
-        "created_ts": rec.get("created_ts") or closed_ts,
+        "created_ts": safe_pos_float(rec.get("created_ts"), default=None) or round(closed_ts, 3),
         "closed_ts": round(closed_ts, 3),
     }
     for k in ("owner", "side", "type", "kind", "iid", "cid", "vid", "qty", "px", "fq", "avg_px", "fee", "fee_asset", "vst", "reason", "events"):
@@ -1066,7 +1066,9 @@ def ledger_row_to_audit_record(
         return None
     ts_val = safe_pos_float(row.get("closed_ts") if is_closed else row.get("ts"), default=None)
     if ts_val is None:
-        ts_val = safe_pos_float(row.get("updated_ts") or row.get("created_ts"), default=None)
+        ts_val = safe_pos_float(row.get("updated_ts"), default=None)
+    if ts_val is None:
+        ts_val = safe_pos_float(row.get("created_ts"), default=None)
     if ts_val is None:
         return None
 

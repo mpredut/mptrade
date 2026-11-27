@@ -100,7 +100,9 @@ fi
 
 [ "$AUTODEPLOY_MODE" = shadow ] && shadow_report_and_exit "restart python_orchestrator.service"
 
-if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ $(( $(date +%s) - ${last_ts:-0} )) -lt "$COOLDOWN" ]; then
+[[ "${last_ts:-}" =~ ^[0-9]+$ ]] || last_ts=0
+deploy_age=$(( $(date +%s) - last_ts ))
+if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ "$deploy_age" -ge -60 ] && [ "$deploy_age" -lt "$COOLDOWN" ]; then
     log "already deployed $remote_sha within the ${COOLDOWN}s cooldown; skipping"
     exit 0
 fi

@@ -1913,6 +1913,57 @@ def test_order_ledger_pass5_invariants_and_reload_fallback(tmp_path, monkeypatch
     assert "disk_io_timeout" in str(hb_calls[-1].get("error") or "")
 
 
+def test_pass19_order_ledger_truthy_zero_ts_invariants_and_crosscheck():
+    """Pass 19 invariant & cross-check: make_closed_summary and ledger_row_to_audit_record reject truthy '0' timestamps instead of shadowing valid created_ts/closed_ts."""
+    from providers.order_ledger import ledger_row_to_audit_record, make_closed_summary
+    t_created = 1_795_000_100.0
+    t_closed = 1_795_000_250.5
+
+    # 1. Pure invariant: make_closed_summary replaces corrupt "0" / negative created_ts with closed_ts
+    summary_bad = make_closed_summary(
+        "k1",
+        {"v": "binance", "sym": "BTCUSDC", "state": "FILLED", "created_ts": "0"},
+        closed_ts=t_closed,
+    )
+    assert summary_bad["created_ts"] == pytest.approx(t_closed)
+
+    summary_neg = make_closed_summary(
+        "k2",
+        {"v": "binance", "sym": "BTCUSDC", "state": "CANCELED", "created_ts": -10.0},
+        closed_ts=t_closed,
+    )
+    assert summary_neg["created_ts"] == pytest.approx(t_closed)
+
+    summary_ok = make_closed_summary(
+        "k3",
+        {"v": "binance", "sym": "BTCUSDC", "state": "FILLED", "created_ts": t_created},
+        closed_ts=t_closed,
+    )
+    assert summary_ok["created_ts"] == pytest.approx(t_created)
+
+    # 2. Dependent cross-check: ledger_row_to_audit_record recovers created_ts when updated_ts is truthy "0"
+    adapted = ledger_row_to_audit_record(
+        {
+            "v": "hyperliquid",
+            "sym": "HYPEUSDC",
+            "side": "BUY",
+            "state": "FILLED",
+            "vst": "FILLED",
+            "vid": "617441855947",
+            "fq": 2.5,
+            "avg_px": 65.0,
+            "updated_ts": "0",
+            "created_ts": t_created,
+        },
+        is_closed=True,
+    )
+    assert adapted is not None
+    assert adapted["ts"] == pytest.approx(t_created)
+    assert adapted["event"] == "order_terminal"
+    assert adapted["status"] == "closed"
+
+
+
 
 
 

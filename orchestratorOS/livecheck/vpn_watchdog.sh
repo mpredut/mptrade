@@ -251,7 +251,7 @@ $PIA_VERSION by hand from a terminal (or set PIA_ALLOW_HEADLESS_REINSTALL=1 to f
     [ -f "$REINSTALL_MARK" ] && last=$(cat "$REINSTALL_MARK" 2>/dev/null || echo 0)
     [[ "${last:-}" =~ ^[0-9]+$ ]] || last=0
     local age=$(( $(date +%s) - last ))
-    if [ "$age" -lt "$REINSTALL_COOLDOWN" ]; then
+    if [ "$age" -ge -60 ] && [ "$age" -lt "$REINSTALL_COOLDOWN" ]; then
         log "rung 5: SKIPPED (reinstalled $((age/3600))h ago, cooldown $((REINSTALL_COOLDOWN/3600))h)"
         return 1
     fi
@@ -388,7 +388,7 @@ if [ "$FORCE" = 0 ] && [ -f "$BACKOFF_FILE" ]; then
     . "$BACKOFF_FILE" 2>/dev/null || true
     [[ "${NEXT_RETRY:-}" =~ ^[0-9]+$ ]] || NEXT_RETRY=0
     [[ "${CURRENT_BACKOFF:-}" =~ ^[0-9]+$ ]] && [ "$CURRENT_BACKOFF" -gt 0 ] || CURRENT_BACKOFF=30
-    if [ "$NOW" -lt "$NEXT_RETRY" ]; then
+    if [ "$NOW" -lt "$NEXT_RETRY" ] && [ $(( NEXT_RETRY - NOW )) -le 7260 ]; then
         wait_mins=$(( (NEXT_RETRY - NOW) / 60 ))
         log "VPN UNHEALTHY but in exponential backoff. Next retry in ${wait_mins}m. Deferring to polling."
         exit 0

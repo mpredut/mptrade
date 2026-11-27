@@ -4074,7 +4074,7 @@ class CacheBalanceManager(CacheAccountManagerBase):
             loaded = read_json_dict_recovering(self.filename, repair_files=not self.read_only)
             if not isinstance(loaded, dict):
                 return False
-            doc_ts = normalize_epoch_sec(loaded.get("verified_ts") or loaded.get("ts"), default=None)
+            doc_ts = first_epoch_sec(loaded.get("verified_ts"), loaded.get("ts"), default=None)
             doc_max_ms = max(
                 self._scalar_ts_to_ms(loaded.get("ts")),
                 self._scalar_ts_to_ms(loaded.get("verified_ts")),
@@ -4273,7 +4273,7 @@ class CacheBalanceManager(CacheAccountManagerBase):
             data = read_json_dict_recovering(resolved, repair_files=False)
         if not isinstance(data, dict):
             return {}, 0.0, {}
-        doc_ts = normalize_epoch_sec(data.get("verified_ts") or data.get("ts"), default=None)
+        doc_ts = first_epoch_sec(data.get("verified_ts"), data.get("ts"), default=None)
         v_norm = normalize_venue_name(data.get("venue")) or cls._normalize_venue_arg(filename=resolved)
         raw_items = data.get("items") if isinstance(data.get("items"), dict) else {}
         items_out: dict[str, dict[str, Any]] = {}
@@ -4282,7 +4282,7 @@ class CacheBalanceManager(CacheAccountManagerBase):
                 continue
             if (norm := cls.normalize_balance_entry(a_val, default_ts=doc_ts)) is not None:
                 items_out[ak_c] = norm
-        ver_ts = safe_nonneg_float(data.get("verified_ts"), default=0.0) or 0.0
+        ver_ts = normalize_epoch_sec(data.get("verified_ts"), default=0.0) or 0.0
         raw_bd = data.get("breakdown") if isinstance(data.get("breakdown"), dict) else {}
         bd_out: dict[str, dict[str, float]] = {}
         for q_k, q_map in raw_bd.items():
@@ -4329,7 +4329,7 @@ class CacheAssetValueManager(CacheAccountManagerBase):
             allow_iso=True,
         )
         eff_now_s = resolve_now_ts(now_ts)
-        if av_ts_s is not None and eff_now_s is not None:
+        if av_ts_s is not None and eff_now_s is not None and av_ts_s <= eff_now_s + 60.0:
             out["total_value_usdc_age_min"] = round(max(0.0, eff_now_s - av_ts_s) / 60.0, 1)
         return out
 

@@ -410,7 +410,11 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
             tracker = _load_grace_state(is_sim=is_sim, now_ts=now_ts)
             active_grace = tracker.get(sym_key) if isinstance(tracker.get(sym_key), dict) else None
             if active_grace is not None:
-                existing_start = normalize_epoch_sec(active_grace.get("start_ts"), default=-1.0)
+                existing_start = normalize_epoch_sec(
+                    active_grace.get("start_ts"),
+                    default=-1.0,
+                    allow_zero=(now_ts < 1e8),
+                )
                 active_grace["start_ts"] = existing_start
                 if (
                     existing_start < 0.0
@@ -455,7 +459,15 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
                 active_grace["current_price"] = cp_clean
             if bp_clean > 0.0 and active_grace.get("buy_price") is None:
                 active_grace["buy_price"] = bp_clean
-            elapsed = max(0.0, now_ts - safe_pos_float(active_grace.get("start_ts"), now_ts))
+            raw_start_ts = normalize_epoch_sec(
+                active_grace.get("start_ts"),
+                default=None,
+                allow_zero=(now_ts < 1e8),
+            )
+            if raw_start_ts is None or raw_start_ts > now_ts + 60.0:
+                elapsed = self.grace_seconds
+            else:
+                elapsed = max(0.0, now_ts - raw_start_ts)
             meta["grace_elapsed_sec"] = round(elapsed, 1)
             _, prov_tag = _prov_tag(provider, active_grace.get("provider"))
 
@@ -520,7 +532,7 @@ class SmartStopLossGuard(OrderGuardEvaluatorBase):
         if _is_buy_price_changed(grace_info.get("buy_price"), buy_price):
             return False
         price_decrease, lost_threshold = safe_float(price_decrease, 0.0), safe_float(lost_threshold, 0.0)
-        start_ts = normalize_epoch_sec(grace_info.get("start_ts"), default=-1.0)
+        start_ts = normalize_epoch_sec(grace_info.get("start_ts"), default=-1.0, allow_zero=(now_ts < 1e8))
         if start_ts < 0.0 or start_ts > now_ts + 5.0 or (elapsed := max(0.0, now_ts - start_ts)) > 3600.0:
             return False
 

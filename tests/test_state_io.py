@@ -3072,4 +3072,141 @@ def test_pass14_ephemeral_staging_cleanup_throttle_and_append_aware_rsync_invari
     assert (dst / "prices" / "cache_current_price.json").read_text(encoding="utf-8") == '{"items":{"BTCUSDC":[[9,69999.0]]},"seq":2}'
 
 
+def test_pass19_staging_cleanup_jsonl_ts_and_balance_snapshot_invariants(tmp_path):
+    """Pass 19 pure invariants: staging cleanup reaps far-future .tmp, JSONL ts_ms='0' does not shadow ts, and balance/asset-value snapshots resist '0'/ms/future ts."""
+    import cacheaccount as ca
+    import cachepaths as cp
+
+    now_s = time.time()
+    future_s = now_s + 7200.0
+
+    # 1. state_io.cleanup_stale_staging_siblings and cachepaths._cleanup_stale_staging_entries reap corrupt far-future .tmp while keeping fresh .tmp
+    st_dir = tmp_path / "staging"
+    st_dir.mkdir()
+    fresh_tmp = st_dir / ".cache_test.json.1.tmp"
+    future_tmp = st_dir / ".cache_test.json.2.tmp"
+    fresh_tmp.write_text("fresh", encoding="utf-8")
+    future_tmp.write_text("corrupt_future", encoding="utf-8")
+    os.utime(fresh_tmp, (now_s - 5.0, now_s - 5.0))
+    os.utime(future_tmp, (future_s, future_s))
+
+    state_io.cleanup_stale_staging_siblings(str(st_dir), ".cache_test.json.", suffix=".tmp", max_age_sec=300.0)
+    assert fresh_tmp.exists()
+    assert not future_tmp.exists()
+
+    future_tmp_cp = st_dir / ".legacy.tmp"
+    fresh_tmp_cp = st_dir / ".active.tmp"
+    future_tmp_cp.write_text("corrupt_future", encoding="utf-8")
+    fresh_tmp_cp.write_text("fresh", encoding="utf-8")
+    os.utime(future_tmp_cp, (future_s, future_s))
+    os.utime(fresh_tmp_cp, (now_s - 5.0, now_s - 5.0))
+    cp._clean_stale_staging_in_dir(str(st_dir), min_file_age_sec=300.0)
+    assert fresh_tmp_cp.exists()
+    assert not future_tmp_cp.exists()
+
+    # 2. _extract_jsonl_record_ts_ms skips truthy "0" in ts_ms and falls back to ts / timestamp
+    t_sec = 1_795_000_000.0
+    assert state_io._extract_jsonl_record_ts_ms({"ts_ms": "0", "ts": t_sec}) == pytest.approx(t_sec * 1000.0)
+    assert state_io._extract_jsonl_record_ts_ms({"ts_ms": "bad", "ts": "0", "timestamp": t_sec * 1000.0}) == pytest.approx(t_sec * 1000.0)
+    jsonl_p = tmp_path / "span_test.jsonl"
+    jsonl_p.write_text(
+        json.dumps({"ts_ms": "0", "ts": t_sec - 120.0, "v": 1}) + "\n"
+        + json.dumps({"ts_ms": "0", "ts": t_sec, "v": 2}) + "\n",
+        encoding="utf-8",
+    )
+    recs = state_io.read_jsonl_records_since_span(str(jsonl_p), span_ms=600_000.0)
+    assert len(recs) == 2 and recs[-1]["v"] == 2
+
+    # 3. CacheBalanceManager snapshot loading avoids verified_ts="0" shadowing valid ts and normalizes epoch-ms verified_ts
+    bal_p = tmp_path / "cache_balance_binance.json"
+    bal_p.write_text(
+        json.dumps({
+            "venue": "binance",
+            "verified_ts": "0",
+            "ts": t_sec,
+            "items": {"BTC": {"free": 1.5, "locked": 0.0}},
+        }),
+        encoding="utf-8",
+    )
+    items_out, ver_out, _ = ca.CacheBalanceManager.read_venue_balances_snapshot(str(bal_p))
+    assert items_out["BTC"]["ts"] == pytest.approx(t_sec)
+    assert ver_out == 0.0
+
+    mgr = ca.CacheBalanceManager(60, ["BTC"], str(bal_p), read_only=True, venue="binance")
+    assert mgr.cache["BTC"][0]["ts"] == pytest.approx(t_sec)
+
+    bal_ms_p = tmp_path / "cache_balance_kraken.json"
+    bal_ms_p.write_text(
+        json.dumps({
+            "venue": "kraken",
+            "verified_ts": int(t_sec * 1000),
+            "items": {"BTC": {"free": 0.5, "locked": 0.0}},
+        }),
+        encoding="utf-8",
+    )
+    items_ms, ver_ms, _ = ca.CacheBalanceManager.read_venue_balances_snapshot(str(bal_ms_p))
+    assert ver_ms == pytest.approx(t_sec)
+    assert items_ms["BTC"]["ts"] == pytest.approx(t_sec)
+
+    # 4. CacheAssetValueManager.extract_asset_value_summary omits age for corrupt far-future records
+    av_future = ca.CacheAssetValueManager.extract_asset_value_summary(
+        {"t": t_sec + 7200.0, "i": {"total_value_usdc": 20000.0}},
+        now_ts=t_sec,
+    )
+    assert "total_value_usdc_age_min" not in av_future
+    av_valid = ca.CacheAssetValueManager.extract_asset_value_summary(
+        {"t": t_sec - 120.0, "i": {"total_value_usdc": 20000.0}},
+        now_ts=t_sec,
+    )
+    assert av_valid["total_value_usdc_age_min"] == pytest.approx(2.0)
+
+
+def test_pass19_shell_scripts_syntax_and_future_timestamp_guard_crosscheck():
+    """Pass 19 dependent cross-check: autodeploy, vpn_watchdog, and pia_supervisor shell timestamp guards pass bash -n and reject corrupt future/rollback timestamps."""
+    import subprocess
+    repo_root = Path(__file__).resolve().parents[1]
+    scripts = (
+        repo_root / "orchestratorOS" / "admin" / "manage_gitautodeploy.sh",
+        repo_root / "orchestratorOS" / "livecheck" / "vpn_watchdog.sh",
+        repo_root / "orchestratorOS" / "livecheck" / "pia_supervisor.sh",
+    )
+    for sc in scripts:
+        res = subprocess.run(["bash", "-n", str(sc)], capture_output=True, text=True, check=False)
+        assert res.returncode == 0, f"bash -n failed for {sc}: {res.stderr}"
+
+    # Verify extracted guard semantics under corrupt future timestamps, non-numeric values, and clock rollback
+    deploy_txt = scripts[0].read_text(encoding="utf-8")
+    vpn_txt = scripts[1].read_text(encoding="utf-8")
+    pia_txt = scripts[2].read_text(encoding="utf-8")
+    assert '[ "$deploy_age" -ge -60 ] && [ "$deploy_age" -lt "$COOLDOWN" ]' in deploy_txt
+    assert '[ "$age" -ge -60 ] && [ "$age" -lt "$REINSTALL_COOLDOWN" ]' in vpn_txt
+    assert '[ "$NOW" -lt "$NEXT_RETRY" ] && [ $(( NEXT_RETRY - NOW )) -le 7260 ]' in vpn_txt
+    assert '[ "$now" -lt "$last_prewarm" ] || [ $((now - last_prewarm)) -ge "$PREWARM_INTERVAL" ]' in pia_txt
+    assert '[ "$now" -lt "$last_restore_attempt" ] || [ $((now - last_restore_attempt)) -ge "$current_restore_interval" ]' in pia_txt
+
+    probe = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "set -e; "
+            "NOW=1795000000; COOLDOWN=900; "
+            "last_ts=2000000000; deploy_age=$(( NOW - last_ts )); "
+            "! { [ \"$deploy_age\" -ge -60 ] && [ \"$deploy_age\" -lt \"$COOLDOWN\" ]; }; "
+            "last_ts=bad_val; [[ \"${last_ts:-}\" =~ ^[0-9]+$ ]] || last_ts=0; deploy_age=$(( NOW - last_ts )); "
+            "! { [ \"$deploy_age\" -ge -60 ] && [ \"$deploy_age\" -lt \"$COOLDOWN\" ]; }; "
+            "NEXT_RETRY=$(( NOW + 999999 )); "
+            "! { [ \"$NOW\" -lt \"$NEXT_RETRY\" ] && [ $(( NEXT_RETRY - NOW )) -le 7260 ]; }; "
+            "NEXT_RETRY=$(( NOW + 120 )); "
+            "{ [ \"$NOW\" -lt \"$NEXT_RETRY\" ] && [ $(( NEXT_RETRY - NOW )) -le 7260 ]; }; "
+            "last_restore_attempt=$(( NOW + 500 )); current_restore_interval=600; "
+            "{ [ \"$NOW\" -lt \"$last_restore_attempt\" ] || [ $((NOW - last_restore_attempt)) -ge \"$current_restore_interval\" ]; }",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert probe.returncode == 0, f"shell guard cross-check failed: {probe.stderr}"
+
+
+
 

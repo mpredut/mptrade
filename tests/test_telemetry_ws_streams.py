@@ -469,3 +469,115 @@ def test_public_price_stream_per_symbol_staleness_and_kraken_xstock_exclusion(mo
     assert kr._is_price_stream_stale(3000.0) is True
 
 
+def test_pass19_smart_sl_future_start_ts_and_ws_status_invariants_crosscheck(monkeypatch):
+    """Pass 19 invariant & cross-check: telemetry WS status rejects far-future last_msg_ts (> now+60s), and SmartStopLossGuard fails safe on corrupt/future start_ts while normalizing epoch-ms."""
+    from intelligence.external.guards import smart_stop_loss_guard as ssl_mod
+
+    now_s = 1_795_000_000.0
+
+    # 1. Pure invariant: all 3 telemetry WS stream status() reporters return last_msg_age_sec=None for corrupt far-future _last_msg_ts
+    mp_st = BinanceFuturesMarkPriceStream(["BTCUSDT"])
+    hl_st = HyperliquidAssetCtxStream(["HYPE"])
+    kl_st = BinanceSpotKline5mStream(["BTCUSDC"])
+    for st in (mp_st, hl_st, kl_st):
+        st._last_msg_ts = now_s + 7200.0
+        assert st.status(now=now_s)["last_msg_age_sec"] is None
+        st._last_msg_ts = now_s - 12.5
+        assert st.status(now=now_s)["last_msg_age_sec"] == pytest.approx(12.5)
+
+    # 2. Dependent cross-check: SmartStopLossGuard.evaluate handles sim start_ts=0.0 (never clamping elapsed=0),
+    #    normalizes epoch-ms start_ts, and resets corrupt far-future start_ts so stop-loss expires on schedule.
+    from types import SimpleNamespace
+
+    orig_tracker = dict(ssl_mod._GRACE_TRACKER)
+    try:
+        guard = ssl_mod.SmartStopLossGuard(mode="enforce", grace_seconds=90.0)
+        monkeypatch.setattr(ssl_mod, "_send_ntfy_alert", lambda *a, **k: None)
+        supportive_whale = SimpleNamespace(
+            top_traders_long_pct=0.72,
+            taker_buy_sell_ratio=1.35,
+            divergence_regime="neutral",
+        )
+
+        # Case A: relative simulation start_ts=0.0 at now=100.0 (>90s grace) MUST expire and execute stop-loss
+        ssl_mod._GRACE_TRACKER.clear()
+        ssl_mod._GRACE_TRACKER["BTCUSDC"] = {
+            "start_ts": 0.0,
+            "provider": "sim",
+            "buy_price": 70000.0,
+            "current_price": 66300.0,
+        }
+        should_exec_0, reason_0, meta_0 = guard.evaluate(
+            "BTCUSDC",
+            price_decrease=0.052,
+            lost_threshold=0.05,
+            now=100.0,
+            provider="sim",
+            current_price=66300.0,
+            buy_price=70000.0,
+            whale_snapshot=supportive_whale,
+        )
+        assert should_exec_0 is True
+        assert "grace_period_expired" in reason_0
+        assert meta_0["grace_elapsed_sec"] == pytest.approx(100.0)
+
+        # Case B: corrupt far-future start_ts (now_s + 7200s) is purged/reset to bounded grace (never deferred 2 hours!)
+        ssl_mod._GRACE_TRACKER.clear()
+        ssl_mod._GRACE_TRACKER["BTCUSDC"] = {
+            "start_ts": now_s + 7200.0,
+            "provider": "sim",
+            "buy_price": 70000.0,
+            "current_price": 66300.0,
+        }
+        should_exec_f1, _, _ = guard.evaluate(
+            "BTCUSDC",
+            price_decrease=0.052,
+            lost_threshold=0.05,
+            now=now_s,
+            provider="sim",
+            current_price=66300.0,
+            buy_price=70000.0,
+            whale_snapshot=supportive_whale,
+        )
+        assert should_exec_f1 is False
+        assert ssl_mod._GRACE_TRACKER["BTCUSDC"]["start_ts"] == pytest.approx(now_s)
+        should_exec_f2, reason_f2, _ = guard.evaluate(
+            "BTCUSDC",
+            price_decrease=0.052,
+            lost_threshold=0.05,
+            now=now_s + 95.0,
+            provider="sim",
+            current_price=66300.0,
+            buy_price=70000.0,
+            whale_snapshot=supportive_whale,
+        )
+        assert should_exec_f2 is True
+        assert "grace_period_expired" in reason_f2
+
+        # Case C: valid epoch-ms start_ts (30s ago) normalizes cleanly and defers inside 90s grace window
+        ssl_mod._GRACE_TRACKER.clear()
+        ssl_mod._GRACE_TRACKER["BTCUSDC"] = {
+            "start_ts": (now_s - 30.0) * 1000.0,
+            "provider": "sim",
+            "buy_price": 70000.0,
+            "current_price": 66300.0,
+        }
+        should_exec_ms, reason_ms, meta_ms = guard.evaluate(
+            "BTCUSDC",
+            price_decrease=0.052,
+            lost_threshold=0.05,
+            now=now_s,
+            provider="sim",
+            current_price=66300.0,
+            buy_price=70000.0,
+            whale_snapshot=supportive_whale,
+        )
+        assert should_exec_ms is False
+        assert "grace_active" in reason_ms
+        assert meta_ms["grace_elapsed_sec"] == pytest.approx(30.0)
+    finally:
+        ssl_mod._GRACE_TRACKER.clear()
+        ssl_mod._GRACE_TRACKER.update(orig_tracker)
+
+
+
