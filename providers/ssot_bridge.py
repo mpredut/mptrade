@@ -52,19 +52,27 @@ _LIVE_FETCH_LOCAL = threading.local()
 
 
 @contextlib.contextmanager
-def live_price_fetch_context():
+def live_price_fetch_context(*, raise_errors: bool = False):
     """Mark the current thread as performing a live venue price poll for cacheManager."""
     depth = safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0)
+    prev_raise = bool(getattr(_LIVE_FETCH_LOCAL, "raise_errors", False))
     _LIVE_FETCH_LOCAL.depth = depth + 1
+    _LIVE_FETCH_LOCAL.raise_errors = prev_raise or _parse_bool_flag(raise_errors, False)
     try:
         yield
     finally:
         _LIVE_FETCH_LOCAL.depth = max(0, depth)
+        _LIVE_FETCH_LOCAL.raise_errors = prev_raise
 
 
 def is_in_live_price_fetch() -> bool:
     """Return True when called inside a cacheManager remote price poll."""
     return safe_nonneg_int(getattr(_LIVE_FETCH_LOCAL, "depth", 0) or 0, default=0) > 0
+
+
+def should_raise_live_price_errors() -> bool:
+    """Return True when the active cacheManager price poll expects transport/429 errors to propagate."""
+    return is_in_live_price_fetch() and bool(getattr(_LIVE_FETCH_LOCAL, "raise_errors", False))
 
 
 def _clean_fs_path(val: Any) -> Optional[str]:

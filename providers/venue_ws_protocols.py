@@ -232,10 +232,13 @@ class KrakenWsLedgerMixin(VenueWsProtocolInterface):
     @classmethod
     def build_ws_ticker_subscription(cls, pairs: Sequence[str]) -> str:
         """Encode the Kraken v1 public ``ticker`` WebSocket subscription payload."""
+        norm_pairs = cls._iter_symbol_items(pairs)
+        if not norm_pairs:
+            return ""
         return cls.encode_ws_frame(
             {
                 "event": "subscribe",
-                "pair": list(pairs),
+                "pair": list(norm_pairs),
                 "subscription": {"name": "ticker"},
             }
         )
@@ -466,7 +469,14 @@ class HyperliquidWsMixin(VenueWsProtocolInterface):
         known_spot = cls.KNOWN_SPOT_PAIRS.get(base.upper())
         if known_spot and known_spot not in keys:
             keys.append(known_spot)
-        for fallback in (f"{base}/USDC" if base else "", sym_s, base):
+        # Never fall back to bare ``base`` (which maps to the perp mid on Hyperliquid)
+        # when the caller asked for an explicit quote-suffixed spot pair.
+        fallbacks = (
+            (f"{base}/USDC" if base else "", sym_s)
+            if split
+            else (f"{base}/USDC" if base else "", sym_s, base)
+        )
+        for fallback in fallbacks:
             if fallback and fallback not in keys:
                 keys.append(fallback)
         return tuple(keys)

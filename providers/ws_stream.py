@@ -180,7 +180,7 @@ class AsyncReconnectStreamBase(ABC):
         except RuntimeError:
             pass
         while not self._stop_event.is_set():
-            t0 = time.time()
+            t0 = time.monotonic()
             exc = None
             try:
                 await body()
@@ -196,7 +196,7 @@ class AsyncReconnectStreamBase(ABC):
             self._on_session_end(exc)
             if self._stop_event.is_set():
                 break
-            if time.time() - t0 >= self.STABLE_SESSION_SEC:
+            if time.monotonic() - t0 >= self.STABLE_SESSION_SEC:
                 self._retry_delay = WS_RETRY_INITIAL
             _ws_logger.info("WS reconnect in %.1fs", self._retry_delay)
             await self._interruptible_sleep(self._retry_delay)

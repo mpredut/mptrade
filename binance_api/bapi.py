@@ -24,7 +24,7 @@ from providers.order_ohlc_utils import (
     filter_and_normalize_open_orders,
     iter_expired_open_order_ids,
 )
-from providers.ssot_bridge import ProviderSsotBridgeMixin
+from providers.ssot_bridge import ProviderSsotBridgeMixin, should_raise_live_price_errors
 
 load_dotenv()
 
@@ -68,6 +68,8 @@ def update_price(symbol):
             raise ValueError(f"invalid ticker price: {raw_px!r}")
         return price
     except Exception as e:
+        if should_raise_live_price_errors():
+            raise
         print("update_price: An unexpected error occurred: " + str(e))
         return None
 

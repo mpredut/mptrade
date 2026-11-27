@@ -102,6 +102,7 @@ class BinancePriceStream(PublicPriceStreamBase):
             await self._run_with_reconnect(self._connect_and_run)
         finally:
             self._cmd_queue = None
+            self._loop = None
 
     async def _connect_and_run(self) -> None:
         # Wait for symbols here rather than treating the wait as a session. This avoids
@@ -114,6 +115,14 @@ class BinancePriceStream(PublicPriceStreamBase):
             await self._interruptible_sleep(1.0)
         if self._stop_event.is_set() or not current_symbols:
             return
+        # Drain commands queued before this reconnect because ``current_symbols``
+        # already reflects the latest ``_subscribed`` set used in the URL below.
+        if self._cmd_queue is not None:
+            while not self._cmd_queue.empty():
+                try:
+                    self._cmd_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
         streams = "/".join(f"{s.lower()}@ticker" for s in sorted(current_symbols))
         url = f"{WS_BASE_URL}?streams={streams}"
         logger.info("Connecting to combined stream (%d symbols)...", len(current_symbols))

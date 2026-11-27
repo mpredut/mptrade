@@ -59,6 +59,7 @@ from .order_ohlc_utils import (
     resolve_market_flag,
 )
 from .order_status_ssot import classify_venue_order_status
+from .ssot_bridge import should_raise_live_price_errors
 from .strategy_executor import (
     OrderNotFound,
     OrderReconciliationCapabilities,
@@ -285,6 +286,8 @@ class T212Provider(MarketDataProvider):
         try:
             return self.fetch_public_market_price_usd(symbol)
         except Exception as e:
+            if should_raise_live_price_errors():
+                raise
             print(f"[T212] get_current_price fallback {symbol}: {e}")
         return None
 

@@ -2673,29 +2673,31 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
         self, symbol: str, exc: object, *, now_mono: Optional[float] = None
     ) -> float:
         """Record monotonic exponential error backoff (aggressive on HTTP 429/rate-limit)."""
-        until_map = getattr(self, "_err_backoff_until_mono", None)
-        if not isinstance(until_map, dict):
-            until_map = {}
-            self._err_backoff_until_mono = until_map
-        eff_interval = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
-        delay_s = self._record_rest_sync_error_backoff(
-            symbol,
-            exc,
-            base_sec=max(eff_interval * 2.0, 0.5),
-            max_sec=30.0,
-            rate_limit_base_sec=max(15.0, eff_interval * 4.0),
-            rate_limit_max_sec=120.0,
-            max_exp=5,
-            rate_limit_max_exp=3,
-        )
-        ref_mono = _monotonic_time() if now_mono is None else now_mono
-        until_map[symbol] = ref_mono + delay_s
-        return delay_s
+        with self.lock:
+            until_map = getattr(self, "_err_backoff_until_mono", None)
+            if not isinstance(until_map, dict):
+                until_map = {}
+                self._err_backoff_until_mono = until_map
+            eff_interval = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
+            delay_s = self._record_rest_sync_error_backoff(
+                symbol,
+                exc,
+                base_sec=max(eff_interval * 2.0, 0.5),
+                max_sec=30.0,
+                rate_limit_base_sec=max(15.0, eff_interval * 4.0),
+                rate_limit_max_sec=120.0,
+                max_exp=5,
+                rate_limit_max_exp=3,
+            )
+            ref_mono = _monotonic_time() if now_mono is None else now_mono
+            until_map[symbol] = ref_mono + delay_s
+            return delay_s
 
     def _clear_poll_error_backoff(self, symbol: str) -> None:
-        self._clear_rest_sync_error_backoff(symbol)
-        if isinstance(until_map := getattr(self, "_err_backoff_until_mono", None), dict):
-            until_map.pop(symbol, None)
+        with self.lock:
+            self._clear_rest_sync_error_backoff(symbol)
+            if isinstance(until_map := getattr(self, "_err_backoff_until_mono", None), dict):
+                until_map.pop(symbol, None)
 
     def _was_ws_updated_since(
         self, symbol: str, since_wall_ts: float, *, now_wall_ts: Optional[float] = None
@@ -2975,11 +2977,19 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
 
         pool = self._get_or_create_fallback_pool(len(pending_polls))
         on_done_cb = (lambda _f: wake_ev.set()) if wake_ev is not None else None
+        use_raising_fetch = (
+            type(self).get_remote_items is CacheCurrentPriceManager.get_remote_items
+            and "get_remote_items" not in self.__dict__
+        )
         done_syms = tracker.submit_batch_and_wait(
             [
                 (
                     sym_item,
-                    lambda _s=sym_item, _st=st_item: self.get_remote_items(_s, _st),
+                    (
+                        (lambda _s=sym_item, _st=st_item: self._fetch_remote_items(_s, _st, raise_errors=True))
+                        if use_raising_fetch
+                        else (lambda _s=sym_item, _st=st_item: self.get_remote_items(_s, _st))
+                    ),
                     is_rth_sym,
                 )
                 for sym_item, st_item, is_rth_sym in pending_polls
@@ -2994,7 +3004,7 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             _harvest_slots(done_syms, cur_mono=_monotonic_time(), cur_wall=_now_time())
         return True
 
-    def get_remote_items(self, symbol, startTime):
+    def _fetch_remote_items(self, symbol, startTime, *, raise_errors: bool = False):
         try:
             provider_name = self.provider_name_for(symbol)
             now_s = _now_time()
@@ -3002,7 +3012,7 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
                 self._is_equity_instrument(symbol)
                 and (is_us_rth_open(now_s) or is_us_extended_hours_open(now_s))
             )
-            with live_price_fetch_context():
+            with live_price_fetch_context(raise_errors=True):
                 if provider_name is None:
                     if prefer_ext:
                         try:
@@ -3044,8 +3054,13 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             ts_ms = math.trunc(_now_time() * 1000)
             return [[ts_ms, price_val]]
         except Exception as e:
+            if raise_errors:
+                raise
             self._record_poll_error_backoff(symbol, e)
             return self._log_remote_fetch_error("HTTP fetch", symbol, e)
+
+    def get_remote_items(self, symbol, startTime):
+        return self._fetch_remote_items(symbol, startTime, raise_errors=False)
 
     def _persist_items(self, symbol, new_items):
         price, ts_ms = self.extract_price_and_ts(new_items)

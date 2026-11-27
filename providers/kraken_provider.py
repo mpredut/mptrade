@@ -57,6 +57,7 @@ from .order_ohlc_utils import (
     resolve_market_flag,
 )
 from .order_status_ssot import classify_venue_order_status
+from .ssot_bridge import should_raise_live_price_errors
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -366,20 +367,27 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
         return None
 
     _unlisted_xstock_until: dict[str, float] = {}
+    _unlisted_xstock_lock = threading.Lock()
 
     def _fetch_current_price(self, symbol: str) -> Optional[float]:
         eff_sym, is_tok = resolve_kraken_tokenized_pair(symbol)
-        now_s = time.time()
-        if is_tok and now_s < self._unlisted_xstock_until.get(eff_sym, 0.0):
-            return None
+        now_m = time.monotonic()
+        if is_tok:
+            with self._unlisted_xstock_lock:
+                unlisted_until = self._unlisted_xstock_until.get(eff_sym, 0.0)
+            if now_m < unlisted_until:
+                return None
         try:
             return self._client().last_price(eff_sym if is_tok else symbol)
         except Exception as e:  # noqa: BLE001
             err_s = str(e)
             if is_tok and ("Invalid arguments" in err_s or "Unknown asset pair" in err_s):
                 # BY DESIGN: Pre-IPO watchlisted xStocks (e.g. ANTxUSD before listing) back off quietly for 60s.
-                self._unlisted_xstock_until[eff_sym] = now_s + 60.0
+                with self._unlisted_xstock_lock:
+                    self._unlisted_xstock_until[eff_sym] = now_m + 60.0
                 return None
+            if should_raise_live_price_errors():
+                raise
             return self._log_provider_balance_error("Kraken", "price", symbol, e)
 
     def min_order_qty(self, symbol: str) -> float:

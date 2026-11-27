@@ -1637,5 +1637,495 @@ class TestFetchDeadline(TempDirTestCase):
             bal_release.set()
             cacheaccount._venue_refresh_tracker.clear()
 
+    def test_ws_rest_audit_fixes_kraken_heartbeat_staleness_and_cap(self):
+        """Fix #1: Kraken heartbeat refreshes recent quiet ticks without resetting staleness or fabricating stale ticks."""
+        from unittest.mock import patch
+
+        mono = [100.0]
+        received = []
+        sub = SimpleNamespace(on_items_update=lambda s, items: received.append((s, items)))
+        with patch("providers.price_poller.time.monotonic", side_effect=lambda: mono[0]), patch(
+            "providers.ws_stream.time.monotonic", side_effect=lambda: mono[0]
+        ):
+            krk = cm.KrakenPriceStream(["TAOUSD"], stale_reconnect_sec=10.0)
+            krk.subscribe(sub)
+            base_ms = 1_700_000_000_000
+            krk._process_message(
+                json.dumps([43, {"c": ["355.0", "1.0"], "b": ["354.5", "1"], "a": ["355.5", "1"]}, "ticker", "TAO/USD"]),
+                now_ms=base_ms,
+            )
+            self.assertEqual(len(received), 1)
+            self.assertEqual(krk._last_price_mono_by_symbol["TAOUSD"], 100.0)
+
+            # Heartbeat within keepalive cap (<= 5.0s): refreshes subscriber, but does NOT reset staleness mono
+            mono[0] = 102.0
+            krk._process_message(json.dumps({"event": "heartbeat"}), now_ms=base_ms + 2000)
+            self.assertEqual(len(received), 2)
+            self.assertEqual(received[-1][1][0][0], base_ms + 2000)
+            self.assertEqual(krk._last_price_mono_by_symbol["TAOUSD"], 100.0)
+
+            # Heartbeat beyond keepalive cap (> 5.0s): must NOT fabricate fresh ticks
+            mono[0] = 106.0
+            krk._process_message(json.dumps({"event": "heartbeat"}), now_ms=base_ms + 6000)
+            self.assertEqual(len(received), 2)
+
+            # Past stale_reconnect_sec (10.0s since real tick): watchdog MUST fire despite heartbeats
+            mono[0] = 110.5
+            self.assertTrue(krk._is_price_stream_stale(99.0))
+
+    def test_ws_rest_audit_fixes_recv_error_breaks_instead_of_spinning(self):
+        """Fix #2: Unexpected non-ConnectionClosed recv() exception breaks out to reconnect instead of spinning."""
+        import asyncio
+        from unittest.mock import patch
+
+        recv_calls = [0]
+
+        class _BrokenWs:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def send(self, _payload):
+                return None
+
+            async def recv(self):
+                recv_calls[0] += 1
+                raise OSError("network unreachable")
+
+        krk = cm.KrakenPriceStream(["TAOUSD"], stale_reconnect_sec=300.0)
+        with patch("providers.price_poller._websockets.connect", return_value=_BrokenWs()):
+            asyncio.run(krk._connect_and_run())
+        self.assertEqual(recv_calls[0], 1)
+
+    def test_ws_rest_audit_fixes_hl_spot_keys_no_perp_fallback_and_retry(self):
+        """Fix #3: HL spot resolution omits bare PERP fallback for quote-suffixed pairs and retries transient spotMeta misses."""
+        from unittest.mock import patch
+
+        self.assertEqual(HyperliquidProvider.resolve_ws_spot_keys("USOLUSDC"), ("USOL/USDC", "USOLUSDC"))
+        self.assertNotIn("USOL", HyperliquidProvider.resolve_ws_spot_keys("USOLUSDC"))
+        # PERP-only allMids entry ("USOL") must NEVER be substituted for spot pair "USOLUSDC"
+        self.assertEqual(
+            HyperliquidProvider.extract_ws_all_mids_prices(
+                {"channel": "allMids", "data": {"mids": {"USOL": "200.0"}}},
+                ["USOLUSDC"],
+            ),
+            {},
+        )
+
+        spot_pair_calls = [0]
+        resolved_code = [None]
+
+        class _FlakyHlProv:
+            @staticmethod
+            def supports_symbol(_s):
+                return True
+
+            @staticmethod
+            def spot_pair(_s):
+                spot_pair_calls[0] += 1
+                return resolved_code[0]
+
+        fake_api = SimpleNamespace(provider_by_name=lambda name: _FlakyHlProv() if name == "hyperliquid" else None)
+        mono = [100.0]
+        with patch("providers.price_poller.time.monotonic", side_effect=lambda: mono[0]):
+            hl = cm.HyperliquidPriceStream(["USOLUSDC"], market_api=fake_api)
+            keys1 = hl._candidate_mids_keys("USOLUSDC")
+            self.assertEqual(keys1, ("USOL/USDC", "USOLUSDC"))
+            self.assertEqual(spot_pair_calls[0], 1)
+
+            # Within 60s retry cooldown, cached fallback is reused without hammering spotMeta
+            mono[0] = 120.0
+            self.assertEqual(hl._candidate_mids_keys("USOLUSDC"), ("USOL/USDC", "USOLUSDC"))
+            self.assertEqual(spot_pair_calls[0], 1)
+
+            # After 60s cooldown, spotMeta recovers and resolves "@156" permanently
+            resolved_code[0] = "@156"
+            mono[0] = 165.0
+            keys2 = hl._candidate_mids_keys("USOLUSDC")
+            self.assertEqual(keys2[0], "@156")
+            self.assertEqual(spot_pair_calls[0], 2)
+            self.assertNotIn("USOLUSDC", hl._resolved_spot_retry_mono)
+
+            # Subsequent lookups stay cached with no further spot_pair() calls
+            mono[0] = 300.0
+            self.assertEqual(hl._candidate_mids_keys("USOLUSDC")[0], "@156")
+            self.assertEqual(spot_pair_calls[0], 2)
+
+    def test_ws_rest_audit_fixes_rest_429_propagates_to_backoff(self):
+        """Fix #4: HTTP 429/transport errors propagate inside CacheCurrentPriceManager poll to trigger rate-limit backoff while external callers still get None."""
+        from unittest.mock import patch
+        from binance_api import bapi
+        from providers.hyperliquid_provider import _hl_client_module
+        from providers.ssot_bridge import live_price_fetch_context
+        from providers.t212_provider import T212Provider
+
+        HLClient = _hl_client_module().HLClient
+
+        # 1. External callers still get None; live_price_fetch_context(raise_errors=True) re-raises
+        krk_prov = KrakenProvider.__new__(KrakenProvider)
+        krk_prov._client = lambda: SimpleNamespace(
+            last_price=lambda _s: (_ for _ in ()).throw(RuntimeError("HTTP 429 Too Many Requests"))
+        )
+        self.assertIsNone(krk_prov._fetch_current_price("TAOUSD"))
+        with live_price_fetch_context(raise_errors=True):
+            with self.assertRaises(RuntimeError):
+                krk_prov._fetch_current_price("TAOUSD")
+
+        # Pre-IPO unlisted xStock still backs off quietly without raising even in strict poll context
+        krk_unlisted = KrakenProvider.__new__(KrakenProvider)
+        krk_unlisted._client = lambda: SimpleNamespace(
+            last_price=lambda _s: (_ for _ in ()).throw(RuntimeError("EQuery:Unknown asset pair"))
+        )
+        with KrakenProvider._unlisted_xstock_lock:
+            KrakenProvider._unlisted_xstock_until.clear()
+        with live_price_fetch_context(raise_errors=True):
+            self.assertIsNone(krk_unlisted._fetch_current_price("SPCXxUSD"))
+
+        hl_cli = HLClient.__new__(HLClient)
+        hl_cli.info = SimpleNamespace(
+            all_mids=lambda: (_ for _ in ()).throw(RuntimeError("429 Too Many Requests"))
+        )
+        self.assertIsNone(hl_cli._mid_for_key("@107", "spot_mid"))
+        with live_price_fetch_context(raise_errors=True):
+            with self.assertRaises(RuntimeError):
+                hl_cli._mid_for_key("@107", "spot_mid")
+
+        t212_prov = T212Provider.__new__(T212Provider)
+        t212_prov._position = lambda _s: None
+        t212_prov.fetch_public_market_price_usd = lambda _s: (_ for _ in ()).throw(
+            RuntimeError("HTTP 429 Too Many Requests")
+        )
+        self.assertIsNone(t212_prov._fetch_current_price("NVDA_US_EQ"))
+        with live_price_fetch_context(raise_errors=True):
+            with self.assertRaises(RuntimeError):
+                t212_prov._fetch_current_price("NVDA_US_EQ")
+
+        fake_bapi_cli = SimpleNamespace(
+            get_symbol_ticker=lambda symbol: (_ for _ in ()).throw(RuntimeError("HTTP 429 rate limit"))
+        )
+        with patch.object(bapi, "client", fake_bapi_cli):
+            self.assertIsNone(bapi.update_price("BTCUSDC"))
+            with live_price_fetch_context(raise_errors=True):
+                with self.assertRaises(RuntimeError):
+                    bapi.update_price("BTCUSDC")
+
+        # 2. End-to-end daemon CacheCurrentPriceManager poll catches 429 via DONE_ERR and installs >=15s backoff
+        call_count = [0]
+
+        def _failing_price(symbol, provider_name=None):
+            call_count[0] += 1
+            return krk_prov._fetch_current_price(symbol)
+
+        fake_api = SimpleNamespace(get_current_price=_failing_price)
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=0.05,
+            symbols=["TAOUSD"],
+            filename=self._empty_cp_file("cache_current_price_429.json"),
+            ws_manager=None,
+            market_api=fake_api,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+        cpm._ws_startup_grace_until_mono.clear()
+        cpm._ws_last_event_ts_per_symbol["TAOUSD"] = time.time() - 60.0
+        self.addCleanup(lambda: cpm.shutdown(timeout=2.0))
+
+        t_before = time.monotonic()
+        cpm.query_remote_and_update_cache()
+        if "TAOUSD" in cpm._in_flight_http_futs:
+            try:
+                cpm._in_flight_http_futs["TAOUSD"].future.result(timeout=2.0)
+            except Exception:
+                pass
+            cpm.query_remote_and_update_cache()
+        self.assertEqual(call_count[0], 1)
+        backoff_until = cpm._err_backoff_until_mono.get("TAOUSD", 0.0)
+        self.assertGreaterEqual(backoff_until - t_before, 14.0)
+        # Immediate follow-up poll must be suppressed by the active 429 backoff
+        cpm.query_remote_and_update_cache()
+        self.assertEqual(call_count[0], 1)
+
+    def test_ws_rest_audit_fixes_subsecond_throttle_refreshes_ws_health(self):
+        """Fix #5: Sub-second same-price WS throttle refreshes both _ws_stream_event_ts and _ws_last_event_ts."""
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=0.05,
+            symbols=["HYPEUSDC"],
+            filename=self._empty_cp_file("cache_current_price_throttle.json"),
+            ws_manager=None,
+            market_api=_FakeApi(hang=False, price=42.0),
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        self.addCleanup(lambda: cpm.shutdown(timeout=2.0))
+        hl = cm.HyperliquidPriceStream(["HYPEUSDC"])
+        cpm.attach_ws_manager(hl)
+
+        t0_ms = int(time.time() * 1000)
+        hl._notify_subscribers("HYPEUSDC", [[t0_ms, 42.0]])
+        # Age both WS timestamp maps so symbol appears stale
+        stale_ts = time.time() - 60.0
+        cpm._ws_stream_event_ts_per_symbol["HYPEUSDC"] = stale_ts
+        cpm._ws_last_event_ts_per_symbol["HYPEUSDC"] = stale_ts
+        self.assertFalse(cpm._ws_is_healthy("HYPEUSDC"))
+
+        # Second identical-price tick 200ms later hits sub-second throttle -> must refresh BOTH maps
+        hl._notify_subscribers("HYPEUSDC", [[t0_ms + 200, 42.0]])
+        self.assertTrue(cpm.is_real_ws_healthy("HYPEUSDC"))
+        self.assertTrue(cpm._ws_is_healthy("HYPEUSDC"))
+
+    def test_ws_rest_audit_fixes_kraken_empty_pairs_guard(self):
+        """Fix #6: Kraken build_ws_ticker_subscription([]) returns '' and xStock-only stream skips opening a socket."""
+        import asyncio
+        from unittest.mock import patch
+
+        self.assertEqual(KrakenProvider.build_ws_ticker_subscription([]), "")
+        krk = cm.KrakenPriceStream(["SPCXxUSD"])
+        self.assertEqual(krk._build_subscribe_payload(), "")
+        self.assertFalse(krk._has_active_ws_targets())
+
+        connect_calls = [0]
+
+        async def _fake_sleep(_delay):
+            krk._stop_event.set()
+
+        krk._interruptible_sleep = _fake_sleep
+        with patch(
+            "providers.price_poller._websockets.connect",
+            side_effect=lambda *a, **kw: connect_calls.__setitem__(0, connect_calls[0] + 1),
+        ):
+            asyncio.run(krk._connect_and_run())
+        self.assertEqual(connect_calls[0], 0)
+
+        krk.add_symbol("TAOUSD")
+        self.assertTrue(krk._has_active_ws_targets())
+        self.assertIn('"TAO/USD"', krk._build_subscribe_payload())
+
+    def test_ws_rest_audit_fixes_binance_cmd_queue_drain_and_loop_clear(self):
+        """Fix #7: BinancePriceStream drains stale _cmd_queue on reconnect and clears _loop on _main exit."""
+        import asyncio
+        from unittest.mock import patch
+
+        sent_frames = []
+
+        class _FakeBinanceWs:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def send(self, payload):
+                sent_frames.append(payload)
+
+            async def recv(self):
+                await asyncio.sleep(0.05)
+                stream._stop_event.set()
+                raise asyncio.TimeoutError()
+
+        stream = BinancePriceStream(["BTCUSDC"])
+
+        async def _run():
+            stream._loop = asyncio.get_running_loop()
+            stream._cmd_queue = asyncio.Queue()
+            stream._cmd_queue.put_nowait({"method": "UNSUBSCRIBE", "stream": "btcusdc@ticker"})
+            stream._cmd_queue.put_nowait({"method": "SUBSCRIBE", "stream": "ethusdc@ticker"})
+            with patch("binance_api.bapi_ws.websockets.connect", return_value=_FakeBinanceWs()):
+                await stream._connect_and_run()
+            self.assertTrue(stream._cmd_queue.empty())
+
+        asyncio.run(_run())
+        self.assertEqual(sent_frames, [])
+
+        # Verify _main clears both _cmd_queue and _loop on exit
+        stream2 = BinancePriceStream(["BTCUSDC"])
+        stream2._stop_event.set()
+        asyncio.run(stream2._main())
+        self.assertIsNone(stream2._cmd_queue)
+        self.assertIsNone(stream2._loop)
+
+    def test_ws_rest_audit_fixes_reconnect_uses_monotonic_clock(self):
+        """Fix #8: AsyncReconnectStreamBase STABLE_SESSION_SEC uses monotonic clock, ignoring NTP wall jumps."""
+        import asyncio
+        from unittest.mock import patch
+        from providers.ws_stream import AsyncReconnectStreamBase, WS_RETRY_INITIAL
+
+        wall = [1_700_000_000.0]
+        mono = [500.0]
+        sleeps = []
+
+        class _DummyStream(AsyncReconnectStreamBase):
+            STABLE_SESSION_SEC = 60.0
+
+            async def _connect_and_run(self):
+                # Jump wall clock by +120s while monotonic advances only +0.1s
+                wall[0] += 120.0
+                mono[0] += 0.1
+                raise RuntimeError("transient drop")
+
+            async def _interruptible_sleep(self, delay, step=0.2):
+                sleeps.append(delay)
+                if len(sleeps) >= 2:
+                    self._stop_event.set()
+
+        st = _DummyStream()
+        st._retry_delay = 4.0
+        with patch("providers.ws_stream.time.time", side_effect=lambda: wall[0]), patch(
+            "providers.ws_stream.time.monotonic", side_effect=lambda: mono[0]
+        ):
+            asyncio.run(st._run_with_reconnect(st._connect_and_run))
+        # Must NOT reset retry delay to WS_RETRY_INITIAL despite +120s wall jump
+        self.assertEqual(sleeps, [4.0, 8.0])
+
+        # Now advance monotonic by >= 60s -> retry delay MUST reset to WS_RETRY_INITIAL
+        sleeps2 = []
+
+        class _StableStream(AsyncReconnectStreamBase):
+            STABLE_SESSION_SEC = 60.0
+
+            async def _connect_and_run(self):
+                mono[0] += 65.0
+                raise RuntimeError("drop after stable run")
+
+            async def _interruptible_sleep(self, delay, step=0.2):
+                sleeps2.append(delay)
+                self._stop_event.set()
+
+        st2 = _StableStream()
+        st2._retry_delay = 16.0
+        with patch("providers.ws_stream.time.monotonic", side_effect=lambda: mono[0]):
+            asyncio.run(st2._run_with_reconnect(st2._connect_and_run))
+        self.assertEqual(sleeps2, [WS_RETRY_INITIAL])
+
+    def test_ws_rest_audit_fixes_kraken_unlisted_xstock_monotonic_lock(self):
+        """Fix #9: KrakenProvider._unlisted_xstock_until uses lock + monotonic clock immune to wall-clock jumps."""
+        from unittest.mock import patch
+
+        calls = [0]
+        wall = [1_700_000_000.0]
+        mono = [200.0]
+        prov = KrakenProvider.__new__(KrakenProvider)
+
+        def _last_price(_sym):
+            calls[0] += 1
+            raise RuntimeError("EQuery:Unknown asset pair")
+
+        prov._client = lambda: SimpleNamespace(last_price=_last_price)
+        with KrakenProvider._unlisted_xstock_lock:
+            KrakenProvider._unlisted_xstock_until.clear()
+        with patch("providers.kraken_provider.time.time", side_effect=lambda: wall[0]), patch(
+            "providers.kraken_provider.time.monotonic", side_effect=lambda: mono[0]
+        ):
+            self.assertIsNone(prov._fetch_current_price("SPCXxUSD"))
+            self.assertEqual(calls[0], 1)
+
+            # Backward NTP jump must NOT prematurely clear the 60s backoff
+            wall[0] -= 300.0
+            mono[0] += 10.0
+            self.assertIsNone(prov._fetch_current_price("SPCXxUSD"))
+            self.assertEqual(calls[0], 1)
+
+            # After monotonic +61s, retry occurs
+            mono[0] += 55.0
+            self.assertIsNone(prov._fetch_current_price("SPCXxUSD"))
+            self.assertEqual(calls[0], 2)
+
+    def test_ws_rest_audit_fixes_account_bridge_merge_and_poll_backoff(self):
+        """Fix #10: Kraken/HL fills bridges check filled_orders merge failure and poll loop backs off on thread submit failure."""
+        import threading
+        from unittest.mock import patch
+
+        # 1. HL bridge: snapshot merge failure must NOT mark seeded; live merge failure must schedule REST resync
+        hl_ws = cm.HyperliquidPriceStream(["HYPEUSDC"])
+        hl_ws._fills_cache_path = os.path.join(self.tmp, "cache_trade_hl_fail.json")
+        hl_ws._fills_ws_seeded = False
+        hl_ws._last_fills_touch_ms = 0
+        bridge = cacheaccount._HyperliquidAccountTradeBridge(hl_ws)
+        resync_calls = []
+        bridge._schedule_invalidated_fills_resync = lambda syms, path, ts_ms: resync_calls.append((syms, ts_ms)) or True
+
+        with patch.object(cacheaccount, "publish_venue_fills_bundle", return_value=({"items": {}}, None, [], [])):
+            bridge.handle_user_fills({"isSnapshot": True, "fills": []}, ts_ms=1_700_000_000_000)
+            self.assertFalse(hl_ws._fills_ws_seeded)
+            self.assertEqual(hl_ws._last_fills_touch_ms, 0)
+
+            bridge.handle_user_fills(
+                {"isSnapshot": False, "fills": [{"coin": "@107", "px": "42.0", "sz": "1.0", "side": "B", "time": 1_700_000_001_000}]},
+                ts_ms=1_700_000_001_000,
+            )
+            self.assertEqual(len(resync_calls), 1)
+            self.assertEqual(resync_calls[0][0], ("HYPEUSDC",))
+            self.assertEqual(hl_ws._last_fills_touch_ms, 0)
+
+        # 2. Kraken WS loop: _merge_rest raises/fails seed when filled_orders merge returns None
+        import sys
+
+        stop_ev = threading.Event()
+        fake_krk_cli = SimpleNamespace(_private=lambda *a, **kw: {"ledger": {}})
+
+        class _FakeWsApp:
+            def __init__(self, *_a, **_kw):
+                pass
+
+            def run_forever(self, **_kw):
+                stop_ev.set()
+
+        fake_ws_mod = SimpleNamespace(WebSocketApp=_FakeWsApp)
+        logged = []
+        with patch.object(
+            KrakenProvider, "fetch_ledger_fills_by_symbol", return_value={"TAOUSD": []}
+        ), patch.object(
+            cacheaccount, "publish_venue_fills_bundle", return_value=({"items": {"TAOUSD": []}}, None, [], [])
+        ), patch.dict(
+            sys.modules, {"websocket": fake_ws_mod}
+        ), patch.object(
+            cacheaccount, "log", side_effect=lambda msg: logged.append(str(msg))
+        ):
+            cacheaccount.run_kraken_trade_ws_loop(
+                fake_krk_cli,
+                pairs=["TAOUSD"],
+                cache_file=os.path.join(self.tmp, "cache_trade_krk_fail.json"),
+                poll_interval=30.0,
+                backoff_init=5.0,
+                backoff_max=60.0,
+                lookback_sec=3600.0,
+                stop_event=stop_ev,
+            )
+        self.assertTrue(any("filled_orders cache merge failed" in m for m in logged))
+
+        # 3. _run_account_trade_poll_loop: submit_thread() returning None logs and backs off exponentially
+        stop_poll = threading.Event()
+        poll_sleeps = []
+        hb_count = [0]
+
+        def _fake_poll_wait(_ev, delay):
+            poll_sleeps.append(delay)
+            if len(poll_sleeps) >= 2:
+                stop_poll.set()
+                return True
+            return False
+
+        with patch.object(NonBlockingRestSlotTracker, "submit_thread", return_value=None), patch.object(
+            cacheaccount, "_wait_or_sleep", side_effect=_fake_poll_wait
+        ):
+            cacheaccount._run_account_trade_poll_loop(
+                sync_once_fn=lambda: {"items": {}},
+                log_tag="submit_fail_test",
+                poll_interval=0.05,
+                default_poll_sec=0.05,
+                backoff_init=1.0,
+                default_backoff_init=1.0,
+                backoff_max=4.0,
+                default_backoff_max=4.0,
+                heartbeat_fn=lambda **_kw: hb_count.__setitem__(0, hb_count[0] + 1),
+                stop_event=stop_poll,
+            )
+        self.assertEqual(poll_sleeps, [1.0, 2.0])
+        self.assertGreaterEqual(hb_count[0], 3)
+
+
 
 

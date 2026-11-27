@@ -168,7 +168,9 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                 self._last_emit_price.pop(norm_s, None)
         return True
 
-    def _notify_subscribers(self, symbol: str, items) -> None:
+    def _notify_subscribers(
+        self, symbol: str, items, *, update_staleness: bool = True
+    ) -> None:
         ts_ms = None
         px = None
         if (
@@ -180,9 +182,11 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
             ts_ms = safe_pos_int(items[-1][0], default=None)
             px = safe_pos_float(items[-1][1], default=None)
         now_m = time.monotonic()
+        throttled = False
         with self._lock:
-            self._last_price_mono = now_m
-            self._last_price_mono_by_symbol[symbol] = now_m
+            if update_staleness:
+                self._last_price_mono = now_m
+                self._last_price_mono_by_symbol[symbol] = now_m
             subscribers = list(self._subscribers)
             if ts_ms is not None and px is not None:
                 prev_ts = self._last_emit_ts_ms.get(symbol)
@@ -192,14 +196,24 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                     and prev_px == px
                     and 0 <= (ts_ms - prev_ts) < self.MIN_SAME_PRICE_EMIT_MS
                 ):
-                    now_s = time.time()
-                    for sub in subscribers:
-                        ws_map = getattr(sub, "_ws_stream_event_ts_per_symbol", None)
-                        if isinstance(ws_map, dict):
-                            ws_map[symbol] = now_s
-                    return
-                self._last_emit_ts_ms[symbol] = ts_ms
-                self._last_emit_price[symbol] = px
+                    throttled = True
+                else:
+                    self._last_emit_ts_ms[symbol] = ts_ms
+                    self._last_emit_price[symbol] = px
+        if throttled:
+            now_s = time.time()
+            for sub in subscribers:
+                ws_map = getattr(sub, "_ws_stream_event_ts_per_symbol", None)
+                if isinstance(ws_map, dict):
+                    ws_map[symbol] = now_s
+                mark_fn = getattr(sub, "mark_symbol_ws_event", None)
+                if callable(mark_fn):
+                    mark_fn(symbol, now_s)
+                else:
+                    last_map = getattr(sub, "_ws_last_event_ts_per_symbol", None)
+                    if isinstance(last_map, dict):
+                        last_map[symbol] = now_s
+            return
         for sub in subscribers:
             try:
                 sub.on_items_update(symbol, items)
@@ -208,14 +222,20 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                     f"[{self.__class__.__name__}] subscriber error ({symbol}): {exc}"
                 )
 
+    def _has_active_ws_targets(self) -> bool:
+        """Return True when this stream has at least one WebSocket-subscribable target (caller holds ``self._lock``)."""
+        return bool(self._symbols)
+
     async def _connect_and_run(self) -> None:
         while not self._stop_event.is_set():
             with self._lock:
-                has_symbols = bool(self._symbols)
-            if has_symbols:
+                has_targets = self._has_active_ws_targets()
+            if has_targets:
                 break
             await self._interruptible_sleep(1.0)
-        if not self._symbols or self._stop_event.is_set():
+        with self._lock:
+            has_targets = self._has_active_ws_targets()
+        if not has_targets or self._stop_event.is_set():
             return
         async with _websockets.connect(
             self.ws_url,
@@ -237,8 +257,11 @@ class VenuePriceStreamBase(PublicPriceStreamBase, ABC):
                     raw = None
                 except _websockets.exceptions.ConnectionClosed:
                     break
-                except Exception:
-                    raw = None
+                except Exception as exc:
+                    builtins.print(
+                        f"[{self.__class__.__name__}] recv error ({exc}); reconnecting..."
+                    )
+                    break
                 if raw is not None:
                     try:
                         self._process_message(raw)
@@ -271,6 +294,7 @@ class HyperliquidPriceStream(VenuePriceStreamBase):
     """Real-time Hyperliquid WebSocket price stream delegating protocol logic to ``HyperliquidProvider``."""
 
     _VENUE_NAME = "hyperliquid"
+    _SPOT_KEY_RETRY_SEC = 60.0
 
     def __init__(
         self,
@@ -284,6 +308,7 @@ class HyperliquidPriceStream(VenuePriceStreamBase):
         super().__init__(symbols=symbols, ws_url=ws_url, stale_reconnect_sec=stale_reconnect_sec)
         self.market_api = market_api
         self._resolved_spot_keys: dict[str, tuple[str, ...]] = {}
+        self._resolved_spot_retry_mono: dict[str, float] = {}
         for hook in getattr(self, "_stream_init_hooks", ()):
             hook(self, **extension_kwargs)
 
@@ -293,12 +318,15 @@ class HyperliquidPriceStream(VenuePriceStreamBase):
         if removed and norm_s:
             with self._lock:
                 self._resolved_spot_keys.pop(norm_s, None)
+                self._resolved_spot_retry_mono.pop(norm_s, None)
         return removed
 
     def _candidate_mids_keys(self, symbol: str) -> tuple[str, ...]:
+        now_m = time.monotonic()
         with self._lock:
             cached = self._resolved_spot_keys.get(symbol)
-        if cached:
+            retry_at = self._resolved_spot_retry_mono.get(symbol, 0.0)
+        if cached and (retry_at <= 0.0 or now_m < retry_at):
             return cached
         prov_cls = self._prov_cls
         resolved = (
@@ -306,8 +334,15 @@ class HyperliquidPriceStream(VenuePriceStreamBase):
             if prov_cls is not None
             else (symbol,)
         )
+        has_explicit_spot_idx = any(
+            isinstance(k, str) and k.startswith("@") for k in resolved
+        )
         with self._lock:
             self._resolved_spot_keys[symbol] = resolved
+            if has_explicit_spot_idx:
+                self._resolved_spot_retry_mono.pop(symbol, None)
+            else:
+                self._resolved_spot_retry_mono[symbol] = now_m + self._SPOT_KEY_RETRY_SEC
         return resolved
 
     def _build_subscribe_payload(self) -> str:
@@ -359,8 +394,17 @@ class KrakenPriceStream(VenuePriceStreamBase):
         super().__init__(symbols=symbols, ws_url=ws_url, stale_reconnect_sec=stale_reconnect_sec)
         self._ws_pairs: list[str] = []
         self._pair_to_symbol: dict[str, str] = {}
+        self._last_real_tick_mono_by_symbol: dict[str, float] = {}
+        self._keepalive_max_age_sec: float = (
+            min(60.0, self._stale_reconnect_sec * 0.5)
+            if self._stale_reconnect_sec > 0.0
+            else 60.0
+        )
         for s_sym in self._symbols:
             self._register_symbol_pair(s_sym)
+
+    def _has_active_ws_targets(self) -> bool:
+        return bool(self._ws_pairs)
 
     def _active_staleness_symbols(self) -> set[str]:
         """Only enforce WS staleness on pairs actually subscribed to Kraken's public ticker channel."""
@@ -382,9 +426,12 @@ class KrakenPriceStream(VenuePriceStreamBase):
         return True
 
     def remove_symbol(self, symbol: str) -> bool:
+        norm_s = self._norm_ws_symbol(symbol)
         if not super().remove_symbol(symbol):
             return False
         with self._lock:
+            if norm_s:
+                self._last_real_tick_mono_by_symbol.pop(norm_s, None)
             self._ws_pairs.clear()
             self._pair_to_symbol.clear()
             for s_sym in self._symbols:
@@ -417,14 +464,22 @@ class KrakenPriceStream(VenuePriceStreamBase):
                 msg, resolve_symbol_fn=self._resolve_symbol
             )
             if kind == "keepalive":
+                now_m = time.monotonic()
                 with self._lock:
-                    known_prices = list(self._prices.items())
+                    known_prices = [
+                        (sym_key, px)
+                        for sym_key, px in self._prices.items()
+                        if (last_m := self._last_real_tick_mono_by_symbol.get(sym_key)) is not None
+                        and (now_m - last_m) <= self._keepalive_max_age_sec
+                    ]
                 for sym_key, px in known_prices:
-                    self._notify_subscribers(sym_key, [[ts_ms, px]])
+                    self._notify_subscribers(sym_key, [[ts_ms, px]], update_staleness=False)
                 return
             if kind == "tick" and s_sym and price is not None:
+                now_m = time.monotonic()
                 with self._lock:
                     self._prices[s_sym] = price
+                    self._last_real_tick_mono_by_symbol[s_sym] = now_m
                 self._notify_subscribers(s_sym, [[ts_ms, price]])
         except Exception:
             return

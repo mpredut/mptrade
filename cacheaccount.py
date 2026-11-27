@@ -4883,8 +4883,13 @@ def _run_account_trade_poll_loop(
                 )
                 is None
             ):
-                if _wait_or_sleep(stop_event, min(0.15, poll_s or 0.05)):
+                eff_wait = min(backoff, max_bo)
+                log(f"[{log_tag}][poll] worker thread submit failed (backoff {eff_wait:.1f}s)")
+                if callable(heartbeat_fn):
+                    heartbeat_fn()
+                if _wait_or_sleep(stop_event, eff_wait):
                     break
+                backoff = min(eff_wait * 2.0, max_bo)
                 continue
 
             state, res_val, _slot = "IN_FLIGHT", None, None
@@ -5284,7 +5289,7 @@ class _HyperliquidAccountTradeBridge:
         # Hyperliquid WS ``userFills`` snapshots only carry a bounded recent fill window;
         # always union-merge into ``CacheTradeManager`` (matching ``CacheOrderFilledManager``)
         # so reconnect snapshots never wipe older fills from ``cache_trade_hyperliquid.json``.
-        _, _, tr_missing, fo_missing = publish_venue_fills_bundle(
+        merged_tr, merged_fo, tr_missing, fo_missing = publish_venue_fills_bundle(
             "hyperliquid",
             fills_file,
             fills_by_symbol,
@@ -5295,11 +5300,17 @@ class _HyperliquidAccountTradeBridge:
             strict_trade_merge=False,
             refresh_mode="always" if (not is_snapshot and has_spot_fills) else "none",
         )
+        merge_ok = merged_tr is not None and merged_fo is not None
         if is_snapshot:
-            ws_stream._fills_ws_seeded = True
-            ws_stream._last_fills_touch_ms = ts_ms
+            if merge_ok:
+                ws_stream._fills_ws_seeded = True
+                ws_stream._last_fills_touch_ms = ts_ms
         else:
-            missing_syms = tuple(dict.fromkeys((*tr_missing, *fo_missing)))
+            missing_syms = (
+                tuple(dict.fromkeys((*tr_missing, *fo_missing)))
+                if merge_ok
+                else tuple(symbols)
+            )
             if missing_syms:
                 self._schedule_invalidated_fills_resync(missing_syms, fills_file, ts_ms)
             else:
@@ -5622,7 +5633,7 @@ def run_kraken_trade_ws_loop(
                 client, pairs=pairs, lookback_sec=lookback_sec
             )
             eff_ms = resolve_now_ms(now_ms)
-            merged, _, _, _ = publish_venue_fills_bundle(
+            merged, merged_fo, _, _ = publish_venue_fills_bundle(
                 "kraken",
                 cache_file,
                 by_sym,
@@ -5635,6 +5646,8 @@ def run_kraken_trade_ws_loop(
                 strict_trade_merge=True,
                 refresh_mode="on_change" if trigger_refresh else "none",
             )
+            if merged_fo is None:
+                raise RuntimeError("kraken filled_orders cache merge failed")
             with rest_sync_lock:
                 last_flush_ms[0] = max(last_flush_ms[0], eff_ms)
                 last_rest_sync_ms[0] = max(last_rest_sync_ms[0], eff_ms)

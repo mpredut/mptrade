@@ -75,6 +75,7 @@ from .order_ohlc_utils import (
     resolve_market_flag,
 )
 from .order_status_ssot import classify_venue_order_status
+from .ssot_bridge import should_raise_live_price_errors
 from .strategy_executor import (
     OrderReconciliationCapabilities,
     OrderStatus,
@@ -329,6 +330,8 @@ class HyperliquidProvider(HyperliquidWsMixin, MarketDataProvider):
         try:
             return c.spot_mid(pair)
         except Exception as e:  # noqa: BLE001
+            if should_raise_live_price_errors():
+                raise
             return self._log_provider_balance_error(
                 "HL", "get_current_price", symbol, e, fmt="[{tag}] {label}({asset}) failed: {exc}"
             )

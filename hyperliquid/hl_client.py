@@ -49,7 +49,7 @@ from providers.order_ohlc_utils import (
     compute_post_only_maker_price,
     is_post_only_cross_refusal,
 )
-from providers.ssot_bridge import ProviderSsotBridgeMixin
+from providers.ssot_bridge import ProviderSsotBridgeMixin, should_raise_live_price_errors
 from providers.ws_stream import mount_connect_retry
 
 try:
@@ -354,6 +354,8 @@ class HLClient:
                 return None
             return safe_pos_float(casefold_get(mids, key), None)
         except Exception as e:  # noqa: BLE001
+            if should_raise_live_price_errors():
+                raise
             return self._log_read_failure(f"{label}({key})", e)
 
     mid = bind_attr_call("_mid_for_key", label="mid")
