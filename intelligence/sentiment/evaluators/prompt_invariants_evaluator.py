@@ -418,6 +418,16 @@ def _check_range_pos(
         )
 
 
+def _cross_venue_arb_asymmetry_bps(arb_a: float, arb_b: float) -> float:
+    """Return exact multiplicative reciprocity residual ``arb_a + arb_b + (arb_a * arb_b) / 10_000`` in bps.
+
+    Because ``quote_spread_bps(a, b) = ((a - b) / b) * 10_000``, synchronous quotes satisfy
+    ``(1 + arb_a / 1e4) * (1 + arb_b / 1e4) == 1`` (i.e. ``arb_a + arb_b == -(arb_a * arb_b) / 1e4``),
+    so wide dislocations such as ``+63.4`` vs ``-63.0`` bps have exact residual ``0.0`` bps.
+    """
+    return arb_a + arb_b + (arb_a * arb_b) / 10000.0
+
+
 def audit_snapshot_invariants(
     snapshot: Any,
     *,
@@ -547,14 +557,16 @@ def audit_snapshot_invariants(
         peer_back = clean_scalar_str(peer_m.get("cross_venue_peer"))
         arb_b = safe_float(peer_m.get("cross_venue_arb_bps"), default=None)
         if peer_back and peer_back.upper() == str(sym).upper() and arb_b is not None:
-            if str(sym).upper() < str(peer).upper() and abs(arb_a + arb_b) > arb_tol_bps:
-                violations.append(
-                    InvariantViolation(
-                        "CROSS_VENUE_ARB_SYMMETRY",
-                        f"{sym}<->{peer}",
-                        f"arb({sym})={fmt_signed(arb_a, 1)}bps vs arb({peer})={fmt_signed(arb_b, 1)}bps (sum={fmt_signed(arb_a + arb_b, 1)}bps)",
+            if str(sym).upper() < str(peer).upper():
+                arb_res = _cross_venue_arb_asymmetry_bps(arb_a, arb_b)
+                if abs(arb_res) > arb_tol_bps:
+                    violations.append(
+                        InvariantViolation(
+                            "CROSS_VENUE_ARB_SYMMETRY",
+                            f"{sym}<->{peer}",
+                            f"arb({sym})={fmt_signed(arb_a, 1)}bps vs arb({peer})={fmt_signed(arb_b, 1)}bps (residual={fmt_signed(arb_res, 2)}bps)",
+                        )
                     )
-                )
 
     # 5, 6 & 7. Price range math, swing wave bounds, closed-equity hygiene, and orderbook wall ordering
     for sym, pinfo in pt.items():
@@ -2400,12 +2412,13 @@ def audit_rendered_prompt_text(
     for (s_a, s_b), v_a in arb_pairs.items():
         if s_a < s_b and (s_b, s_a) in arb_pairs:
             v_b = arb_pairs[(s_b, s_a)]
-            if abs(v_a + v_b) > arb_tol_bps:
+            arb_res = _cross_venue_arb_asymmetry_bps(v_a, v_b)
+            if abs(arb_res) > arb_tol_bps:
                 violations.append(
                     InvariantViolation(
                         "PROMPT_CROSS_VENUE_ARB_SYMMETRY",
                         f"{s_a}<->{s_b}",
-                        f"arb_vs_{s_b}={fmt_signed(v_a, 1)}bps vs arb_vs_{s_a}={fmt_signed(v_b, 1)}bps",
+                        f"arb_vs_{s_b}={fmt_signed(v_a, 1)}bps vs arb_vs_{s_a}={fmt_signed(v_b, 1)}bps (residual={fmt_signed(arb_res, 2)}bps)",
                     )
                 )
 
@@ -2910,14 +2923,18 @@ def _audit_prompt_cross_section_math(
 
     for (s_a, s_b), arb_ab in arb_pairs.items():
         if s_a in edge_by_sym:
-            if s_a < s_b and s_b in edge_by_sym and abs(edge_by_sym[s_a] + edge_by_sym[s_b]) > arb_tol_bps:
-                violations.append(
-                    InvariantViolation(
-                        "PROMPT_FLOW_DEPTH_EDGE_MATH",
-                        f"{s_a}<->{s_b}:net_buy_edge",
-                        f"net_buy_edge({s_a})={fmt_signed(edge_by_sym[s_a], 1)}bps vs net_buy_edge({s_b})={fmt_signed(edge_by_sym[s_b], 1)}bps",
+            if s_a < s_b and s_b in edge_by_sym:
+                arb_ba = arb_pairs.get((s_b, s_a))
+                expected_edge_sum = (arb_ab * arb_ba) / 10000.0 if arb_ba is not None else 0.0
+                edge_res = (edge_by_sym[s_a] + edge_by_sym[s_b]) - expected_edge_sum
+                if abs(edge_res) > arb_tol_bps:
+                    violations.append(
+                        InvariantViolation(
+                            "PROMPT_FLOW_DEPTH_EDGE_MATH",
+                            f"{s_a}<->{s_b}:net_buy_edge",
+                            f"net_buy_edge({s_a})={fmt_signed(edge_by_sym[s_a], 1)}bps vs net_buy_edge({s_b})={fmt_signed(edge_by_sym[s_b], 1)}bps (residual={fmt_signed(edge_res, 2)}bps)",
+                        )
                     )
-                )
             if s_a in maker_bps_by_sym and s_b in maker_bps_by_sym:
                 exp_edge = (maker_bps_by_sym[s_b] - maker_bps_by_sym[s_a]) - arb_ab
                 if abs(edge_by_sym[s_a] - exp_edge) > arb_tol_bps:

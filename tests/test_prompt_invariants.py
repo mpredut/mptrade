@@ -3514,6 +3514,51 @@ def test_pass30_prompt_view_partial_fill_clean_and_portfolio_lot_future_ts_invar
     )
 
 
+def test_cross_venue_arb_and_edge_exact_multiplicative_reciprocity() -> None:
+    """Wide synchronous cross-venue spreads (+63.4 vs -63.0 bps) must pass exact reciprocity without masking stale drift."""
+    # Exact synchronous dislocation from live 04:07:43: (A-B)/B = +63.4bps, (B-A)/A = -63.0bps,
+    # residual = 63.4 - 63.0 + (63.4 * -63.0) / 10000 = +0.00058 bps.
+    wide_clean_snap = {
+        "microstructure": {
+            "HYPEUSD": {"cross_venue_peer": "HYPEUSDC", "cross_venue_arb_bps": 63.4},
+            "HYPEUSDC": {"cross_venue_peer": "HYPEUSD", "cross_venue_arb_bps": -63.0},
+        }
+    }
+    assert audit_snapshot_invariants(wide_clean_snap) == []
+
+    wide_stale_snap = {
+        "microstructure": {
+            "HYPEUSD": {"cross_venue_peer": "HYPEUSDC", "cross_venue_arb_bps": 63.4},
+            "HYPEUSDC": {"cross_venue_peer": "HYPEUSD", "cross_venue_arb_bps": -61.0},
+        }
+    }
+    assert {v.code for v in audit_snapshot_invariants(wide_stale_snap)} == {"CROSS_VENUE_ARB_SYMMETRY"}
+
+    # Prompt-level: HYPEUSDC maker=4.0bps, HYPEUSD maker=22.0bps -> fee_diff=+/-18.0bps.
+    wide_clean_prompt = (
+        "### 1. PORTFOLIO, OPEN ORDERS & TRADE PLANS:\n"
+        "  * Venue Specs:\n"
+        "    | Venue | Symbol | Tier | Fee bps (M/T) | MinNotional | MinQty | Step | Tick |\n"
+        "    |---|---|---|---|---|---|---|---|\n"
+        "    | hyperliquid | HYPEUSDC | TIER_0 | 4 (4.0/4.5) | $10 | 0.01 | 0.01 | 0.01 |\n"
+        "    | kraken | HYPEUSD | TIER_0 | 22 (22.0/37.0) | $1 | 0.06 | 0.00000001 | 0.01 |\n"
+        "### 3. TRADABLE MARKETS:\n"
+        "  * HYPEUSDC: Price=$62.00\n"
+        "    - Flow: arb_vs_HYPEUSD=-63.0bps, net_buy_edge=+81.0bps[maker](best_buy=hyperliquid:HYPEUSDC)\n"
+        "  * HYPEUSD: Price=$62.393\n"
+        "    - Flow: arb_vs_HYPEUSDC=+63.4bps, net_buy_edge=-81.4bps[maker](best_buy=hyperliquid:HYPEUSDC)\n"
+    )
+    assert audit_rendered_prompt_text(wide_clean_prompt) == []
+
+    wide_bad_prompt = (
+        wide_clean_prompt
+        .replace("arb_vs_HYPEUSD=-63.0bps, net_buy_edge=+81.0bps", "arb_vs_HYPEUSD=-61.0bps, net_buy_edge=+83.0bps")
+    )
+    bad_codes = {v.code for v in audit_rendered_prompt_text(wide_bad_prompt)}
+    assert {"PROMPT_CROSS_VENUE_ARB_SYMMETRY", "PROMPT_FLOW_DEPTH_EDGE_MATH"}.issubset(bad_codes)
+
+
+
 
 
 
