@@ -2923,3 +2923,41 @@ def test_previous_recovery_no_short_circuit_repair_implies_recover_and_nav_bnb_p
     assert dd["current_nav_usd"] == pytest.approx(1110.0, abs=0.05)
 
 
+def test_read_jsonl_cached_never_pins_backup_fallback_under_primary_stat_sig(tmp_path, monkeypatch):
+    """Invariant & cross-check: a transient primary JSONL read error falling back to .previous never pins stale backup under primary's stat sig."""
+    now_ms = int(time.time() * 1000)
+    primary = tmp_path / "cache_24_price_BTCUSDC.jsonl"
+    backup = Path(state_io.previous_generation_path(str(primary)))
+    primary.write_text(
+        json.dumps({"s": "BTCUSDC", "i": [now_ms, 65000.0]}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    backup.write_text(
+        json.dumps({"s": "BTCUSDC", "i": [now_ms - 5000, 60000.0]}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    real_from_offset = state_io.read_jsonl_bucket_map_from_offset
+    calls = {"n": 0}
+
+    def _flaky_from_offset(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("transient primary read failure")
+        return real_from_offset(*args, **kwargs)
+
+    monkeypatch.setattr(state_io, "read_jsonl_bucket_map_from_offset", _flaky_from_offset)
+    memo: dict = {}
+
+    # Call 1: transient failure falls back to .previous (60000.0) without poisoning memo under primary's stat sig.
+    doc1 = state_io.read_jsonl_or_json_dict_cached(str(primary), memo)
+    assert doc1 == {"items": {"BTCUSDC": [[now_ms - 5000, 60000.0]]}}
+    assert str(primary) not in memo
+
+    # Call 2: primary stat sig is unchanged, yet fresh primary (65000.0) is read cleanly (not stuck on 60000.0).
+    doc2 = state_io.read_jsonl_or_json_dict_cached(str(primary), memo)
+    assert doc2 == {"items": {"BTCUSDC": [[now_ms, 65000.0]]}}
+    assert str(primary) in memo
+
+
+

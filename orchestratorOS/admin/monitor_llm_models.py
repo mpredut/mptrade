@@ -48,12 +48,15 @@ def run_llm_model_monitor(
         if isinstance(catalog_audit, dict) and catalog_audit.get("agy_models_ok")
         else None
     )
-    restored = GeminiClient.maybe_restore_latency_demoted_models(
-        quota_snap,
-        available_models=avail_models,
-        force=True,
-        notify=notify,
-    )
+    if isinstance(quota_snap, dict) and isinstance(avail_models, list):
+        restored = GeminiClient.maybe_restore_latency_demoted_models(
+            quota_snap,
+            available_models=avail_models,
+            force=True,
+            notify=notify,
+        )
+    else:
+        restored = []
     return {
         "checked_ts": time.time(),
         "quota_ok": isinstance(quota_snap, dict),

@@ -9926,6 +9926,85 @@ def test_upgrade_tpo_vp_uses_live_series_24h_for_sub_60m_va_breakout_hold(tmp_pa
     assert 12.5 <= m24_partial["va_hold_min"] <= 14.5
 
 
+def test_quota_probe_load_assist_timeout_and_monitor_llm_models_fail_closed(tmp_path, monkeypatch):
+    """Invariant & cross-check: loadCodeAssist timeout preserves paid credits/tier, and monitor_llm_models refuses restore on failed probes."""
+    from intelligence.sentiment import gemini_client as gc_mod
+    from intelligence.sentiment import llm_quota_router as lqr_mod
+    from intelligence.sentiment.gemini_client import GeminiClient
+    from orchestratorOS.admin import monitor_llm_models
+    from state_io import save_json_state
+
+    tok_dir = tmp_path / "cli_oauth"
+    tok_dir.mkdir()
+    tok_payload = {"access_token": "tok-live-1", "id_token_email": "trader@example.com"}
+    (tok_dir / "antigravity-oauth-token").write_text(json.dumps(tok_payload), encoding="utf-8")
+    expected_fp = lqr_mod._resolve_oauth_account_fp(tok_payload, {}, "tok-live-1")
+
+    q_path = tmp_path / "llm_quota_status.json"
+    now_s = time.time()
+    save_json_state(
+        str(q_path),
+        {
+            "checked_ts": now_s - 120.0,
+            "oauth_token_fp": expected_fp,
+            "tier_id": "pro-tier",
+            "available_credits": 500.0,
+            "buckets": {"gemini-4-neon-high": 0.0},
+            "runtime_exhausted": {},
+            "last_alert_ts": 0.0,
+            "last_alert_tier": "ok",
+        },
+    )
+    monkeypatch.setattr(GeminiClient, "_get_quota_state_path", staticmethod(lambda: str(q_path)))
+    monkeypatch.setattr(GeminiClient, "_QUOTA_MEM_CACHE", {})
+
+    def _fake_post(url, *_a, **_kw):
+        if "loadCodeAssist" in url:
+            raise TimeoutError("loadCodeAssist 2s timeout")
+        return {"buckets": [{"modelId": "gemini-4-neon-high", "remainingFraction": 0.0}]}
+
+    sent_alerts: list[tuple] = []
+    monkeypatch.setattr(lqr_mod, "fetch_json_post", _fake_post)
+    monkeypatch.setattr(gc_mod, "fetch_json_post", _fake_post, raising=False)
+    monkeypatch.setattr(GeminiClient, "_send_llm_routing_ntfy", classmethod(lambda cls, *a, **kw: sent_alerts.append(a) or True))
+
+    snap = GeminiClient.probe_live_model_quota(bot_cli_base=str(tok_dir), force_refresh=True)
+    assert isinstance(snap, dict)
+    assert snap["available_credits"] == pytest.approx(500.0)
+    assert snap["tier_id"] == "pro-tier"
+    assert sent_alerts == []
+    allowed, _, _ = lqr_mod.evaluate_model_quota_escalation_allowed(snap, "gemini-4-neon-high")
+    assert allowed is True
+
+    # 2. monitor_llm_models must NOT force-restore latency-demoted models when either quota probe or CLI audit fails.
+    GeminiClient.record_model_latency_demotion(
+        "gemini-4-neon-high",
+        "claude-sonnet-5-5-medium",
+        topic_key="auto_cryptotrade_executor",
+        notify=False,
+    )
+    monkeypatch.setattr(GeminiClient, "probe_live_model_quota", classmethod(lambda cls, **_kw: None))
+    monkeypatch.setattr(
+        monitor_llm_models,
+        "audit_llm_model_catalog_and_binaries",
+        lambda *_a, **_k: {"agy_models_ok": True, "available_models": ["gemini-4-neon-high"], "missing_configured_models": []},
+    )
+    res_no_quota = monitor_llm_models.run_llm_model_monitor(str(tmp_path), force_refresh=True, notify=False)
+    assert res_no_quota["restored_models"] == []
+    assert "gemini-4-neon-high" in json.loads(q_path.read_text(encoding="utf-8")).get("latency_demoted_models", {})
+
+    monkeypatch.setattr(GeminiClient, "probe_live_model_quota", classmethod(lambda cls, **_kw: snap))
+    monkeypatch.setattr(
+        monitor_llm_models,
+        "audit_llm_model_catalog_and_binaries",
+        lambda *_a, **_k: {"agy_models_ok": False, "available_models": [], "missing_configured_models": ["gemini-4-neon-high"]},
+    )
+    res_no_cli = monitor_llm_models.run_llm_model_monitor(str(tmp_path), force_refresh=True, notify=False)
+    assert res_no_cli["restored_models"] == []
+    assert "gemini-4-neon-high" in json.loads(q_path.read_text(encoding="utf-8")).get("latency_demoted_models", {})
+
+
+
 
 
 

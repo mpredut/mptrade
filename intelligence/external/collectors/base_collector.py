@@ -925,6 +925,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 else (f"{ticker}.json",)
             )
             found_opts = False
+            got_valid_response = False
             cboe_tpl = _require_feed_str("cboe_delayed_options_url_template")
             for cboe_path in cboe_paths:
                 try:
@@ -935,6 +936,8 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         timeout=timeout,
                         user_agent="Mozilla/5.0",
                     )
+                    if isinstance(cb, dict):
+                        got_valid_response = True
                     opts = ((cb.get("data") or {}).get("options") if isinstance(cb, dict) else None) or []
                     if isinstance(opts, list) and opts:
                         found_opts = True
@@ -953,14 +956,26 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                                 put_oi += oi_v
                                 put_vol += vol_v
                         break
-                except Exception:
+                except Exception as cboe_exc:
+                    if getattr(cboe_exc, "code", None) == 404 or "404" in str(cboe_exc):
+                        got_valid_response = True
                     continue
             with self._EQUITY_MEMO_LOCK:
-                if not found_opts:
-                    lru_dict_put(self._EQUITY_NO_OPTIONS_TS, ticker, now, 64)
-                else:
+                if found_opts:
                     self._EQUITY_NO_OPTIONS_TS.pop(ticker, None)
                     lru_dict_put(self._EQUITY_OPTIONS_MEMO, ticker, (now, (call_oi, put_oi, call_vol, put_vol)), 32)
+                elif got_valid_response:
+                    lru_dict_put(self._EQUITY_NO_OPTIONS_TS, ticker, now, 64)
+                elif cached_opt is not None:
+                    call_oi, put_oi, call_vol, put_vol = cached_opt[1]
+            ctx_out.update(
+                call_oi=call_oi,
+                put_oi=put_oi,
+                call_vol=call_vol,
+                put_vol=put_vol,
+                _options_loaded=bool(found_opts or got_valid_response),
+            )
+            return
         elif not allow_cboe_fetch and cached_opt is not None:
             call_oi, put_oi, call_vol, put_vol = cached_opt[1]
 
@@ -1031,6 +1046,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             daily_vol_sh = 0.0
 
             # 1. Nasdaq Public Quote API (L1 top-of-book & daily volume)
+            nasdaq_ok = False
             q_ticker = urllib.parse.quote(str(ticker or "").strip())
             try:
                 nq = self._fetch_json_dict(
@@ -1044,10 +1060,13 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                 if isinstance(pdata, dict):
                     if (lp := _parse_num(pdata.get("lastSalePrice"))) is not None:
                         last_px = lp
+                        nasdaq_ok = True
                     if (bp := _parse_num(pdata.get("bidPrice"))) is not None:
                         best_bid = bp
+                        nasdaq_ok = True
                     if (ap := _parse_num(pdata.get("askPrice"))) is not None:
                         best_ask = ap
+                        nasdaq_ok = True
                     if (bs := _parse_num(pdata.get("bidSize"))) is not None:
                         bid_size_sh = bs
                     if (as_ := _parse_num(pdata.get("askSize"))) is not None:
@@ -1072,6 +1091,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
             ext_px: Optional[float] = None
             ext_vs_rth_pct: Optional[float] = None
             bars_ts_out = now
+            yahoo_ok = False
             if reuse_bars and prev_ctx is not None:
                 bars = list(prev_ctx.get("bars") or ())
                 mkt_state = str(prev_ctx.get("market_state") or "")
@@ -1094,6 +1114,7 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                     pts_c = [(b[0], b[4]) for b in bars]
                     mkt_state, yh_px, ext_px = resolve_yahoo_chart_market_state_and_price(meta, pts_c, now_ts=now)
                     reg_close = safe_pos_float(meta.get("regularMarketPrice") if isinstance(meta, dict) else None, default=None)
+                    yahoo_ok = bool(bars or yh_px is not None or ext_px is not None or reg_close is not None)
                     if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") and ext_px is not None:
                         last_px = yh_px or ext_px
                         if reg_close is not None and reg_close > 0.0 and abs(last_px - reg_close) / reg_close >= 0.0005:
@@ -1111,9 +1132,10 @@ class _DiskBackedSymbolCollector(TelemetryCacheCollectorInterface, ABC):
                         ext_vs_rth_pct = prev_ctx.get("ext_vs_rth_pct")
                         bars_ts_out = prev_bars_ts
 
-            if last_px <= 0.0 and not bars:
-                with self._EQUITY_MEMO_LOCK:
-                    lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 32)
+            if (not nasdaq_ok and not yahoo_ok and not reuse_bars) or (last_px <= 0.0 and not bars):
+                if prev_ctx is None:
+                    with self._EQUITY_MEMO_LOCK:
+                        lru_dict_put(self._EQUITY_CTX_MEMO, ticker, (now, None), 32)
                 return None
 
             ctx_out: Dict[str, Any] = {

@@ -745,9 +745,11 @@ class GeminiQuotaRouterMixin:
         available_credits = 0.0
         tier_id = ""
         companion_project = ""
+        load_assist_ok = False
         try:
             assist_payload = _fetch_json_post(_load_assist_api_url, timeout=2.0, headers=headers)
             if isinstance(assist_payload, dict):
+                load_assist_ok = True
                 available_credits = cls._extract_available_credits(assist_payload)
                 paid_tier = assist_payload.get("paidTier") if isinstance(assist_payload.get("paidTier"), dict) else {}
                 curr_tier = assist_payload.get("currentTier") if isinstance(assist_payload.get("currentTier"), dict) else {}
@@ -827,6 +829,9 @@ class GeminiQuotaRouterMixin:
                 prev = {}
             prev_fp = str(prev.get("oauth_token_fp") or "").strip()
             same_oauth_account = not (token_fp and prev_fp and token_fp != prev_fp)
+            if not load_assist_ok and same_oauth_account:
+                available_credits = max(0.0, safe_float(prev.get("available_credits"), 0.0))
+                tier_id = str(prev.get("tier_id") or "").strip()
             runtime_exhausted: Dict[str, float] = {}
             prev_exhausted = prev.get("runtime_exhausted")
             if same_oauth_account and isinstance(prev_exhausted, dict) and available_credits <= 0.0:

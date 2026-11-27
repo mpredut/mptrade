@@ -3496,6 +3496,108 @@ def test_pass6_carryover_per_sibling_expiry_partial_retry_and_short_trends_min(t
     assert snap_all_off.source_ages_sec["short_trends"] == pytest.approx(95.0)
 
 
+def test_equity_context_outage_cboe_transient_and_stale_agg_cvd_invariants(tmp_path, monkeypatch):
+    """Invariants & cross-checks for equity Cboe transient errors, 100% equity outage honesty, and stale agg CVD memo."""
+    from intelligence.external.collectors.base_collector import _DiskBackedSymbolCollector
+    from intelligence.external.collectors.orderbook_depth_collector import OrderbookDepthCollector
+    from state_io import save_json_state
+
+    t0 = 1_796_100_000.0
+    ob_col = OrderbookDepthCollector(
+        cache_dir=str(tmp_path / "eq_outage"),
+        cache_ttl_sec=0.0,
+        disk_ttl_sec=0.0,
+        start_sync=True,
+    )
+    with _DiskBackedSymbolCollector._EQUITY_MEMO_LOCK:
+        _DiskBackedSymbolCollector._EQUITY_OPTIONS_MEMO["NVDA"] = (t0 - 500.0, (1200.0, 800.0, 50.0, 40.0))
+        _DiskBackedSymbolCollector._EQUITY_NO_OPTIONS_TS.pop("NVDA", None)
+        _DiskBackedSymbolCollector._EQUITY_CTX_MEMO.pop("NVDA", None)
+
+    # 1. Transient Cboe network timeout must NOT lock out ticker in _EQUITY_NO_OPTIONS_TS or zero prior options OI.
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_json_dict",
+        lambda *_a, **_kw: (_ for _ in ()).throw(TimeoutError("cboe timeout")),
+    )
+    ctx_transient: dict = {}
+    ob_col._populate_equity_options_context("NVDA", ctx_transient, t0, allow_cboe_fetch=True)
+    assert "NVDA" not in _DiskBackedSymbolCollector._EQUITY_NO_OPTIONS_TS
+    assert ctx_transient["call_oi"] == pytest.approx(1200.0)
+    assert ctx_transient["put_oi"] == pytest.approx(800.0)
+    assert ctx_transient["_options_loaded"] is False
+
+    # Explicit valid empty Cboe payload DOES record _EQUITY_NO_OPTIONS_TS and marks _options_loaded=True.
+    monkeypatch.setattr(ob_col, "_fetch_json_dict", lambda *_a, **_kw: {"data": {"options": []}})
+    ctx_empty: dict = {}
+    ob_col._populate_equity_options_context("NVDA", ctx_empty, t0 + 5.0, allow_cboe_fetch=True)
+    assert "NVDA" in _DiskBackedSymbolCollector._EQUITY_NO_OPTIONS_TS
+    assert ctx_empty["_options_loaded"] is True
+
+    # 2. 100% network outage (both Nasdaq & Yahoo fail, expired bars) must fall back to stale disk snapshot with honest ts.
+    old_ts = t0 - 1000.0
+    save_json_state(
+        str(tmp_path / "eq_outage" / "telemetry" / "orderbook_depth_NVDA_US_EQ.json"),
+        {
+            "symbol": "NVDA_US_EQ",
+            "mid_price": 150.0,
+            "best_bid": 149.95,
+            "best_ask": 150.05,
+            "bid_depth_usd": 50000.0,
+            "ask_depth_usd": 50000.0,
+            "imbalance_ratio": 0.5,
+            "spread_bps": 6.67,
+            "ts": old_ts,
+        },
+    )
+    with _DiskBackedSymbolCollector._EQUITY_MEMO_LOCK:
+        _DiskBackedSymbolCollector._EQUITY_CTX_MEMO["NVDA"] = (
+            old_ts,
+            {
+                "ticker": "NVDA",
+                "last_price": 150.0,
+                "bars": [(old_ts, 149.5, 150.5, 149.0, 150.0, 10000.0)],
+                "_bars_ts": old_ts,
+                "market_state": "REGULAR",
+            },
+        )
+    monkeypatch.setattr(ob_col, "_resolve_ssot_price", lambda *_a, **_kw: 150.0)
+    monkeypatch.setattr(
+        ob_col,
+        "_fetch_json_dict",
+        lambda *_a, **_kw: (_ for _ in ()).throw(TimeoutError("total network outage")),
+    )
+    monkeypatch.setattr("intelligence.external.collectors.base_collector.resolve_symbol_market_session", lambda _s, _n: "REGULAR")
+    snap_outage = ob_col.fetch("NVDA_US_EQ", allow_network=True, now=t0)
+    assert snap_outage is not None
+    assert snap_outage.ts == pytest.approx(old_ts)
+    assert ob_col.used_stale_fallback("NVDA_US_EQ") is True
+
+    # 3. OrderbookDepthCollector.fetch must NOT stamp expired _agg_spot_cvd_memo into a fresh OrderbookSnapshot.
+    ob_btc = OrderbookDepthCollector(
+        cache_dir=str(tmp_path / "btc_stale_agg"),
+        cache_ttl_sec=0.0,
+        disk_ttl_sec=0.0,
+        start_sync=True,
+    )
+    ob_btc._spot_cvd_memo[("binance", "BTCUSDC")] = (t0 - 5.0, 50000.0, 200000.0)
+    ob_btc._agg_spot_cvd_memo[("binance", "BTCUSDC")] = (t0 - 900.0, 999999.0, 5000000.0, "usdc+usdt")
+    monkeypatch.setattr(
+        ob_btc,
+        "_fetch_json_dict",
+        lambda *_a, **_kw: {"bids": [["90000.0", "2.0"]], "asks": [["90001.0", "2.0"]]},
+    )
+    monkeypatch.setattr(ob_btc, "_fetch_spot_cvd_payload", lambda *_a, **_kw: [])
+    snap_btc = ob_btc.fetch("BTCUSDC", allow_network=True, now=t0)
+    assert snap_btc is not None
+    assert snap_btc.spot_cvd_15m_usd == pytest.approx(50000.0)
+    assert snap_btc.spot_vol_15m_usd == pytest.approx(200000.0)
+    assert snap_btc.agg_spot_cvd_15m_usd is None
+    assert snap_btc.agg_spot_vol_15m_usd is None
+    assert snap_btc.agg_spot_cvd_source is None
+
+
+
 
 
 

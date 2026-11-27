@@ -1849,12 +1849,14 @@ def read_jsonl_or_json_dict_cached(
         except Exception:
             bucket_map = {}
 
+    used_backup = False
     if not bucket_map and backup_path and os.path.exists(backup_path):
         try:
             parsed_map, _ = read_jsonl_bucket_map(backup_path)
             if parsed_map:
                 bucket_map = parsed_map
                 new_dev_ino, new_offset, new_anchor = None, 0, b""
+                used_backup = True
         except Exception:
             pass
 
@@ -1863,6 +1865,12 @@ def read_jsonl_or_json_dict_cached(
             _JSONL_MEMO_ENTRIES.pop(entry_key, None)
         return None
     res: dict[str, Any] = {"items": bucket_map}
+    if used_backup:
+        with _JSONL_CACHED_CURSOR_LOCK:
+            _JSONL_MEMO_ENTRIES.pop(entry_key, None)
+        return res
+    if st_bak is not None:
+        sig = (_stat_sig(resolved), _stat_sig(backup_path), read_recovering_previous, json.load, "jsonl")
     new_entry = _JsonlMemoEntry(
         sig=sig,
         doc=res,

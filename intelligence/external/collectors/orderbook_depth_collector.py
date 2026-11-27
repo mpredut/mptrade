@@ -307,11 +307,12 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             return None
         rem_to = resolve_remaining_timeout_sec(deadline_mono, 3.5, min_timeout=self._AGG_CVD_MIN_BUDGET_SEC)
         if rem_to is None:
-            return (
-                (cached_agg[1], cached_agg[2], cached_agg[3])
-                if cached_agg is not None and cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0
-                else None
-            )
+            if cached_agg is not None and cached_agg[1] is not None and 0.0 <= (now - cached_agg[0]) < ttl_sec * 3.0:
+                return cached_agg[1], cached_agg[2], cached_agg[3]
+            if cached_agg is not None and (now - cached_agg[0]) >= ttl_sec * 3.0:
+                with self._get_ob_state_lock():
+                    self._agg_spot_cvd_memo.pop(memo_key, None)
+            return None
         try:
             raw_agg = self._call_spot_cvd_payload(agg_url, agg_body, rem_to)
             if ws_hub is not None and agg_bn_sym and isinstance(raw_agg, list):
@@ -610,12 +611,23 @@ class OrderbookDepthCollector(_DiskBackedSymbolCollector):
             agg_spot_vol: Optional[float] = None
             agg_spot_src: Optional[str] = None
             if real_spot_cvd is not None and eff_spot_venue:
+                flow_max_age = (safe_pos_float(resolve_derived_telemetry_intervals().get("whale_interval_sec"), 60.0) or 60.0) * 3.0
                 with self._get_ob_state_lock():
                     memo_flow = self._spot_cvd_memo.get((eff_spot_venue, query_sym))
                     memo_agg = self._agg_spot_cvd_memo.get((eff_spot_venue, query_sym))
-                if isinstance(memo_flow, tuple) and len(memo_flow) >= 3:
+                if (
+                    isinstance(memo_flow, tuple)
+                    and len(memo_flow) >= 3
+                    and (mf_ts := safe_pos_float(memo_flow[0], default=None)) is not None
+                    and 0.0 <= (now - mf_ts) < flow_max_age
+                ):
                     real_spot_vol = safe_nonneg_float(memo_flow[2], default=None)
-                if isinstance(memo_agg, tuple) and len(memo_agg) >= 4:
+                if (
+                    isinstance(memo_agg, tuple)
+                    and len(memo_agg) >= 4
+                    and (ma_ts := safe_pos_float(memo_agg[0], default=None)) is not None
+                    and 0.0 <= (now - ma_ts) < flow_max_age
+                ):
                     agg_spot_cvd = safe_float(memo_agg[1], default=None)
                     agg_spot_vol = safe_nonneg_float(memo_agg[2], default=None)
                     agg_spot_src = memo_agg[3] or None
