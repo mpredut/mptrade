@@ -1120,6 +1120,144 @@ def test_pass17_open_lots_inplace_diff_ms_now_ts_delta_gate_and_reconciler_futur
     assert "resource_watchdog_offenders" not in sys_tel
 
 
+def test_pass29_delta_open_lots_entry_px_tca_future_ob_and_rth_bar_invariants() -> None:
+    """Pass 29 pure invariants and dependent cross-checks:
+    1. prompt_delta_evaluator hashes open_lots using entry_px (not only legacy price) and skips '0' ts shadowing.
+    2. OpenLimitOrdersTcaEvaluator rejects far-future created_ts (no fake 0.0m), skips '0' _ob_raw_ts shadowing,
+       and flags far-future _ob_ts as [ob_stale] even when now_ts=None.
+    3. EquityRthSessionPolicy treats far-future bar timestamps as stale in evaluate_post_rth_override & prune_stale_short_metrics.
+    """
+    import time as _time
+    from intelligence.sentiment.evaluators.asset_session_policy import EquityRthSessionPolicy
+    from intelligence.sentiment.evaluators.tca_risk_evaluator import enrich_open_limit_orders_tca
+
+    t0 = datetime(2026, 11, 26, 12, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+
+    # 1a. Pure invariant + warm-turn cross-check: open_lots entry_px rotation triggers SHOW_NEW even with identical qty
+    s0 = _make_rich_sensors(t0)
+    s0.portfolio_summary["recent_orders"]["BTCUSDC"]["open_lots"] = [
+        {"qty": 0.010, "entry_px": 59000.0},
+    ]
+    s0.sentiment_advisor["ts"] = "0"
+    s0.sentiment_advisor["timestamp"] = t0 - 1200.0
+    s0.geopolitical_threat["ts"] = 0
+    s0.geopolitical_threat["timestamp"] = t0 - 1800.0
+    p0 = evaluate_prompt_delta_plan(s0, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="cid-p29")
+    assert p0.mode == "FULL_KEYFRAME"
+
+    t1 = t0 + 240.0
+    s1 = _make_rich_sensors(t1, anchor_ts=t0)
+    s1.portfolio_summary["recent_orders"]["BTCUSDC"]["open_lots"] = [
+        {"qty": 0.010, "entry_px": 60450.0},
+    ]
+    s1.sentiment_advisor["ts"] = "0"
+    s1.sentiment_advisor["timestamp"] = t0 - 600.0
+    s1.geopolitical_threat["ts"] = 0
+    s1.geopolitical_threat["timestamp"] = t0 - 900.0
+    p1 = evaluate_prompt_delta_plan(
+        s1, asset_scope="crypto", now_ts=t1, is_warm_resume=True, prev_state=p0.next_state, conversation_id="cid-p29"
+    )
+    assert p1.recent_order_actions["BTCUSDC"] == "SHOW_NEW"
+    assert p1.block_actions["recent_orders"] == "SHOW_NEW"
+    assert p1.block_actions["sentiment_advisor_summary"] == "SHOW_NEW"
+    assert p1.block_actions["geopolitical_summary"] == "SHOW_NEW"
+
+    # 1b. Cross-check: unchanged entry_px + unchanged fallback timestamps omit cleanly on warm turn
+    t2 = t1 + 240.0
+    s2 = copy.deepcopy(s1)
+    s2.evaluated_at_ts = t2
+    p2 = evaluate_prompt_delta_plan(
+        s2, asset_scope="crypto", now_ts=t2, is_warm_resume=True, prev_state=p1.next_state, conversation_id="cid-p29"
+    )
+    assert p2.recent_order_actions["BTCUSDC"] == "OMIT"
+    assert p2.block_actions["sentiment_advisor_summary"] == "OMIT"
+    assert p2.block_actions["geopolitical_summary"] == "OMIT"
+
+    # 2. TCA pure invariants + dependent cross-check
+    prices_tca = {"BTCUSDC": {"price": 60500.0, "vol_1h_pct": 1.0}}
+    micro_zero_shadow = {
+        "BTCUSDC": {
+            "best_bid": 60495.0,
+            "best_ask": 60505.0,
+            "ask_wall_px": 60700.0,
+            "ask_wall_usd": 200_000.0,
+            "ask_depth_usd": 400_000.0,
+            "_ob_raw_ts": "0",
+            "_ob_ts": t0 - 120.0,
+        }
+    }
+    orders_corrupt = [
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "SELL",
+            "price": 60900.0,
+            "created_ts": t0 + 7200.0,
+            "age_min": 99.0,
+            "age": "1.6h",
+        }
+    ]
+    enrich_open_limit_orders_tca(orders_corrupt, prices_tca, micro_zero_shadow, now_ts=t0, ob_stale_sec=30.0)
+    assert "age_min" not in orders_corrupt[0]
+    assert "age" not in orders_corrupt[0]
+    assert orders_corrupt[0].get("ob_flag") == "[ob_stale]"
+    assert orders_corrupt[0].get("ob_age_s") == pytest.approx(120.0)
+    assert "recommended_front_run_px" not in orders_corrupt[0]
+
+    # Far-future _ob_ts flagged as [ob_stale] even when now_ts=None
+    now_wall = _time.time()
+    micro_future_wall = {
+        "BTCUSDC": {
+            "best_bid": 60495.0,
+            "best_ask": 60505.0,
+            "ask_wall_px": 60700.0,
+            "ask_wall_usd": 200_000.0,
+            "ask_depth_usd": 400_000.0,
+            "_ob_ts": now_wall + 7200.0,
+        }
+    }
+    orders_wall = [{"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 60900.0}]
+    enrich_open_limit_orders_tca(orders_wall, prices_tca, micro_future_wall, now_ts=None, ob_stale_sec=30.0)
+    assert orders_wall[0].get("ob_flag") == "[ob_stale]"
+    assert "recommended_front_run_px" not in orders_wall[0]
+
+    # Cross-check: valid created_ts + fresh _ob_ts behind "_ob_raw_ts": "0" computes age & front-run cleanly
+    micro_fresh = dict(micro_zero_shadow["BTCUSDC"], _ob_ts=t0 - 5.0)
+    orders_ok = [{"venue": "binance", "symbol": "BTCUSDC", "side": "SELL", "price": 60900.0, "created_ts": t0 - 900.0}]
+    enrich_open_limit_orders_tca(orders_ok, prices_tca, {"BTCUSDC": micro_fresh}, now_ts=t0, ob_stale_sec=30.0)
+    assert orders_ok[0]["age_min"] == pytest.approx(15.0)
+    assert orders_ok[0]["age"] == "15.0m"
+    assert "ob_flag" not in orders_ok[0]
+    assert orders_ok[0].get("wall_queue_pos") == "BEHIND_ASK_WALL"
+
+    # 3. EquityRthSessionPolicy pure invariant + cross-check for far-future bar timestamps
+    pol = EquityRthSessionPolicy()
+    fut_ms = int((t0 + 3600.0) * 1000)
+    fresh_ms = int((t0 - 60.0) * 1000)
+    assert pol._is_series_tail_stale_ms(fut_ms, t0) is True
+    assert pol._is_series_tail_stale_ms(fresh_ms, t0) is False
+
+    ser_fut = [[int((t0 - 3600.0) * 1000), 100.0], [fut_ms, 101.0]]
+    m24_fut = {"chg_1m_pct": 0.4, "chg_5m_pct": 0.6, "chg_15m_pct": 0.9, "chg_24h_pct": 1.0}
+    entry_fut = {"slope_90s": 0.2, "slope_3_7m": 0.15, "gradient_recent_fast": 0.1, "chg_24h_pct": 1.0}
+    _, m24_after, _, replaced = pol.evaluate_post_rth_override(ser_fut, m24_fut, 101.0, t0, entry=entry_fut)
+    assert replaced is False
+    assert "chg_1m_pct" not in m24_after and "chg_5m_pct" not in m24_after and "chg_15m_pct" not in m24_after
+    pol.prune_stale_short_metrics(entry_fut, m24_after, ser_fut, t0)
+    assert "slope_90s" not in entry_fut and "slope_3_7m" not in entry_fut and "gradient_recent_fast" not in entry_fut
+
+    # Cross-check: fresh bar retains short metrics and short slopes
+    ser_fresh = [[int((t0 - 3600.0) * 1000), 100.0], [fresh_ms, 101.0]]
+    m24_fresh = {"chg_1m_pct": 0.4, "chg_5m_pct": 0.6, "chg_15m_pct": 0.9, "chg_24h_pct": 1.0}
+    entry_fresh = {"slope_90s": 0.2, "slope_3_7m": 0.15, "gradient_recent_fast": 0.1, "chg_24h_pct": 1.0}
+    _, m24_f_after, _, _ = pol.evaluate_post_rth_override(ser_fresh, m24_fresh, 101.0, t0, entry=entry_fresh)
+    assert "chg_1m_pct" in m24_f_after and "chg_15m_pct" in m24_f_after
+    pol.prune_stale_short_metrics(entry_fresh, m24_f_after, ser_fresh, t0)
+    assert entry_fresh.get("slope_90s") == pytest.approx(0.2)
+    assert entry_fresh.get("slope_3_7m") == pytest.approx(0.15)
+
+
+
 
 
 

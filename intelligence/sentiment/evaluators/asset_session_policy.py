@@ -546,6 +546,11 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             m24.pop(k_stale, None)
         return matched_series_24h, m24, replaced
 
+    @staticmethod
+    def _is_series_tail_stale_ms(bar_ts_ms: int, now_ts: float, *, max_age_ms: int = 20 * 60 * 1000) -> bool:
+        now_ms = math.trunc(now_ts * 1000)
+        return bar_ts_ms > (now_ms + 60_000) or (now_ms - bar_ts_ms) > max_age_ms
+
     def evaluate_post_rth_override(
         self,
         matched_series_24h: list,
@@ -559,11 +564,12 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         s24_p1 = parse_ts_px_row(matched_series_24h[-1]) if len(matched_series_24h) >= 2 else None
         post_rth_px_override: Optional[float] = None
         post_rth_series_replaced = False
+        s24_tail_stale = bool(s24_p1 is not None and self._is_series_tail_stale_ms(s24_p1[0], now_ts))
         if (
             m24
             and s24_p1 is not None
             and (
-                (math.trunc(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000
+                s24_tail_stale
                 or (sym_px_cur > 0 and abs(sym_px_cur - s24_p1[1]) / max(sym_px_cur, s24_p1[1]) > 0.005)
             )
         ):
@@ -579,7 +585,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             else:
                 for k_stale in STALE_SHORT_24H_KEYS:
                     m24.pop(k_stale, None)
-                if (math.trunc(now_ts * 1000) - s24_p1[0]) > 20 * 60 * 1000:
+                if s24_tail_stale:
                     m24.pop("chg_15m_pct", None)
         return matched_series_24h, m24, post_rth_px_override, post_rth_series_replaced
 
@@ -616,7 +622,7 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
             else bool(
                 matched_series_24h
                 and (last_eq_pt := parse_ts_px_row(matched_series_24h[-1])) is not None
-                and (math.trunc(now_ts * 1000) - last_eq_pt[0]) > 20 * 60 * 1000
+                and self._is_series_tail_stale_ms(last_eq_pt[0], now_ts)
             )
         )
         if not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")) or is_series_stale:

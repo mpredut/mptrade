@@ -2146,6 +2146,185 @@ def test_pass21_account_coherence_future_balance_and_open_ts_without_fills_invar
     assert not any(v.rule in ("balance_verified_ts_future", "open_orders_ts_future") for v in viols_ok)
 
 
+def test_pass29_future_row_timestamps_never_blind_coherence_rules_invariant_and_crosscheck():
+    """Pass 29 pure invariants & cross-checks: corrupt far-future row timestamps in filled_orders, trades, or
+    open_orders must never blind Rules 1, 3, 4, 5a, or 5b and must emit explicit future-timestamp violations."""
+    t_now = 1_796_250_000.0
+
+    # 1. Pure invariants: one corrupt far-future filled row must NOT blind causal_fill_to_balance for a valid lagging fill,
+    #    nor hide open_order_already_filled / ledger_stuck_filled_order; far-future trade emits trade_ts_future;
+    #    far-future open order timestamp still triggers open_order_missing_from_ledger via snapshot fallback.
+    ev_poisoned = VenueCoherenceEvidence(
+        venue="hyperliquid",
+        balance_file_exists=True,
+        balance_verified_ts=t_now - 120.0,
+        balance_items={"USDC": {"free": 1000.0, "locked": 0.0}},
+        open_file_exists=True,
+        open_latest_ts=t_now - 120.0,
+        open_verified_ts=t_now - 120.0,
+        open_items={
+            "HYPEUSDC": [
+                {
+                    "orderId": "ord-already-filled",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "price": 40.0,
+                    "origQty": 1.0,
+                    "executedQty": 0.0,
+                    "timestamp": int((t_now - 60.0) * 1000),
+                },
+                {
+                    "orderId": "ord-untracked-fut",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "price": 39.0,
+                    "origQty": 1.0,
+                    "executedQty": 0.0,
+                    "timestamp": int((t_now + 86400.0) * 1000),
+                },
+            ]
+        },
+        filled_file_exists=True,
+        filled_items={
+            "HYPEUSDC": [
+                {
+                    "orderId": "ord-valid-lag",
+                    "symbol": "HYPEUSDC",
+                    "status": "FILLED",
+                    "origQty": 1.0,
+                    "executedQty": 1.0,
+                    "timestamp": int((t_now - 45.0) * 1000),
+                },
+                {
+                    "orderId": "ord-already-filled",
+                    "symbol": "HYPEUSDC",
+                    "status": "FILLED",
+                    "origQty": 1.0,
+                    "executedQty": 1.0,
+                    "timestamp": int((t_now + 86400.0) * 1000),
+                },
+                {
+                    "orderId": "ord-ledger-stuck",
+                    "symbol": "HYPEUSDC",
+                    "status": "FILLED",
+                    "origQty": 1.0,
+                    "executedQty": 1.0,
+                    "timestamp": int((t_now + 86400.0) * 1000),
+                },
+            ]
+        },
+        trade_file_exists=True,
+        trade_items={
+            "HYPEUSDC": [
+                {
+                    "id": "tr-fut-1",
+                    "orderId": "ord-tr-fut",
+                    "symbol": "HYPEUSDC",
+                    "timestamp": int((t_now + 7200.0) * 1000),
+                }
+            ]
+        },
+    )
+    snap_poisoned = AccountCacheCoherenceSnapshot(
+        now_s=t_now,
+        venues={"hyperliquid": ev_poisoned},
+        ledger_present=True,
+        ledger_updated_ts=t_now - 10.0,
+        ledger_active_orders={
+            "k1": {
+                "v": "hyperliquid",
+                "sym": "HYPEUSDC",
+                "vid": "ord-already-filled",
+                "state": "OPEN",
+                "qty": 1.0,
+                "updated_ts": t_now - 60.0,
+            },
+            "k2": {
+                "v": "hyperliquid",
+                "sym": "HYPEUSDC",
+                "vid": "ord-ledger-stuck",
+                "state": "OPEN",
+                "qty": 1.0,
+                "updated_ts": t_now - 60.0,
+            },
+        },
+    )
+    viols = evaluate_account_cache_coherence(snap_poisoned, sync_grace_sec=15.0, ledger_grace_sec=30.0)
+    rules = [v.rule for v in viols]
+    assert "filled_order_ts_future" in rules
+    assert "causal_fill_to_balance" in rules
+    assert "open_order_already_filled" in rules
+    assert "trade_ts_future" in rules
+    assert "open_order_missing_from_ledger" in rules
+    assert "ledger_stuck_filled_order" in rules
+
+    # 2. Dependent cross-check: valid bounded timestamps with aligned balance, trades, and ledger produce zero violations
+    ev_clean = VenueCoherenceEvidence(
+        venue="hyperliquid",
+        balance_file_exists=True,
+        balance_verified_ts=t_now - 5.0,
+        balance_items={"USDC": {"free": 1000.0, "locked": 39.0}},
+        open_file_exists=True,
+        open_latest_ts=t_now - 5.0,
+        open_verified_ts=t_now - 5.0,
+        open_items={
+            "HYPEUSDC": [
+                {
+                    "orderId": "ord-live-1",
+                    "symbol": "HYPEUSDC",
+                    "side": "BUY",
+                    "price": 39.0,
+                    "origQty": 1.0,
+                    "executedQty": 0.0,
+                    "timestamp": int((t_now - 60.0) * 1000),
+                }
+            ]
+        },
+        filled_file_exists=True,
+        filled_items={
+            "HYPEUSDC": [
+                {
+                    "orderId": "ord-valid-lag",
+                    "symbol": "HYPEUSDC",
+                    "status": "FILLED",
+                    "origQty": 1.0,
+                    "executedQty": 1.0,
+                    "timestamp": int((t_now - 45.0) * 1000),
+                }
+            ]
+        },
+        trade_file_exists=True,
+        trade_items={
+            "HYPEUSDC": [
+                {
+                    "id": "tr-ok-1",
+                    "orderId": "ord-valid-lag",
+                    "symbol": "HYPEUSDC",
+                    "timestamp": int((t_now - 45.0) * 1000),
+                }
+            ]
+        },
+    )
+    snap_clean = AccountCacheCoherenceSnapshot(
+        now_s=t_now,
+        venues={"hyperliquid": ev_clean},
+        ledger_present=True,
+        ledger_updated_ts=t_now - 5.0,
+        ledger_active_orders={
+            "k1": {
+                "v": "hyperliquid",
+                "sym": "HYPEUSDC",
+                "vid": "ord-live-1",
+                "state": "OPEN",
+                "qty": 1.0,
+                "updated_ts": t_now - 60.0,
+            }
+        },
+    )
+    assert evaluate_account_cache_coherence(snap_clean, sync_grace_sec=15.0, ledger_grace_sec=30.0) == []
+
+
+
 
 
 

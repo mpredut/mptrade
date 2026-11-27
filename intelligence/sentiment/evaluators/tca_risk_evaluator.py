@@ -22,6 +22,7 @@ from cachepaths import (
 from intelligence.external.collectors.base_collector import round_spread_bps
 from botcore import (
     coerce_dict_maps,
+    first_epoch_sec,
     first_pos_float,
     normalize_epoch_sec,
     normalize_side,
@@ -315,9 +316,13 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             if spot_px and spot_px > 0.0:
                 o["dist_from_spot_pct"] = pct_delta(lim_px, spot_px)
             if (created_ts_o := normalize_epoch_sec(o.get("created_ts"), default=None)) is not None and created_ts_o > 0.0 and explicit_now is not None:
-                age_m_o = round(max(0.0, ref_now - created_ts_o) / 60.0, 1)
-                o["age_min"] = age_m_o
-                o["age"] = f"{age_m_o:.1f}m" if age_m_o < 60.0 else f"{age_m_o / 60.0:.1f}h"
+                if created_ts_o <= ref_now + 60.0:
+                    age_m_o = round(max(0.0, ref_now - created_ts_o) / 60.0, 1)
+                    o["age_min"] = age_m_o
+                    o["age"] = f"{age_m_o:.1f}m" if age_m_o < 60.0 else f"{age_m_o / 60.0:.1f}h"
+                else:
+                    o.pop("age_min", None)
+                    o.pop("age", None)
             for _stale_tca_k in (
                 "wall_queue_pos",
                 "recommended_front_run_px",
@@ -330,11 +335,10 @@ class OpenLimitOrdersTcaEvaluator(TcaRiskEvaluatorBase):
             ):
                 o.pop(_stale_tca_k, None)
             tca_caps = resolve_asset_session_policy(scoped_sym).telemetry_capabilities
-            ob_raw_ts = (
-                m_entry.get("_ob_raw_ts") if m_entry.get("_ob_raw_ts") is not None else m_entry.get("_ob_ts")
-            ) if isinstance(m_entry, dict) else None
-            ob_ts = normalize_epoch_sec(ob_raw_ts, default=0.0) or 0.0
-            ob_is_future_corrupt = bool(explicit_now is not None and ob_ts > ref_now + 60.0)
+            ob_ts = (
+                first_epoch_sec(m_entry.get("_ob_raw_ts"), m_entry.get("_ob_ts"), default=0.0) or 0.0
+            ) if isinstance(m_entry, dict) else 0.0
+            ob_is_future_corrupt = bool(ob_ts > ref_now + 60.0)
             ob_age_s = max(0.0, ref_now - ob_ts) if (ob_ts > 0.0 and not ob_is_future_corrupt) else None
             ob_is_stale = bool(
                 tca_caps.has_real_l2_book

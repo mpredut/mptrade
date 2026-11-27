@@ -262,30 +262,50 @@ def _evaluate_venue_coherence(
     now_s = snapshot.now_s
     v = ev.venue
 
-    # Index filled orders by (sym_lc, oid) and collect fill IDs + latest fill timestamp.
+    # Index filled orders by (sym_lc, oid) and collect fill IDs + latest bounded fill timestamp.
     filled_by_sym_oid: dict[tuple[str, str], dict[str, Any]] = {}
     filled_oids: set[str] = set()
     filled_fids: set[str] = set()
     latest_fill_ts = 0.0
+    future_fill_rows: dict[tuple[str, str], float] = {}
     for k_sym, rows in (ev.filled_items or {}).items():
         sym_lc = str(k_sym or "").strip().lower()
         for row in rows or ():
             if not isinstance(row, dict):
                 continue
             r_ts = extract_timestamp_s(row) or 0.0
-            if r_ts > latest_fill_ts:
-                latest_fill_ts = r_ts
+            r_ts_future = now_s > 0.0 and r_ts > now_s + 60.0
             oid = clean_order_id(extract_order_id(row, default=None))
-            r_sym_lc = str(row.get("symbol") or k_sym or "").strip().lower() or sym_lc
+            r_sym_disp = str(row.get("symbol") or k_sym or "").strip()
+            r_sym_lc = r_sym_disp.lower() or sym_lc
+            if r_ts_future:
+                f_key = (r_sym_disp or sym_lc, oid or "unknown")
+                if r_ts > future_fill_rows.get(f_key, 0.0):
+                    future_fill_rows[f_key] = r_ts
+            elif r_ts > latest_fill_ts:
+                latest_fill_ts = r_ts
             if oid:
                 filled_oids.add(oid)
                 prev = filled_by_sym_oid.get((r_sym_lc, oid))
                 prev_ts = extract_timestamp_s(prev) or 0.0 if prev else -1.0
-                if prev is None or r_ts >= prev_ts:
+                prev_future = now_s > 0.0 and prev_ts > now_s + 60.0
+                if prev is None or (not r_ts_future and (prev_future or r_ts >= prev_ts)):
                     filled_by_sym_oid[(r_sym_lc, oid)] = row
             for fid in row.get("_fillIds") or ():
                 if (fid_s := clean_scalar_str(fid)) is not None:
                     filled_fids.add(fid_s)
+
+    for (f_sym, f_oid), f_ts_val in sorted(future_fill_rows.items()):
+        out.append(
+            CoherenceViolation(
+                venue=v,
+                rule="filled_order_ts_future",
+                detail=(
+                    f"{f_sym} orderId={f_oid} filled_ts={f_ts_val:.1f} is "
+                    f"{f_ts_val - now_s:.1f}s in the future (> 60s skew)"
+                ),
+            )
+        )
 
     # 1. Causal fill -> balance freshness correlation.
     bal_ts_future = now_s > 0.0 and ev.balance_verified_ts > now_s + 60.0
@@ -459,7 +479,7 @@ def _evaluate_venue_coherence(
         if f_row is None or not _is_filled_row_terminal(f_row, open_row=o_row):
             continue
         f_ts = extract_timestamp_s(f_row) or 0.0
-        if f_ts <= 0.0 or (now_s - f_ts) >= sync_grace:
+        if f_ts <= 0.0 or (now_s > 0.0 and f_ts > now_s + 60.0) or (now_s - f_ts) >= sync_grace:
             out.append(
                 CoherenceViolation(
                     venue=v,
@@ -471,15 +491,22 @@ def _evaluate_venue_coherence(
     # 4. Recent trade cache -> filled-order cache parity.
     if ev.trade_items and ev.filled_file_exists:
         missing_keys: dict[str, tuple[str, float]] = {}
+        future_trade_keys: dict[tuple[str, str], float] = {}
         for k_sym, rows in ev.trade_items.items():
             for row in rows or ():
                 if not isinstance(row, dict):
                     continue
                 t_ts = extract_timestamp_s(row) or 0.0
-                if t_ts <= 0.0 or (now_s - t_ts) > trade_lookback_sec or (now_s - t_ts) < sync_grace:
-                    continue
                 oid = clean_order_id(extract_order_id(row, default=None))
                 tid = clean_scalar_str(row.get("id") if row.get("id") is not None else row.get("tid"))
+                if now_s > 0.0 and t_ts > now_s + 60.0:
+                    t_sym_disp = str(row.get("symbol") or k_sym or "").strip()
+                    t_key = (t_sym_disp, oid or tid or "unknown")
+                    if t_ts > future_trade_keys.get(t_key, 0.0):
+                        future_trade_keys[t_key] = t_ts
+                    continue
+                if t_ts <= 0.0 or (now_s - t_ts) > trade_lookback_sec or (now_s - t_ts) < sync_grace:
+                    continue
                 if not oid and not tid:
                     continue
                 if (oid and oid in filled_oids) or (tid and tid in filled_fids):
@@ -487,6 +514,17 @@ def _evaluate_venue_coherence(
                 dedup_k = oid or tid or ""
                 if dedup_k not in missing_keys:
                     missing_keys[dedup_k] = (str(row.get("symbol") or k_sym or ""), t_ts)
+        for (tf_sym, tf_id), tf_ts in sorted(future_trade_keys.items()):
+            out.append(
+                CoherenceViolation(
+                    venue=v,
+                    rule="trade_ts_future",
+                    detail=(
+                        f"{tf_sym} id={tf_id} trade_ts={tf_ts:.1f} is "
+                        f"{tf_ts - now_s:.1f}s in the future (> 60s skew)"
+                    ),
+                )
+            )
         for miss_id, (m_sym, m_ts) in sorted(missing_keys.items()):
             out.append(
                 CoherenceViolation(
@@ -518,7 +556,8 @@ def _evaluate_venue_coherence(
             o_cid = clean_order_id(extract_client_order_id(o_row, default=None))
             if oid in ledger_ids_for_venue or (o_cid and o_cid in ledger_ids_for_venue):
                 continue
-            o_ts = extract_timestamp_s(o_row) or 0.0
+            raw_o_ts = extract_timestamp_s(o_row) or 0.0
+            o_ts = 0.0 if (now_s > 0.0 and raw_o_ts > now_s + 60.0) else raw_o_ts
             aged_out = (
                 (o_ts > 0.0 and (now_s - o_ts) >= ledger_grace)
                 or (
@@ -555,7 +594,7 @@ def _evaluate_venue_coherence(
             f_row = filled_by_sym_oid.get((sym_l, vid))
             if f_row is not None and _is_filled_row_terminal(f_row, req_qty=rec.get("qty")):
                 f_ts = extract_timestamp_s(f_row) or rec_ts
-                if f_ts <= 0.0 or (now_s - f_ts) >= ledger_grace:
+                if f_ts <= 0.0 or (now_s > 0.0 and f_ts > now_s + 60.0) or (now_s - f_ts) >= ledger_grace:
                     out.append(
                         CoherenceViolation(
                             venue=v,

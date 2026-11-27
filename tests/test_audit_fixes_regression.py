@@ -10271,6 +10271,112 @@ def test_pass16_macro_bar_ts_normalization_and_llm_quota_case_ms_invariants(tmp_
     assert compact_list[0] == "Claude-Sonnet-5-5-Medium"
 
 
+def test_pass29_ntfy_policy_future_blocked_until_self_heal_invariant_and_crosscheck(tmp_path, monkeypatch) -> None:
+    """Pass 29 pure invariants and dependent cross-checks for notify_engine/ntfypolicy.py:
+    1. _normalize_channel_state clears corrupt far-future blocked_until (> now + 24h + 5m) while preserving active <=24h blocks.
+    2. _is_ntfy_channel_blocked rejects epoch-ms (>= 32503680000) blocked_until directly.
+    3. _mark_provider_daily_limit caps excessive cooldown_seconds at 86400s.
+    4. Cross-check: pass_common_gate & pop_due_bulk_batch self-heal corrupt far-future blocked_until persisted on disk.
+    """
+    from datetime import datetime, timezone
+    import notify_engine.ntfypolicy as npol
+
+    t1 = 1_796_250_000.0
+    today_utc = datetime.fromtimestamp(t1, timezone.utc).date().isoformat()
+    state_file = tmp_path / "ntfy_p29_state.json"
+    monkeypatch.setenv("NOTIFICATION_STATE_FILE", str(state_file))
+    monkeypatch.setenv("NOTIFICATION_GATE_SECONDS", "0")
+    monkeypatch.setenv("NOTIFICATION_TOPIC_BULK_SECONDS", "0")
+    monkeypatch.setenv("NOTIFICATION_DEDUP_SECONDS", "0")
+
+    # 1. Pure invariants on _normalize_channel_state and _is_ntfy_channel_blocked
+    for bad_future in (t1 + 7 * 86400.0, 9e9, t1 * 1000.0):
+        st_norm = {"channels": {"ntfy": {"blocked": True, "blocked_until": bad_future}}}
+        ch_norm = npol._normalize_channel_state(st_norm, "ntfy", t1)
+        assert ch_norm["blocked"] is False
+        assert ch_norm["blocked_until"] == 0.0
+
+    st_valid = {"channels": {"ntfy": {"blocked": True, "blocked_until": t1 + 900.0}}}
+    ch_valid = npol._normalize_channel_state(st_valid, "ntfy", t1)
+    assert ch_valid["blocked"] is True
+    assert ch_valid["blocked_until"] == pytest.approx(t1 + 900.0)
+    assert npol._is_ntfy_channel_blocked("ntfy", ch_valid, t1) is True
+
+    st_ms = {"blocked": True, "blocked_until": t1 * 1000.0}
+    assert npol._is_ntfy_channel_blocked("ntfy", st_ms, t1) is False
+    assert st_ms["blocked"] is False and st_ms["blocked_until"] == 0.0
+
+    # 2. Pure invariant: _mark_provider_daily_limit caps excessive cooldown at 86400s
+    monkeypatch.setattr(npol.time, "time", lambda: t1)
+    npol._mark_provider_daily_limit("ntfy", cooldown_seconds=999_999.0)
+    persisted = json.loads(state_file.read_text(encoding="utf-8"))
+    assert persisted["channels"]["ntfy"]["blocked"] is True
+    assert persisted["channels"]["ntfy"]["blocked_until"] == pytest.approx(t1 + 86400.0)
+
+    # 3. Dependent cross-checks: pass_common_gate & pop_due_bulk_batch recover from far-future blocked_until on disk
+    state_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "date_utc": today_utc,
+                "channels": {
+                    "ntfy": {
+                        "blocked": True,
+                        "blocked_until": t1 + 30 * 86400.0,
+                        "sent": 1,
+                        "last_gate_ts": t1 - 600.0,
+                        "topic_last_ts": {},
+                        "pending_bulk": [
+                            {
+                                "title": "Bulk After Future Block Heal",
+                                "body": "Must deliver",
+                                "priority": "high",
+                                "topic": "ntfy-server",
+                                "ts": t1 - 30.0,
+                                "count": 1,
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    popped = npol.pop_due_bulk_batch("ntfy", now=t1)
+    assert popped is not None and "Bulk After Future Block Heal" in popped[0]
+
+    state_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "date_utc": today_utc,
+                "channels": {
+                    "ntfy": {
+                        "blocked": True,
+                        "blocked_until": t1 * 1000.0,
+                        "sent": 0,
+                        "last_gate_ts": 0.0,
+                        "topic_last_ts": {},
+                        "pending_bulk": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    ok_gate, reason_gate, _, payload_gate = npol.pass_common_gate(
+        "ntfy",
+        "Fresh Trade Alert",
+        "BUY BTCUSDC filled",
+        topic="ntfy-trades",
+        now=t1,
+    )
+    assert ok_gate is True
+    assert reason_gate == "reserved"
+    assert payload_gate is not None
+
+
+
 
 
 

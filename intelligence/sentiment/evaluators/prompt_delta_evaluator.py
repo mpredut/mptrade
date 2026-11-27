@@ -270,7 +270,7 @@ def _extract_block_fingerprints(
         sa = _resolve_macro_map(sensors, "sentiment_advisor")
         if sa and str(sa.get("summary") or "").strip():
             block_hashes["sentiment_advisor_summary"] = _hash_payload({
-                "ts": sa.get("ts") if sa.get("ts") is not None else sa.get("timestamp"),
+                "ts": first_epoch_sec(sa.get("ts"), sa.get("timestamp"), default=None, allow_iso=True),
                 "conf": sa.get("confidence"),
                 "summary": str(sa.get("summary") or "").strip(),
             })
@@ -280,7 +280,7 @@ def _extract_block_fingerprints(
     gt = _resolve_macro_map(sensors, "geopolitical_threat", fallback_key="geopolitical")
     if gt and str(gt.get("summary") or "").strip():
         block_hashes["geopolitical_summary"] = _hash_payload({
-            "ts": gt.get("ts") if gt.get("ts") is not None else gt.get("timestamp"),
+            "ts": first_epoch_sec(gt.get("ts"), gt.get("timestamp"), default=None, allow_iso=True),
             "risk": gt.get("risk_score"),
             "summary": str(gt.get("summary") or "").strip(),
             "deesc": gt.get("live_deescalation_note"),
@@ -453,16 +453,21 @@ def _extract_block_fingerprints(
                 recent_order_hashes[str(r_sym)] = _hash_payload({
                     "side": oinfo.get("last_action_side"),
                     "lb_px": lb.get("price"),
-                    "lb_ts": lb.get("ts_ms"),
+                    "lb_ts": first_epoch_sec(lb.get("ts_ms"), lb.get("ts"), default=None, allow_iso=True),
                     "lb_qty": lb.get("qty"),
                     "ls_px": ls.get("price"),
-                    "ls_ts": ls.get("ts_ms"),
+                    "ls_ts": first_epoch_sec(ls.get("ts_ms"), ls.get("ts"), default=None, allow_iso=True),
                     "ls_qty": ls.get("qty"),
                     "open_lots": (
                         [
                             (
                                 round(safe_float(lt.get("qty"), 0.0) or 0.0, 8),
-                                round(safe_float(lt.get("price"), 0.0) or 0.0, 8),
+                                round(
+                                    safe_pos_float(lt.get("entry_px"), default=None)
+                                    or safe_pos_float(lt.get("price"), default=None)
+                                    or 0.0,
+                                    8,
+                                ),
                             )
                             for lt in oinfo.get("open_lots")
                             if isinstance(lt, Mapping)

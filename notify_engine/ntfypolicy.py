@@ -120,6 +120,7 @@ _IDENTITY_NAME_SUBS = (
 )
 _PRIO_RANK = {"urgent": 3, "high": 2, "default": 1, "low": 0}
 _MAX_FINGERPRINT_HISTORY = 200
+_MAX_NTFY_BLOCK_WINDOW_SEC = 86400.0 + 300.0
 _KNOWN_NOTIFY_VENUES = frozenset({"binance", "kraken", "hyperliquid", "t212", "bybit", "coinbase", "okx"})
 _BULK_TITLE_STOPWORDS = frozenset({
     "a", "an", "and", "are", "at", "by", "for", "from", "in", "is", "of", "on", "or", "the", "to", "with",
@@ -292,6 +293,11 @@ def _normalize_channel_state(state: dict, channel: str, now_ts: float) -> dict:
     )
     lg = safe_float(raw_ch.get("last_gate_ts", 0.0), 0.0)
     raw_ch["last_gate_ts"] = 0.0 if (lg < 0.0 or lg > now_ts) else lg
+    bu = safe_float(raw_ch.get("blocked_until", 0.0), 0.0)
+    if bu <= 0.0 or bu > now_ts + _MAX_NTFY_BLOCK_WINDOW_SEC:
+        if "blocked_until" in raw_ch or _parse_bool_flag(raw_ch.get("blocked"), default=False):
+            raw_ch["blocked"] = False
+            raw_ch["blocked_until"] = 0.0
     return raw_ch
 
 
@@ -299,7 +305,7 @@ def _is_ntfy_channel_blocked(channel: str, channel_state: dict, now_ts: float) -
     if channel != "ntfy" or not _parse_bool_flag(channel_state.get("blocked"), default=False):
         return False
     blocked_until = safe_float(channel_state.get("blocked_until", 0.0), 0.0)
-    if blocked_until <= 0.0 or now_ts >= blocked_until:
+    if blocked_until <= 0.0 or blocked_until >= 32503680000.0 or now_ts >= blocked_until:
         channel_state["blocked"] = False
         channel_state["blocked_until"] = 0.0
         return False
@@ -817,7 +823,7 @@ def pop_due_bulk_batch(
 def _mark_provider_daily_limit(channel: str, cooldown_seconds: float = 900.0) -> bool:
     """Block the channel with a rolling cooldown and request one alternate warning."""
     now = time.time()
-    cd_sec = safe_pos_float(cooldown_seconds, default=900.0)
+    cd_sec = min(safe_pos_float(cooldown_seconds, default=900.0) or 900.0, 86400.0)
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     cfg_path = optional_env("NOTIFICATION_STATE_FILE")
     path = NotificationDeliveryStateStore.resolve_state_path(cfg_path)
