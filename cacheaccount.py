@@ -243,6 +243,16 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
         self._account_cache_dirty = False
         self._last_complete_sync_at_ms = 0
         self._persisted_ts_stat_cache: Optional[tuple[tuple[int, int, int, int], int]] = None
+        self._rest_slot_tracker = NonBlockingRestSlotTracker()
+        self._rest_hard_timeout_sec: float = ACCOUNT_REST_HARD_TIMEOUT_SEC
+        self._rest_sync_wake_event = threading.Event()
+        self._rest_sync_pool_lock = threading.Lock()
+        self._rest_sync_pool: Optional[_futures.ThreadPoolExecutor] = None
+        self._nonblocking_rest_sync_enabled: Optional[bool] = None
+        self._sym_next_due_mono: dict[str, float] = {}
+        self._sym_last_ok_hw_ms: dict[str, int] = {}
+        self._sym_cycle_synced: set[str] = set()
+        self._rest_err_streaks: dict[str, int] = {}
         super().__init__(*args, **kwargs)
 
     @staticmethod
@@ -300,13 +310,280 @@ class CacheAccountManagerBase(CacheManagerInterface, ABC):
     def _is_account_cache(self):
         return bool(self._is_trade_account_cache or self._is_order_account_cache)
 
+    def _supports_nonblocking_rest_sync(self) -> bool:
+        return not bool(getattr(self, "_is_balance_account_cache", False))
+
+    def _is_nonblocking_account_sync_mode(self) -> bool:
+        if not self._supports_nonblocking_rest_sync():
+            return False
+        explicit = getattr(self, "_nonblocking_rest_sync_enabled", None)
+        if explicit is not None:
+            return bool(explicit)
+        stop_ev = getattr(self, "_stop_event", None)
+        if stop_ev is not None and stop_ev.is_set():
+            return False
+        return bool(self.save_state and self.is_running())
+
+    def _get_or_create_rest_sync_pool(self, worker_hint: int) -> _futures.ThreadPoolExecutor:
+        with self._rest_sync_pool_lock:
+            if self._rest_sync_pool is None:
+                eff_hint = max(1, worker_hint, len(getattr(self, "symbols", ()) or ()))
+                self._rest_sync_pool = _futures.ThreadPoolExecutor(
+                    max_workers=max(1, min(6, eff_hint)),
+                    thread_name_prefix=f"{self.cls_name}RestSync",
+                )
+            return self._rest_sync_pool
+
+    def _shutdown_rest_sync_pool(self) -> None:
+        with self._rest_sync_pool_lock:
+            pool = self._rest_sync_pool
+            self._rest_sync_pool = None
+        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
+            tracker.clear()
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+            try:
+                for th in list(getattr(pool, "_threads", ())):
+                    _futures.thread._threads_queues.pop(th, None)
+            except Exception:
+                pass
+
+    def _record_rest_error_backoff(self, symbol: str, exc: object, *, eff_sync_ts: float) -> float:
+        streaks = getattr(self, "_rest_err_streaks", None)
+        if not isinstance(streaks, dict):
+            streaks = {}
+            self._rest_err_streaks = streaks
+        streak = streaks.get(symbol, 0) + 1
+        streaks[symbol] = streak
+        err_l = str(exc or "").lower()
+        if any(tok in err_l for tok in ("429", "-1003", "rate limit", "too many requests", "too much request weight")):
+            return min(120.0, max(15.0, eff_sync_ts) * (2.0 ** min(streak - 1, 3)))
+        base_err = max(0.02, min(eff_sync_ts, 5.0))
+        return min(max(eff_sync_ts, 30.0), base_err * (2.0 ** min(streak - 1, 4)))
+
+    def _clear_rest_error_backoff(self, symbol: str) -> None:
+        if isinstance(streaks := getattr(self, "_rest_err_streaks", None), dict):
+            streaks.pop(symbol, None)
+
+    def _should_discard_completed_remote_snapshot(self, symbol: str, slot: Any) -> bool:
+        """Override in replace-all caches when a newer real-time WS update supersedes an in-flight REST snapshot."""
+        return False
+
     def _should_poll(self):
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_active():
+            return True
         poll_fn = _cm_override(
             "_should_poll_for_manager", _bapi_ws_bridge.should_poll_for_manager
         )
         if callable(poll_fn):
             return bool(poll_fn(self.cls_name))
         return True
+
+    def query_remote_and_update_cache(self):
+        if not self._is_nonblocking_account_sync_mode():
+            return super().query_remote_and_update_cache()
+
+        wake_ev = getattr(self, "_rest_sync_wake_event", None)
+        if wake_ev is not None:
+            wake_ev.clear()
+        self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
+        active_syms = [s for s in list(self.symbols) if s]
+        if not active_syms:
+            return True
+
+        tracker = self._rest_slot_tracker
+        eff_sync_ts = safe_pos_float(getattr(self, "sync_ts", None), default=15.0) or 15.0
+        hard_timeout_sec = (
+            safe_pos_float(
+                getattr(self, "_rest_hard_timeout_sec", None),
+                default=ACCOUNT_REST_HARD_TIMEOUT_SEC,
+            )
+            or ACCOUNT_REST_HARD_TIMEOUT_SEC
+        )
+
+        def _harvest_slots(target_syms: Sequence[str], *, cur_mono: float) -> set[str]:
+            handled: set[str] = set()
+            for sym_k in target_syms:
+                state, val, slot = tracker.inspect_and_harvest(
+                    sym_k, now_mono=cur_mono, hard_timeout_sec=hard_timeout_sec
+                )
+                if state == "IN_FLIGHT":
+                    handled.add(sym_k)
+                    continue
+                if state == "HARD_TIMEOUT":
+                    builtins.print(
+                        f"[{self.cls_name}] {sym_k}: REST hard-timeout >{hard_timeout_sec:.1f}s -- resetting slot"
+                    )
+                    self._sym_next_due_mono[sym_k] = cur_mono
+                    continue
+                if state == "DONE_ERR":
+                    delay_s = self._record_rest_error_backoff(sym_k, val, eff_sync_ts=eff_sync_ts)
+                    builtins.print(
+                        f"[{self.cls_name}][Error] {sym_k}: REST sync failed (backoff {delay_s:.1f}s): {val}"
+                    )
+                    self._sym_next_due_mono[sym_k] = cur_mono + delay_s
+                    handled.add(sym_k)
+                    continue
+                if state == "DONE_OK" and slot is not None:
+                    elapsed_s = cur_mono - slot.submit_mono
+                    if elapsed_s > hard_timeout_sec:
+                        self._sym_next_due_mono[sym_k] = cur_mono
+                        continue
+                    if self._should_discard_completed_remote_snapshot(sym_k, slot):
+                        self._sym_next_due_mono[sym_k] = cur_mono
+                        continue
+                    meta_st, meta_hw = slot.meta if isinstance(slot.meta, tuple) and len(slot.meta) == 2 else (
+                        self.fallback_time_default,
+                        math.trunc(slot.submit_wall_ts * 1000),
+                    )
+                    try:
+                        self._apply_remote_items(sym_k, meta_st, val)
+                        self._on_symbol_remote_sync_completed(sym_k, meta_hw)
+                    except Exception as apply_exc:
+                        delay_s = self._record_rest_error_backoff(sym_k, apply_exc, eff_sync_ts=eff_sync_ts)
+                        builtins.print(
+                            f"[{self.cls_name}][Error] {sym_k}: REST apply failed (backoff {delay_s:.1f}s): {apply_exc}"
+                        )
+                        self._sym_next_due_mono[sym_k] = cur_mono + delay_s
+                        handled.add(sym_k)
+                        continue
+                    self._clear_rest_error_backoff(sym_k)
+                    self._sym_last_ok_hw_ms[sym_k] = meta_hw
+                    self._sym_cycle_synced.add(sym_k)
+                    self._sym_next_due_mono[sym_k] = (
+                        cur_mono + eff_sync_ts
+                        if elapsed_s >= eff_sync_ts * 0.5
+                        else (slot.submit_mono + eff_sync_ts)
+                    )
+                    handled.add(sym_k)
+            return handled
+
+        now_mono = _monotonic_time()
+        skip_submit: set[str] = (
+            _harvest_slots(tracker.active_symbols(), cur_mono=now_mono)
+            if tracker.has_active()
+            else set()
+        )
+
+        pending_syms: list[tuple[str, Any, int]] = []
+        for symbol in active_syms:
+            if symbol in skip_submit:
+                continue
+            if now_mono < self._sym_next_due_mono.get(symbol, 0.0):
+                continue
+            req_hw = math.trunc(_now_time() * 1000)
+            fallback_ft = self.fetchtime_per_symbol.get(symbol, self.fallback_time_default)
+            start_time = self._resolve_remote_query_start_time(symbol, fallback_ft)
+            pending_syms.append((symbol, start_time, req_hw))
+
+        if pending_syms:
+            pool = self._get_or_create_rest_sync_pool(len(pending_syms))
+            submit_mono = _monotonic_time()
+            submit_wall = _now_time()
+            submitted_futs: dict[_futures.Future, str] = {}
+            on_done_cb = (lambda _f: wake_ev.set()) if wake_ev is not None else None
+            for sym_item, st_item, hw_item in pending_syms:
+                slot = tracker.submit(
+                    sym_item,
+                    pool,
+                    lambda _s=sym_item, _st=st_item: self.get_remote_items(symbol=_s, startTime=_st),
+                    now_mono=submit_mono,
+                    now_wall_ts=submit_wall,
+                    meta=(st_item, hw_item),
+                    on_done=on_done_cb,
+                )
+                if slot is not None:
+                    submitted_futs[slot.future] = sym_item
+            if submitted_futs:
+                micro_wait = min(0.25, hard_timeout_sec * 0.5, max(0.02, eff_sync_ts * 0.1))
+                done_now, _ = _futures.wait(
+                    submitted_futs.keys(),
+                    timeout=micro_wait,
+                    return_when=_futures.ALL_COMPLETED,
+                )
+                if done_now:
+                    _harvest_slots(
+                        [submitted_futs[f] for f in done_now],
+                        cur_mono=_monotonic_time(),
+                    )
+
+        if all(s in self._sym_cycle_synced for s in active_syms):
+            min_hw_ms = min((self._sym_last_ok_hw_ms.get(s, 0) for s in active_syms), default=0)
+            if min_hw_ms > 0:
+                self._sym_cycle_synced.clear()
+                self._on_complete_remote_sync_cycle(min_hw_ms)
+                return True
+        return False
+
+    def _wait_for_next_sync(self, wait_sec: float) -> bool:
+        if self._stop_event.is_set():
+            return True
+        if not self._is_nonblocking_account_sync_mode():
+            return super()._wait_for_next_sync(wait_sec)
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_done():
+            return False
+        wake_ev = getattr(self, "_rest_sync_wake_event", None)
+        if wake_ev is None:
+            return super()._wait_for_next_sync(wait_sec)
+        wake_ev.wait(timeout=wait_sec)
+        return self._stop_event.is_set()
+
+    def _next_sync_wait_sec(self) -> float:
+        base_wait = safe_nonneg_float(getattr(self, "sync_ts", None), default=15.0)
+        if base_wait is None:
+            base_wait = 15.0
+        if not self._is_nonblocking_account_sync_mode():
+            return base_wait
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_done():
+            return 0.0
+        if not self._should_poll():
+            return base_wait
+        has_active = tracker is not None and tracker.has_active()
+        if not has_active and not self._sym_next_due_mono:
+            return base_wait
+        now_mono = _monotonic_time()
+        wait_sec = base_wait
+        hard_timeout_sec = (
+            safe_pos_float(
+                getattr(self, "_rest_hard_timeout_sec", None),
+                default=ACCOUNT_REST_HARD_TIMEOUT_SEC,
+            )
+            or ACCOUNT_REST_HARD_TIMEOUT_SEC
+        )
+        if has_active:
+            next_ht = tracker.next_hard_timeout_remaining(
+                now_mono=now_mono, hard_timeout_sec=hard_timeout_sec
+            )
+            if next_ht is not None:
+                wait_sec = min(wait_sec, max(0.01, next_ht))
+        active_slots = set(tracker.active_symbols()) if has_active else set()
+        for sym_item in list(self.symbols):
+            if not sym_item or sym_item in active_slots:
+                continue
+            due_at = self._sym_next_due_mono.get(sym_item)
+            if due_at is None:
+                continue
+            if due_at <= now_mono:
+                return 0.0
+            wait_sec = min(wait_sec, max(0.01, due_at - now_mono))
+        return wait_sec
+
+    def request_stop(self):
+        super().request_stop()
+        if (wake_ev := getattr(self, "_rest_sync_wake_event", None)) is not None:
+            wake_ev.set()
+        if (tracker := getattr(self, "_rest_slot_tracker", None)) is not None:
+            tracker.clear()
+
+    set_stop_event = request_stop
+
+    def shutdown(self, timeout=5.0):
+        stopped = super().shutdown(timeout=timeout)
+        self._shutdown_rest_sync_pool()
+        return stopped
 
     def _reload_from_disk(self):
         super()._reload_from_disk()
@@ -3296,6 +3573,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         self.venue = self._normalize_venue_arg(venue=venue, filename=filename, symbols=symbols)
         self.verified_ts: float = 0.0
         self.symbol_verified_ts: dict[str, float] = {}
+        self._last_ws_order_update_mono: dict[str, float] = {}
         super().__init__(
             sync_ts,
             symbols,
@@ -3499,15 +3777,19 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
 
         return self._with_generation_lock_bool(_save_locked, "OpenOrder snapshot")
 
-    def _fetch_and_apply_remote_items(self, symbol: str, startTime) -> list:
+    def _apply_remote_items(self, symbol: str, startTime, new_items) -> list:
         """Always apply replace-all snapshot semantics, including an empty open-order list."""
-        new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
         if new_items is None:
             raise RuntimeError(
                 f"{self.cls_name} returned no synchronization result for {symbol}"
             )
         self._persist_items(symbol, new_items)
         return new_items
+
+    def _should_discard_completed_remote_snapshot(self, symbol: str, slot: Any) -> bool:
+        """Discard a stale pre-WS open-order REST snapshot if a WS order delta arrived after submit."""
+        ws_mono = getattr(self, "_last_ws_order_update_mono", {}).get(symbol, 0.0)
+        return bool(ws_mono > 0.0 and ws_mono >= getattr(slot, "submit_mono", 0.0))
 
     def get_remote_items(self, symbol, startTime) -> list[dict[str, Any]]:
         prov_cls = MarketDataProvider.resolve_venue_provider_class(self.venue)
@@ -3589,6 +3871,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
         with self.lock:
             bucket = list(self.cache.get(symbol) or ())
             if act == "remove":
+                self._last_ws_order_update_mono[symbol] = _monotonic_time()
                 filtered = [r for r in bucket if clean_order_id(r.get("orderId")) != oid]
                 if len(filtered) == len(bucket):
                     return False
@@ -3599,6 +3882,7 @@ class CacheOrderOpenManager(CacheAccountManagerBase):
                 norm = self.normalize_open_order_row(order_item)
                 if norm is None:
                     return False
+                self._last_ws_order_update_mono[symbol] = _monotonic_time()
                 updated = False
                 for idx, existing in enumerate(bucket):
                     if clean_order_id(existing.get("orderId")) == norm["orderId"]:

@@ -1930,3 +1930,208 @@ class AccountCacheReaderConfirmationTest(TempDirTestCase):
             )
             self.assertEqual(reader_sp.cache.get("BTC"), [[1700000000000, 60000.0]])
             self.assertTrue(os.path.exists(sp_path + ".previous"))
+
+    def test_nonblocking_binance_account_resync_isolation_hard_timeout_ws_preemption_and_backoff(self):
+        """CacheAccountManagerBase non-blocking per-symbol REST resync isolates hung/failing symbols,
+        evicts wedged slots on hard_timeout, preserves fail-closed cycle health/verified_ts,
+        discards pre-WS open-order snapshots, and wakes periodic_sync immediately on completion."""
+        now_ms = int(time.time() * 1000)
+
+        with self.subTest("order_filled_isolates_wedged_symbol_preserves_health_and_recovers_on_hard_timeout"):
+            order_path = os.path.join(self.tmp, "nb_order_filled.json")
+            with open(order_path, "w", encoding="utf-8") as fh:
+                json.dump({"items": {}, "fetchtime": {}}, fh)
+            mgr = cm.CacheOrderFilledManager(
+                sync_ts=10.0,
+                symbols=["BTCUSDC", "ETHUSDC"],
+                filename=order_path,
+                read_only=False,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            mgr._nonblocking_rest_sync_enabled = True
+            mgr._rest_hard_timeout_sec = 0.12
+            wedged_ev = threading.Event()
+            btc_started = threading.Event()
+            calls = {"BTCUSDC": 0, "ETHUSDC": 0}
+
+            def _fake_remote(*, symbol, startTime):
+                calls[symbol] += 1
+                if symbol == "BTCUSDC":
+                    if calls[symbol] == 1:
+                        btc_started.set()
+                        wedged_ev.wait(timeout=5.0)
+                        return [{"orderId": 999, "price": 1.0, "quantity": 1.0, "timestamp": now_ms - 5000, "side": "BUY", "_fillId": "999"}]
+                    return [{"orderId": 101, "price": 62000.0, "quantity": 0.1, "timestamp": now_ms, "side": "BUY", "_fillId": "101"}]
+                return [{"orderId": 201, "price": 3200.0, "quantity": 0.5, "timestamp": now_ms, "side": "BUY", "_fillId": "201"}]
+
+            mgr.get_remote_items = _fake_remote
+            try:
+                t0 = time.monotonic()
+                done1 = mgr.query_remote_and_update_cache()
+                self.assertLess(time.monotonic() - t0, 0.8)
+                self.assertTrue(btc_started.wait(timeout=1.0))
+                self.assertFalse(done1, "partial cycle with wedged BTCUSDC must not claim complete sync")
+                self.assertEqual(mgr._last_complete_sync_at_ms, 0)
+                self.assertEqual(len(mgr.cache.get("ETHUSDC") or ()), 1)
+                self.assertNotIn("BTCUSDC", mgr.cache)
+
+                # While BTCUSDC is still in-flight before hard_timeout, duplicate call does not re-submit BTCUSDC
+                self.assertFalse(mgr.query_remote_and_update_cache())
+                self.assertEqual(calls["BTCUSDC"], 1)
+
+                # After hard_timeout, wedged slot is evicted and fresh retry completes the cycle
+                time.sleep(0.15)
+                done2 = mgr.query_remote_and_update_cache()
+                if not done2 and "BTCUSDC" in mgr._rest_slot_tracker.slots:
+                    mgr._rest_slot_tracker.slots["BTCUSDC"].future.result(timeout=2.0)
+                    done2 = mgr.query_remote_and_update_cache()
+                self.assertTrue(done2)
+                self.assertEqual(calls["BTCUSDC"], 2)
+                self.assertGreater(mgr._last_complete_sync_at_ms, 0)
+                self.assertEqual(mgr.cache["BTCUSDC"][0]["orderId"], 101)
+                self.assertEqual(mgr.cache["ETHUSDC"][0]["orderId"], 201)
+            finally:
+                wedged_ev.set()
+                mgr.shutdown(timeout=2.0)
+
+        with self.subTest("order_open_advances_symbol_verified_ts_and_discards_pre_ws_rest_snapshot"):
+            open_path = os.path.join(self.tmp, "nb_order_open.json")
+            with open(open_path, "w", encoding="utf-8") as fh:
+                json.dump({"items": {}, "fetchtime": {}}, fh)
+            omgr = cm.CacheOrderOpenManager(
+                sync_ts=10.0,
+                symbols=["BTCUSDC", "ETHUSDC"],
+                filename=open_path,
+                read_only=False,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            omgr._nonblocking_rest_sync_enabled = True
+            omgr.replace_symbol_open_orders(
+                "BTCUSDC",
+                [{"orderId": "501", "side": "BUY", "type": "LIMIT", "price": 60000.0, "origQty": 0.1, "executedQty": 0.0, "status": "NEW"}],
+                now_ms=now_ms - 5000,
+            )
+            omgr.verified_ts = 0.0
+            btc_entered = threading.Event()
+            btc_release = threading.Event()
+            open_calls = {"BTCUSDC": 0, "ETHUSDC": 0}
+
+            def _fake_open(*, symbol, startTime):
+                open_calls[symbol] += 1
+                if symbol == "BTCUSDC":
+                    if open_calls[symbol] == 1:
+                        btc_entered.set()
+                        btc_release.wait(timeout=3.0)
+                        # Stale snapshot taken before WS removal of #501
+                        return [{"orderId": "501", "side": "BUY", "type": "LIMIT", "price": 60000.0, "origQty": 0.1, "executedQty": 0.0, "status": "NEW"}]
+                    return []
+                return [{"orderId": "601", "side": "SELL", "type": "LIMIT", "price": 3500.0, "origQty": 0.5, "executedQty": 0.0, "status": "NEW"}]
+
+            omgr.get_remote_items = _fake_open
+            try:
+                self.assertFalse(omgr.query_remote_and_update_cache())
+                self.assertTrue(btc_entered.wait(timeout=1.0))
+                # ETHUSDC updated & verified independently; venue-wide verified_ts still 0.0
+                self.assertEqual([r["orderId"] for r in omgr.cache.get("ETHUSDC") or ()], ["601"])
+                self.assertGreater(omgr.symbol_verified_ts.get("ETHUSDC", 0.0), 0.0)
+                self.assertEqual(omgr.verified_ts, 0.0)
+
+                # Live WS executionReport removes #501 while REST call #1 is in-flight
+                self.assertTrue(omgr.apply_ws_order_update("BTCUSDC", "remove", {"orderId": "501"}))
+                self.assertEqual(omgr.cache.get("BTCUSDC"), [])
+
+                # Release stale pre-WS REST call #1: must be discarded, never resurrecting #501, and triggers fresh call #2
+                btc_release.set()
+                slot1 = omgr._rest_slot_tracker.slots.get("BTCUSDC")
+                if slot1 is not None:
+                    slot1.future.result(timeout=2.0)
+                done_open = omgr.query_remote_and_update_cache()
+                if not done_open and "BTCUSDC" in omgr._rest_slot_tracker.slots:
+                    omgr._rest_slot_tracker.slots["BTCUSDC"].future.result(timeout=2.0)
+                    done_open = omgr.query_remote_and_update_cache()
+                self.assertTrue(done_open)
+                self.assertEqual(open_calls["BTCUSDC"], 2)
+                self.assertEqual(omgr.cache.get("BTCUSDC"), [])
+                self.assertGreater(omgr.verified_ts, 0.0)
+            finally:
+                btc_release.set()
+                omgr.shutdown(timeout=2.0)
+
+        with self.subTest("trade_cache_isolates_429_error_backoff_without_aborting_sibling_symbols"):
+            tr_path = os.path.join(self.tmp, "nb_trades.jsonl")
+            with open(tr_path, "w", encoding="utf-8"):
+                pass
+            tmgr = cm.CacheTradeManager(
+                sync_ts=10.0,
+                symbols=["BTCUSDC", "ETHUSDC"],
+                filename=tr_path,
+                api_client=MagicMock(),
+                read_only=False,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            tmgr._nonblocking_rest_sync_enabled = True
+            tr_calls = {"BTCUSDC": 0, "ETHUSDC": 0}
+            fail_btc = [True]
+
+            def _fake_trades(*, symbol, startTime):
+                tr_calls[symbol] += 1
+                if symbol == "BTCUSDC" and fail_btc[0]:
+                    raise RuntimeError("HTTP 429 too many requests")
+                return [{**_trade(301 if symbol == "BTCUSDC" else 302, now_ms), "symbol": symbol}]
+
+            tmgr.get_remote_items = _fake_trades
+            try:
+                self.assertFalse(tmgr.query_remote_and_update_cache())
+                self.assertEqual(len(tmgr.cache.get("ETHUSDC") or ()), 1)
+                self.assertNotIn("BTCUSDC", tmgr.cache)
+                self.assertEqual(tmgr._rest_err_streaks.get("BTCUSDC"), 1)
+                self.assertGreater(tmgr._sym_next_due_mono.get("BTCUSDC", 0.0) - time.monotonic(), 10.0)
+
+                # Immediate re-call honors 429 backoff without re-hammering BTCUSDC
+                self.assertFalse(tmgr.query_remote_and_update_cache())
+                self.assertEqual(tr_calls["BTCUSDC"], 1)
+
+                # Once backoff expires and BTCUSDC recovers, cycle completes and clears error streak
+                fail_btc[0] = False
+                tmgr._sym_next_due_mono["BTCUSDC"] = 0.0
+                self.assertTrue(tmgr.query_remote_and_update_cache())
+                self.assertEqual(tr_calls["BTCUSDC"], 2)
+                self.assertNotIn("BTCUSDC", tmgr._rest_err_streaks)
+                self.assertGreater(tmgr._last_complete_sync_at_ms, 0)
+            finally:
+                tmgr.shutdown(timeout=2.0)
+
+        with self.subTest("periodic_sync_wakes_immediately_on_slow_symbol_completion_and_shuts_down_cleanly"):
+            loop_path = os.path.join(self.tmp, "nb_periodic_wake.json")
+            with open(loop_path, "w", encoding="utf-8") as fh:
+                json.dump({"items": {}, "fetchtime": {}}, fh)
+            lmgr = cm.CacheOrderFilledManager(
+                sync_ts=60.0,
+                symbols=["BTCUSDC", "ETHUSDC"],
+                filename=loop_path,
+                read_only=False,
+                data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+            )
+            lmgr._first_sleep = False
+
+            def _slow_btc(*, symbol, startTime):
+                if symbol == "BTCUSDC":
+                    time.sleep(0.32)
+                    return [{"orderId": 701, "price": 62500.0, "quantity": 0.1, "timestamp": now_ms, "side": "BUY", "_fillId": "701"}]
+                return [{"orderId": 702, "price": 3250.0, "quantity": 0.2, "timestamp": now_ms, "side": "BUY", "_fillId": "702"}]
+
+            lmgr.get_remote_items = _slow_btc
+            try:
+                t0 = time.monotonic()
+                lmgr.periodic_sync(sync_ts=60.0, save_state=True)
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline and lmgr._last_complete_sync_at_ms <= 0:
+                    time.sleep(0.02)
+                elapsed = time.monotonic() - t0
+                self.assertGreater(lmgr._last_complete_sync_at_ms, 0)
+                self.assertLess(elapsed, 2.5, "periodic_sync must wake on done callback, not sleep sync_ts=60s")
+                self.assertEqual(lmgr.cache["BTCUSDC"][0]["orderId"], 701)
+                self.assertEqual(lmgr.cache["ETHUSDC"][0]["orderId"], 702)
+            finally:
+                self.assertTrue(lmgr.shutdown(timeout=2.0))
+                self.assertIsNone(lmgr._rest_sync_pool)

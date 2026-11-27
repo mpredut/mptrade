@@ -1584,8 +1584,7 @@ class CacheManagerInterface(ABC):
     ) -> None:
         pass
 
-    def _fetch_and_apply_remote_items(self, symbol: str, startTime) -> list:
-        new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
+    def _apply_remote_items(self, symbol: str, startTime, new_items) -> list:
         if new_items is None:
             raise RuntimeError(
                 f"{self.cls_name} returned no synchronization result for {symbol}"
@@ -1597,6 +1596,10 @@ class CacheManagerInterface(ABC):
         else:
             self._persist_items(symbol, new_items)
         return new_items
+
+    def _fetch_and_apply_remote_items(self, symbol: str, startTime) -> list:
+        new_items = self.get_remote_items(symbol=symbol, startTime=startTime)
+        return self._apply_remote_items(symbol, startTime, new_items)
 
     def query_remote_and_update_cache(self):
         self._ensure_fetchtimes_initialized(sync_rest_cursor=True)
@@ -1729,8 +1732,12 @@ class CacheManagerInterface(ABC):
 
             thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
             thread.daemon = True
-            thread.start()
             self.thread = thread
+            try:
+                thread.start()
+            except BaseException:
+                self.thread = None
+                raise
             return self.thread
 
     def _wait_for_next_sync(self, wait_sec: float) -> bool:
