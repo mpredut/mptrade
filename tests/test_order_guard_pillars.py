@@ -993,10 +993,15 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
     ]
     assert [c["symbol"] for c in cmc_src.get_new_coins(days_back=7)] == ["CMCA"]
 
+    from datetime import datetime, timedelta
+    recent_iso = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    recent_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
     bin_src = BinanceNewListingsSource.__new__(BinanceNewListingsSource)
     bin_src._new_listings = [
         {"symbol": "BINA", "added_at": now_ts * 1000.0},
-        {"symbol": "BINB", "added_at": "2099-01-01T00:00:00Z"},
+        {"symbol": "BINB", "added_at": recent_iso},
+        {"symbol": "BINFUTURE", "added_at": "2099-01-01T00:00:00Z"},
         {"symbol": "BINC", "added_at": False},
     ]
     assert [c["symbol"] for c in bin_src.get_new_coins(days_back=7)] == ["BINA", "BINB"]
@@ -1004,7 +1009,8 @@ def test_batch40_market_monitor_and_notify_engine_hardening(tmp_path, monkeypatc
     dex_src = DexScreenerSource.__new__(DexScreenerSource)
     dex_src._cache = [
         {"symbol": "DEXA", "added_at": now_ts},
-        {"symbol": "DEXB", "added_at": "2099-01-01"},
+        {"symbol": "DEXB", "added_at": recent_date},
+        {"symbol": "DEXFUTURE", "added_at": "2099-01-01"},
     ]
     assert [c["symbol"] for c in dex_src.get_new_coins(days_back=7)] == ["DEXA", "DEXB"]
 
@@ -2233,3 +2239,82 @@ def test__resolve_window_ref_from_orders_resolves_active_cycle_reference_across_
     recent_opp = [{"price": 100.0, "time": 1000}, {"price": 110.0, "time": 2000}]
     assert _resolve_window_ref_from_orders(fake_prov, "BTCUSDC", "BUY", 3600.0, recent_opp, "strict") == pytest.approx(100.0)
     assert _resolve_window_ref_from_orders(fake_prov, "BTCUSDC", "SELL", 3600.0, recent_opp, "strict") == pytest.approx(110.0)
+
+
+def test_pass34_math_profit_ref_fails_closed_on_provider_error_and_margins_reload_recovers(tmp_path, monkeypatch):
+    """Pass #34 pure invariants + dependent cross-checks:
+    1. check_math_profit_reference fails closed (False) when window_reference raises ProviderError
+       instead of swallowing the error and failing open when last_opposite_fill is absent.
+    2. Dependent cross-check: profit_guard propagates the fail-closed block and sets last_block_reason='profit_guard'.
+    3. guard_hierarchy._load_margins does not advance _MARGINS_LAST_CHECK on failed hot-reload validation,
+       so fixing order_guard.conf reloads immediately on the next call.
+    """
+    import os
+    from pathlib import Path
+    import guard_hierarchy as gh
+    from providers.ohlc_utils import ProviderError
+
+    # 1. Pure invariant + dependent cross-check: ProviderError in window_reference fails closed
+    def _stale_get_orders(_sym, _side, _win):
+        raise ProviderError("account cache stale")
+
+    stale_prov = SimpleNamespace(name="binance", get_orders=_stale_get_orders)
+    assert order_guard.check_math_profit_reference(
+        stale_prov, "BTCUSDC", "SELL", 65000.0, 1.0, reference_mode="average"
+    ) is False
+    assert order_guard.check_math_profit_reference(
+        stale_prov, "BTCUSDC", "BUY", 60000.0, 1.0, reference_mode="last"
+    ) is False
+    assert order_guard.profit_guard(
+        stale_prov,
+        "BTCUSDC",
+        "SELL",
+        65000.0,
+        1.0,
+        reference_mode="average",
+        evaluate_intelligence=False,
+    ) is False
+    assert order_guard.get_last_profit_guard_block_reason() == "profit_guard"
+
+    # 2. Pure invariant: failed _load_margins hot-reload does not suppress immediate retry for 5s
+    orig_conf = Path(order_guard.__file__).resolve().parent / "order_guard.conf"
+    tmp_anchor = tmp_path / "order_guard.py"
+    tmp_anchor.write_text("# stub\n", encoding="utf-8")
+    tmp_conf = tmp_path / "order_guard.conf"
+    base_text = orig_conf.read_text(encoding="utf-8")
+    tmp_conf.write_text(base_text, encoding="utf-8")
+
+    fake_og = SimpleNamespace(
+        __file__=str(tmp_anchor),
+        _MARGINS=None,
+        _MARGINS_FILE_MTIME=0.0,
+        _MARGINS_LAST_CHECK=0.0,
+    )
+    monkeypatch.setitem(sys.modules, "order_guard", fake_og)
+    monkeypatch.setattr(gh, "_MARGINS", None)
+    monkeypatch.setattr(gh, "_MARGINS_FILE_MTIME", 0.0)
+    monkeypatch.setattr(gh, "_MARGINS_LAST_CHECK", 0.0)
+
+    t_now = [1_793_660_000.0]
+    monkeypatch.setattr(gh.time, "time", lambda: t_now[0])
+    m0 = gh._load_margins()
+    orig_default = m0["default"]
+
+    # Corrupt file (missing required keys) after 10s -> raises KeyError without advancing _MARGINS_LAST_CHECK
+    t_now[0] += 10.0
+    tmp_conf.write_text("default = 2.5\n", encoding="utf-8")
+    os.utime(tmp_conf, (t_now[0], t_now[0]))
+    with pytest.raises(KeyError):
+        gh._load_margins()
+
+    # Repair file 0.5s later with an updated default margin -> reloads immediately on the very next call
+    t_now[0] += 0.5
+    new_default = round(float(orig_default) + 0.5, 4)
+    updated_lines = [
+        f"default = {new_default}" if ln.strip().startswith("default =") else ln
+        for ln in base_text.splitlines()
+    ]
+    tmp_conf.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    os.utime(tmp_conf, (t_now[0] + 1.0, t_now[0] + 1.0))
+    m1 = gh._load_margins()
+    assert m1["default"] == pytest.approx(new_default)

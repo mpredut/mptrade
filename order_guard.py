@@ -1235,6 +1235,9 @@ def check_math_profit_reference(
                 provider, symbol, side, safe_nonneg_float(_venue_cfg(provider_name, "_safeback_sec"), 120.0),
                 reference_mode=mode, module=module,
             )
+        except ProviderError as exc:
+            print(f"[GUARD] {side} {symbol} (mode={mode}): window history unavailable ({exc}) -> BLOCKED")
+            return False
         except Exception:
             pass
 

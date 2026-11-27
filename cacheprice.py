@@ -2515,9 +2515,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if self.is_real_ws_healthy(symbol)
             else max(sym_stale_ms, 5_000)
         )
-        if existing_ts > 0 and (existing_ts - ts_ms) > ooo_limit_ms:
-            return
         now = _now_time()
+        if existing_ts > 0 and existing_ts <= (now * 1000.0 + 60_000.0) and (existing_ts - ts_ms) > ooo_limit_ms:
+            return
         self._ws_last_event_ts_value = now
         self._ws_last_event_ts_per_symbol[symbol] = now
         self._ws_stream_event_ts_per_symbol[symbol] = now
@@ -2673,16 +2673,24 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         sym_u = str(symbol or "").strip().upper()
         return symbol in delegated or (bool(sym_u) and sym_u in delegated)
 
-    def _was_ws_updated_since(self, symbol: str, since_wall_ts: float) -> bool:
-        """Return True when a real WebSocket tick arrived for ``symbol`` at or after ``since_wall_ts``."""
+    def _was_ws_updated_since(
+        self, symbol: str, since_wall_ts: float, *, now_wall_ts: Optional[float] = None
+    ) -> bool:
+        """Return True when a valid (non-future) WebSocket tick arrived for ``symbol`` at or after ``since_wall_ts``."""
         ws_map = getattr(self, "_ws_stream_event_ts_per_symbol", None)
         if not isinstance(ws_map, dict):
             return False
+        eff_now = safe_pos_float(now_wall_ts, default=None)
+        if eff_now is None:
+            eff_now = _now_time()
         sym_u = str(symbol or "").strip().upper()
-        ws_ts = max(
-            safe_nonneg_float(ws_map.get(symbol), default=0.0) or 0.0,
-            safe_nonneg_float(ws_map.get(sym_u), default=0.0) or 0.0,
+        ws_cands = (
+            ts_v
+            for raw_ts in (ws_map.get(symbol), ws_map.get(sym_u))
+            if (ts_v := safe_pos_float(raw_ts, default=None)) is not None
+            and ts_v <= eff_now + 60.0
         )
+        ws_ts = max(ws_cands, default=0.0)
         return ws_ts > 0.0 and ws_ts >= since_wall_ts
 
     def _symbol_ws_and_cache_fresh(
@@ -2786,7 +2794,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     continue
                 if state == "DONE_OK" and slot is not None:
                     ws_preempted = self._was_ws_updated_since(
-                        sym_k, slot.submit_wall_ts
+                        sym_k, slot.submit_wall_ts, now_wall_ts=cur_wall
                     ) or self._symbol_ws_and_cache_fresh(
                         sym_k, is_live_daemon_poll=True, now_ms=cur_wall * 1000.0
                     )
@@ -2965,6 +2973,19 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         if persisted_snap_ts > 0 and (self._mem_max_ts() - persisted_snap_ts) >= 800:
             return min(base_wait, 0.03)
         wait_sec = min(base_wait, 0.35)
+        if tracker is not None and tracker.has_active():
+            ht_sec = (
+                safe_pos_float(
+                    getattr(self, "_rest_hard_timeout_sec", None),
+                    default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
+                )
+                or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
+            )
+            next_ht = tracker.next_hard_timeout_remaining(
+                now_mono=_monotonic_time(), hard_timeout_sec=ht_sec
+            )
+            if next_ht is not None:
+                wait_sec = min(wait_sec, max(0.02, next_ht))
         now = _now_time()
         is_live_daemon = self._is_live_daemon_poll_mode()
         for sym_item in list(self.symbols):

@@ -559,7 +559,10 @@ class NonBlockingRestSlotTracker:
             existing = self._slots.get(symbol)
             if existing is not None and not existing.future.done():
                 return None
-            fut = pool.submit(fn)
+            try:
+                fut = pool.submit(fn)
+            except RuntimeError:
+                return None
             slot = InFlightRestSlot(
                 future=fut,
                 submit_mono=now_mono,
@@ -763,7 +766,7 @@ def start_nonbinance_trend_poller(
                     break
                 stop_event.wait(0.1)
 
-        def _record_poll_error_backoff(sym_item: str, exc: object) -> float:
+        def _record_poll_error_backoff(sym_item: str, exc: object, *, now_mono_val: Optional[float] = None) -> float:
             streak = err_streaks.get(sym_item, 0) + 1
             err_streaks[sym_item] = streak
             err_l = str(exc or "").lower()
@@ -771,33 +774,38 @@ def start_nonbinance_trend_poller(
                 delay_s = min(120.0, max(15.0, eff_interval * 4.0) * (2.0 ** min(streak - 1, 3)))
             else:
                 delay_s = min(30.0, max(eff_interval * 2.0, 0.5) * (2.0 ** min(streak - 1, 5)))
-            err_backoff_until[sym_item] = time.time() + delay_s
+            ref_mono = time.monotonic() if now_mono_val is None else now_mono_val
+            err_backoff_until[sym_item] = ref_mono + delay_s
             return delay_s
 
-        def _was_ws_fresh_or_preempted(sym_item: str, submit_wall_ts: float) -> bool:
+        def _was_ws_fresh_or_preempted(sym_item: str, submit_wall_ts: float, now_wall_ts: float) -> bool:
             ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
             if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(sym_item), False):
                 return True
             ws_stream_map = getattr(cpm, "_ws_stream_event_ts_per_symbol", None)
             if isinstance(ws_stream_map, dict):
-                ws_ts = max(
-                    safe_nonneg_float(ws_stream_map.get(sym_item), default=0.0) or 0.0,
-                    safe_nonneg_float(ws_stream_map.get(sym_item.upper()), default=0.0) or 0.0,
+                ws_cands = (
+                    ts_v
+                    for raw_ts in (ws_stream_map.get(sym_item), ws_stream_map.get(sym_item.upper()))
+                    if (ts_v := safe_pos_float(raw_ts, default=None)) is not None
+                    and ts_v <= now_wall_ts + 60.0
                 )
-                if ws_ts >= submit_wall_ts:
+                ws_ts = max(ws_cands, default=0.0)
+                if ws_ts > 0.0 and ws_ts >= submit_wall_ts:
                     return True
             return False
 
         def _apply_fetched_price(sym_item: str, raw_px: Any, *, is_eq: bool) -> None:
             pf = safe_pos_float(raw_px, default=None)
             now_done = time.time()
+            now_done_mono = time.monotonic()
             if pf is not None:
                 rth_seeded.add(sym_item)
                 empty_backoff_ts.pop(sym_item, None)
                 err_streaks.pop(sym_item, None)
                 err_backoff_until.pop(sym_item, None)
                 if is_eq:
-                    last_equity_poll_ts[sym_item] = now_done
+                    last_equity_poll_ts[sym_item] = now_done_mono
                 if has_cls_mark_ws:
                     cpm.mark_symbol_ws_event(sym_item, now_done)
                 elif isinstance(ws_ts_map := getattr(cpm, "_ws_last_event_ts_per_symbol", None), dict):
@@ -806,7 +814,7 @@ def start_nonbinance_trend_poller(
                 if callable(push_fn):
                     push_fn(sym_item, pf)
             else:
-                empty_backoff_ts[sym_item] = now_done
+                empty_backoff_ts[sym_item] = now_done_mono
 
         def _mark_eq_idle(sym_item: str, ts_val: float) -> None:
             if has_cls_mark_ws:
@@ -840,18 +848,19 @@ def start_nonbinance_trend_poller(
                         f"[NB-trend] {s}: REST hard-timeout >{eff_hard_timeout:.1f}s -- resetting slot"
                     )
                 elif state == "DONE_ERR":
-                    delay_s = _record_poll_error_backoff(s, res_val)
+                    delay_s = _record_poll_error_backoff(s, res_val, now_mono_val=now_mono)
                     builtins.print(f"[NB-trend] {s}: {res_val} (backoff {delay_s:.1f}s)")
                     continue
                 elif state == "DONE_OK" and slot is not None:
-                    if _was_ws_fresh_or_preempted(s, slot.submit_wall_ts):
+                    if _was_ws_fresh_or_preempted(s, slot.submit_wall_ts, now_ts):
                         empty_backoff_ts.pop(s, None)
                         err_streaks.pop(s, None)
                         err_backoff_until.pop(s, None)
                         next_poll_mono[s] = now_mono + eff_interval
                         continue
                     if safe_pos_float(res_val, default=None) is None:
-                        empty_backoff_ts[s] = time.time()
+                        empty_backoff_ts[s] = now_mono
+                        next_poll_mono[s] = now_mono + eff_interval
                         continue
                     if (now_mono - slot.submit_mono) <= eff_hard_timeout:
                         _apply_fetched_price(s, res_val, is_eq=bool(slot.meta))
@@ -861,7 +870,7 @@ def start_nonbinance_trend_poller(
                 ws_health_fn = getattr(cpm, "is_real_ws_healthy", None)
                 if callable(ws_health_fn) and _parse_bool_flag(ws_health_fn(s), False):
                     continue
-                if now_ts < err_backoff_until.get(s, 0.0):
+                if now_mono < err_backoff_until.get(s, 0.0):
                     continue
                 if now_mono < next_poll_mono.get(s, 0.0):
                     continue
@@ -870,20 +879,21 @@ def start_nonbinance_trend_poller(
                 rth_gate_active = is_rth_gate_enabled(
                     getattr(cpm, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
                 )
-                last_empty = empty_backoff_ts.get(s, 0.0)
+                last_empty = empty_backoff_ts.get(s)
                 market_open = not rth_gate_active or is_symbol_market_open(s, now_ts)
                 is_ext_open = bool(is_eq and rth_gate_active and not market_open and is_us_extended_hours_open(now_ts))
-                if rth_gate_active and (market_open or is_ext_open) and last_empty > 0.0 and (now_ts - last_empty) < 60.0:
+                if rth_gate_active and (market_open or is_ext_open) and last_empty is not None and (now_mono - last_empty) < 60.0:
                     continue
+                last_eq_mono = last_equity_poll_ts.get(s)
                 if is_ext_open:
                     cur_ts_ms = _cached_ts_ms(s)
                     ext_cache_fresh = cur_ts_ms is not None and -5_000.0 <= (now_ts * 1000.0 - cur_ts_ms) < (equity_ext_gap_sec * 1000.0)
-                    if (s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_ext_gap_sec) or ext_cache_fresh:
+                    if (s in rth_seeded and last_eq_mono is not None and (now_mono - last_eq_mono) < equity_ext_gap_sec) or ext_cache_fresh:
                         _mark_eq_idle(s, now_ts)
                         continue
                 elif (
-                    not market_open and (s in rth_seeded or (last_empty > 0.0 and (now_ts - last_empty) < 300.0))
-                ) or (is_eq and s in rth_seeded and (now_ts - last_equity_poll_ts.get(s, 0.0)) < equity_min_gap_sec):
+                    not market_open and (s in rth_seeded or (last_empty is not None and (now_mono - last_empty) < 300.0))
+                ) or (is_eq and s in rth_seeded and last_eq_mono is not None and (now_mono - last_eq_mono) < equity_min_gap_sec):
                     _mark_eq_idle(s, now_ts)
                     continue
                 # Prefer live public equity quotes (Yahoo RTH + PRE/POST) over authenticated broker portfolio marks

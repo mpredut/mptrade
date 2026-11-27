@@ -819,10 +819,9 @@ def _load_margins() -> Dict[str, Any]:
     path = os.path.join(os.path.dirname(os.path.abspath(anchor_file)), "order_guard.conf")
     if cur_margins is not None and 0.0 <= (now_ts - cur_last_check) < 5.0:
         return cur_margins
-    _sync_margins_state(og_mod, cur_margins, cur_mtime, now_ts)
     if not os.path.exists(path):
         if cur_margins is not None:
-            return cur_margins
+            return _sync_margins_state(og_mod, cur_margins, cur_mtime, now_ts)  # type: ignore[return-value]
         raise FileNotFoundError(f"Missing mandatory configuration file: {path}")
     mtime = os.path.getmtime(path)
     if cur_margins is not None and (cur_mtime == 0.0 or mtime == cur_mtime):

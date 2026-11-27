@@ -883,4 +883,91 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             poller_empty.stop(timeout=2.0)
 
+    def test_pass34_future_ws_ts_does_not_preempt_rest_or_block_ws_and_shutdown_submit_safe(self):
+        """Pass #34 pure invariants + dependent cross-checks:
+        1. Corrupt far-future _ws_stream_event_ts_per_symbol must NOT falsely preempt REST in CPM or NonBinanceTrendPoller.
+        2. Corrupt far-future cached entry must NOT cause on_items_update to drop real incoming WS ticks.
+        3. NonBlockingRestSlotTracker.submit returns None cleanly when executor is shut down; _next_sync_wait_sec honors hard-timeout remaining.
+        """
+        from providers.price_poller import NonBlockingRestSlotTracker
+
+        # 1. Pure invariant: NonBlockingRestSlotTracker.submit handles shut-down executor safely
+        tracker = NonBlockingRestSlotTracker()
+        dead_pool = futures.ThreadPoolExecutor(max_workers=1)
+        dead_pool.shutdown(wait=True)
+        self.assertIsNone(
+            tracker.submit("BTCUSDC", dead_pool, lambda: 1.0, now_mono=time.monotonic(), now_wall_ts=time.time())
+        )
+
+        # 2. Pure invariants on CacheCurrentPriceManager
+        now_s = time.time()
+        future_s = now_s + 30 * 86400.0
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=1.0,
+            symbols=["BTCUSDC"],
+            filename=os.path.join(self.tmp, "cache_current_price_p34.json"),
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+        cpm._ws_stream_event_ts_per_symbol["BTCUSDC"] = future_s
+        self.assertFalse(cpm._was_ws_updated_since("BTCUSDC", now_s - 2.0, now_wall_ts=now_s))
+        cpm._ws_stream_event_ts_per_symbol["BTCUSDC"] = now_s - 0.5
+        self.assertTrue(cpm._was_ws_updated_since("BTCUSDC", now_s - 2.0, now_wall_ts=now_s))
+
+        # Corrupt far-future cached entry must be healed by a real incoming WS tick
+        cpm.cache["BTCUSDC"] = [[int(future_s * 1000), 999999.0]]
+        cpm.on_items_update("BTCUSDC", [[int(now_s * 1000), 61800.0]])
+        self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 61800.0)
+
+        # 3. Dependent cross-check: CPM REST fallback recovers even when _ws_stream_event_ts_per_symbol is corrupt far-future
+        cpm._ws_stream_event_ts_per_symbol["BTCUSDC"] = future_s
+        cpm._ws_last_event_ts_per_symbol.clear()
+        cpm._last_http_poll_ts_per_symbol.clear()
+        cpm.get_remote_items = lambda sym, _st: [[int(time.time() * 1000), 62100.0]]
+        try:
+            self.assertFalse(cpm.is_real_ws_healthy("BTCUSDC"))
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            if "BTCUSDC" in cpm._in_flight_http_futs:
+                cpm._in_flight_http_futs["BTCUSDC"].future.result(timeout=2.0)
+                self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertAlmostEqual(cpm.cache["BTCUSDC"][0][1], 62100.0)
+
+            # _next_sync_wait_sec respects imminent hard-timeout on an active slot
+            import threading
+            hold_ev = threading.Event()
+            cpm._rest_hard_timeout_sec = 0.05
+            cpm._ws_stream_event_ts_per_symbol.clear()
+            cpm._ws_last_event_ts_per_symbol.clear()
+            cpm._last_http_poll_ts_per_symbol.clear()
+            cpm.get_remote_items = lambda sym, _st: (hold_ev.wait(timeout=2.0), [[int(time.time() * 1000), 62200.0]])[1]
+            try:
+                self.assertTrue(cpm.query_remote_and_update_cache())
+                self.assertLessEqual(cpm._next_sync_wait_sec(), 0.08)
+            finally:
+                hold_ev.set()
+        finally:
+            cpm._shutdown_fallback_pool()
+
+        # 4. Dependent cross-check: NonBinanceTrendPoller ignores corrupt far-future _ws_stream_event_ts_per_symbol
+        pushed_p34 = []
+        cpm_nb = _StubCpm(_FakeApi(hang=False, price=66.5), pushed=pushed_p34)
+        cpm_nb.is_real_ws_healthy = lambda _s: False
+        cpm_nb._ws_stream_event_ts_per_symbol = {"HYPEUSD": future_s}
+        poller_p34 = cm._start_nonbinance_trend_poller(
+            cpm_nb,
+            ["HYPEUSD"],
+            interval_sec=0.04,
+            provider_names={"HYPEUSD": "Kraken"},
+            start_ws=False,
+        )
+        try:
+            deadline = time.time() + 2.0
+            while time.time() < deadline and not pushed_p34:
+                time.sleep(0.03)
+            self.assertTrue(any(s == "HYPEUSD" and p == 66.5 for s, p in pushed_p34))
+        finally:
+            poller_p34.stop(timeout=2.0)
+
 
