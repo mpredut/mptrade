@@ -78,10 +78,8 @@ _CACHE_FILE_PREFIXES = (
 )
 _CACHE_FILE_PREFIX_EXEMPT_SUFFIXES = ("_collector", "_prefix", "_1pct")
 CACHEPRICE_POLLER_ALIASES = frozenset({
-    "VenuePricePoller",
     "VenuePriceStreamBase",
     "fetch_price_with_deadline",
-    "start_venue_price_poller",
 })
 VENUE_LEAF_DIRS = ("binance_api/", "kraken/", "hyperliquid/", "212trading/", "market_monitor/")
 VENUE_TOKENS = frozenset({"binance", "kraken", "hyperliquid", "t212", "trading212"})

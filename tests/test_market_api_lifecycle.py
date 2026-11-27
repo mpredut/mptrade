@@ -969,7 +969,9 @@ def test_core_facade_and_gateway_zero_venue_string_branches_ast(monkeypatch):
     assert issubclass(price_poller.VenuePriceStreamBase, ws_stream.PublicPriceStreamBase)
     assert price_poller.HyperliquidPriceStream.__module__ == "providers.price_poller"
     assert price_poller.KrakenPriceStream.__module__ == "providers.price_poller"
-    assert price_poller.start_venue_price_poller.__module__ == "providers.price_poller"
+    assert price_poller.fetch_price_with_deadline.__module__ == "providers.price_poller"
+    registered_ws_venues = {v for v, _, _ in price_poller.VenuePriceStreamBase.iter_registered_venue_streams()}
+    assert {"binance", "hyperliquid", "kraken"}.issubset(registered_ws_venues)
     sample_series = ClosedPriceSeries((101.5, 102.0), 60, 1700003600, (1700000000, 1700003600))
     assert series_to_historical_points(sample_series) == [(1700000000.0, 101.5), (1700003600.0, 102.0)]
     all_t, usdc_p, p2b = extract_trading_quote_pairs(

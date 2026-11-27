@@ -1724,7 +1724,7 @@ class CacheManagerInterface(ABC):
                     wait_sec = safe_nonneg_float(raw_wait, default=0.05)
                     if wait_sec is None:
                         wait_sec = 0.05
-                    if self._stop_event.wait(wait_sec):
+                    if self._wait_for_next_sync(wait_sec):
                         break
 
             thread = threading.Thread(target=run, name=self.cls_name, daemon=True)
@@ -1732,6 +1732,10 @@ class CacheManagerInterface(ABC):
             thread.start()
             self.thread = thread
             return self.thread
+
+    def _wait_for_next_sync(self, wait_sec: float) -> bool:
+        """Wait until the next sync cycle or stop signal; return True when stopping."""
+        return bool(self._stop_event.wait(wait_sec))
 
     request_stop = set_stop_event
     set_stop_event = request_stop

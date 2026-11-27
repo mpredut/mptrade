@@ -45,6 +45,7 @@ from .order_ohlc_utils import (
     resolve_market_flag,
 )
 from .order_status_ssot import classify_venue_order_status
+from .price_poller import VenuePriceStreamBase
 from .quantity import (
     BinanceFilterError,
     BinanceOrderRules,
@@ -955,4 +956,11 @@ class BinanceProvider(MarketDataProvider):
             )
         except Exception:
             pass
+
+
+VenuePriceStreamBase.register_venue_stream(
+    "binance",
+    "BinancePriceWS",
+    lambda _syms, cpm=None: BinanceProvider.get_default_price_ws_manager(),
+)
 

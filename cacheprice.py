@@ -42,6 +42,7 @@ from botcore import (
     extract_current_price_item,
     extract_timestamp_ms,
     extract_timestamp_s,
+    is_auto_start_websockets_enabled,
     is_live_network_backfill_enabled,
     is_rth_gate_enabled,
     is_us_extended_hours_open,
@@ -91,6 +92,7 @@ from cachepaths import (
     has_equity_suffix,
     is_equity_venue,
     is_equity_venue_or_suffix,
+    is_primary_stream_venue,
     normalize_venue_name,
     resolve_cache_dir_path,
     resolve_cachedb_filepath,
@@ -2227,22 +2229,29 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
     ):
         self._ws_manager = ws_manager
         self._ws_managers = [ws_manager] if ws_manager is not None else []
+        self._owned_ws_streams: list[Any] = []
+        self._attached_ws_venues: set[str] = set()
+        self._ws_startup_grace_until_mono: dict[str, float] = {}
         self._ws_default_event_ts = 0.0
         self._ws_last_event_ts_value = 0.0
         self._ws_last_event_ts_per_symbol: dict = {}
         self._ws_stream_event_ts_per_symbol: dict = {}
-        self._delegated_poller_symbols: set[str] = set()
         self._update_timestamps: dict = defaultdict(deque)
         self._rth_empty_backoff_ts: dict = {}
+        self._empty_backoff_mono: dict[str, float] = {}
         self._empty_http_backoff_ts: dict[str, float] = {}
         self._empty_http_streaks: dict[str, int] = {}
+        self._err_backoff_until_mono: dict[str, float] = {}
+        self._err_streaks: dict[str, int] = {}
         self._last_http_poll_ts_per_symbol: dict[str, float] = {}
+        self._last_equity_poll_mono: dict[str, float] = {}
         self._pending_price_outliers: dict[str, tuple[int, float]] = {}
         self._price_anchor_confirmations: dict[str, int] = {}
         self._fallback_pool_lock = threading.Lock()
         self._fallback_pool: Optional[_futures.ThreadPoolExecutor] = None
         self._rest_slot_tracker = NonBlockingRestSlotTracker()
         self._in_flight_http_futs = self._rest_slot_tracker.slots
+        self._sync_wake_event = threading.Event()
         self._first_sleep = True
         self._tick_ipc_lock = threading.Lock()
         self._tick_ipc_stop = threading.Event()
@@ -2589,7 +2598,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             if self._fallback_pool is None:
                 eff_hint = max(worker_hint, len(getattr(self, "symbols", ()) or ()))
                 self._fallback_pool = _futures.ThreadPoolExecutor(
-                    max_workers=max(2, min(6, eff_hint)),
+                    max_workers=max(2, min(12, eff_hint)),
                     thread_name_prefix="CPFallbackFetch",
                 )
             return self._fallback_pool
@@ -2663,12 +2672,35 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             _, cur_ts_ms = self.extract_price_and_ts(entries)
         return cur_ts_ms
 
-    def _is_delegated_poller_symbol(self, symbol: object) -> bool:
-        delegated = getattr(self, "_delegated_poller_symbols", ())
-        if not delegated or isinstance(delegated, (bool, str, bytes, dict)):
-            return False
-        sym_u = str(symbol or "").strip().upper()
-        return symbol in delegated or (bool(sym_u) and sym_u in delegated)
+    def _record_poll_error_backoff(
+        self, symbol: str, exc: object, *, now_mono: Optional[float] = None
+    ) -> float:
+        """Record monotonic exponential error backoff (aggressive on HTTP 429/rate-limit)."""
+        streaks = getattr(self, "_err_streaks", None)
+        if not isinstance(streaks, dict):
+            streaks = {}
+            self._err_streaks = streaks
+        until_map = getattr(self, "_err_backoff_until_mono", None)
+        if not isinstance(until_map, dict):
+            until_map = {}
+            self._err_backoff_until_mono = until_map
+        streak = streaks.get(symbol, 0) + 1
+        streaks[symbol] = streak
+        eff_interval = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
+        err_l = str(exc or "").lower()
+        if "429" in err_l or "rate limit" in err_l or "too many requests" in err_l:
+            delay_s = min(120.0, max(15.0, eff_interval * 4.0) * (2.0 ** min(streak - 1, 3)))
+        else:
+            delay_s = min(30.0, max(eff_interval * 2.0, 0.5) * (2.0 ** min(streak - 1, 5)))
+        ref_mono = _monotonic_time() if now_mono is None else now_mono
+        until_map[symbol] = ref_mono + delay_s
+        return delay_s
+
+    def _clear_poll_error_backoff(self, symbol: str) -> None:
+        if isinstance(streaks := getattr(self, "_err_streaks", None), dict):
+            streaks.pop(symbol, None)
+        if isinstance(until_map := getattr(self, "_err_backoff_until_mono", None), dict):
+            until_map.pop(symbol, None)
 
     def _was_ws_updated_since(
         self, symbol: str, since_wall_ts: float, *, now_wall_ts: Optional[float] = None
@@ -2705,39 +2737,89 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             eff_now_ms = _now_time() * 1000.0
         return -5_000.0 <= (eff_now_ms - cur_ts_ms) < (self.ws_timeout_sec_for(symbol) * 1000.0)
 
-    def _should_skip_equity_poll_for_session(self, symbol: str, now_s: float) -> bool:
+    def _equity_rth_min_gap_sec(self, symbol: str) -> float:
+        sync_s = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
+        return max(sync_s, round(self.ws_timeout_sec_for(symbol) * 0.6, 3))
+
+    def _should_skip_equity_poll_for_session(
+        self,
+        symbol: str,
+        now_s: float,
+        *,
+        now_mono: Optional[float] = None,
+        is_live_daemon_poll: bool = False,
+        mark_idle: bool = False,
+    ) -> bool:
         """Return True when an equity remote price poll should be skipped under the active session/RTH gate.
 
-        Allows live RTH polling, throttled extended-hours (PRE/POST) polling at ``max(60s, 2 * ws_timeout_sec)``,
+        Allows live RTH polling (throttled in live daemon mode to ``_equity_rth_min_gap_sec``),
+        throttled extended-hours (PRE/POST) polling at ``max(60s, 2 * ws_timeout_sec)``,
         and pauses polling during CLOSED overnight/weekend windows when a cached quote already exists.
         """
+        eff_mono = _monotonic_time() if now_mono is None else now_mono
+        empty_mono_map = getattr(self, "_empty_backoff_mono", None)
+        last_empty_mono = empty_mono_map.get(symbol) if isinstance(empty_mono_map, dict) else None
+        last_eq_mono_map = getattr(self, "_last_equity_poll_mono", None)
+        last_eq_mono = last_eq_mono_map.get(symbol) if isinstance(last_eq_mono_map, dict) else None
+
+        with self.lock:
+            existing_entries = self.cache.get(symbol)
+        has_cached = bool(
+            existing_entries
+            and self.extract_price_and_ts(existing_entries)[0] is not None
+        )
+
         if not is_rth_gate_enabled(
             getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
         ):
+            if is_live_daemon_poll and has_cached and last_eq_mono is not None:
+                if (eff_mono - last_eq_mono) < self._equity_rth_min_gap_sec(symbol):
+                    if mark_idle:
+                        self.mark_symbol_ws_event(symbol, now_s)
+                    return True
             return False
-        if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
-            return True
-        if is_us_rth_open(now_s):
+
+        rth_open = is_us_rth_open(now_s)
+        ext_open = False if rth_open else is_us_extended_hours_open(now_s)
+        if rth_open or ext_open:
+            if last_empty_mono is not None and (eff_mono - last_empty_mono) < 60.0:
+                return True
+            if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
+                return True
+        if rth_open:
+            if is_live_daemon_poll and has_cached and last_eq_mono is not None:
+                if (eff_mono - last_eq_mono) < self._equity_rth_min_gap_sec(symbol):
+                    if mark_idle:
+                        self.mark_symbol_ws_event(symbol, now_s)
+                    return True
             return False
-        if is_us_extended_hours_open(now_s):
+        if ext_open:
             ext_gap_sec = max(60.0, round(self.ws_timeout_sec_for(symbol) * 2.0, 1))
+            if has_cached and last_eq_mono is not None and (eff_mono - last_eq_mono) < ext_gap_sec:
+                if mark_idle:
+                    self.mark_symbol_ws_event(symbol, now_s)
+                return True
             last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
             if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < ext_gap_sec:
+                if mark_idle:
+                    self.mark_symbol_ws_event(symbol, now_s)
                 return True
             cur_ts_ms = self._cached_entry_ts_ms(symbol)
             if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < (ext_gap_sec * 1000.0):
+                if mark_idle:
+                    self.mark_symbol_ws_event(symbol, now_s)
                 return True
             return False
-        with self.lock:
-            existing_entries = self.cache.get(symbol)
-        if (
-            existing_entries
-            and self.extract_price_and_ts(existing_entries)[0] is not None
-        ):
+        if has_cached or (last_empty_mono is not None and (eff_mono - last_empty_mono) < 300.0):
+            if mark_idle:
+                self.mark_symbol_ws_event(symbol, now_s)
             return True
         return False
 
     def query_remote_and_update_cache(self):
+        wake_ev = getattr(self, "_sync_wake_event", None)
+        if wake_ev is not None:
+            wake_ev.clear()
         if not self.fetchtime_per_symbol:
             self._ensure_fetchtimes_initialized()
             self._rest_sync_cursor_per_symbol = dict(self.fetchtime_per_symbol)
@@ -2757,15 +2839,22 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         )
 
         def _apply_remote_items(sym_done: str, new_items: Any, is_rth_done: bool) -> None:
+            now_done = _now_time()
+            now_done_mono = _monotonic_time()
             if is_live_net:
                 self._record_empty_http_result(sym_done, ok=bool(new_items))
             if new_items:
+                self._clear_poll_error_backoff(sym_done)
                 self._persist_items(sym_done, new_items)
-                self._last_http_poll_ts_per_symbol[sym_done] = _now_time()
+                self._last_http_poll_ts_per_symbol[sym_done] = now_done
                 if is_rth_done:
+                    self._last_equity_poll_mono[sym_done] = now_done_mono
                     self._rth_empty_backoff_ts.pop(sym_done, None)
+                    self._empty_backoff_mono.pop(sym_done, None)
+                    self.mark_symbol_ws_event(sym_done, now_done)
             elif is_rth_done:
-                self._rth_empty_backoff_ts[sym_done] = _now_time()
+                self._rth_empty_backoff_ts[sym_done] = now_done
+                self._empty_backoff_mono[sym_done] = now_done_mono
 
         def _harvest_slots(target_syms: Sequence[str], *, cur_mono: float, cur_wall: float) -> set[str]:
             handled: set[str] = set()
@@ -2784,7 +2873,8 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     )
                     continue
                 if state == "DONE_ERR":
-                    self._log_remote_fetch_error("HTTP fetch", sym_k, val)
+                    delay_s = self._record_poll_error_backoff(sym_k, val, now_mono=cur_mono)
+                    self._log_remote_fetch_error(f"HTTP fetch (backoff {delay_s:.1f}s)", sym_k, val)
                     if is_live_net:
                         self._record_empty_http_result(sym_k, ok=False)
                     handled.add(sym_k)
@@ -2792,10 +2882,14 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if state == "DONE_OK" and slot is not None:
                     ws_preempted = self._was_ws_updated_since(
                         sym_k, slot.submit_wall_ts, now_wall_ts=cur_wall
-                    ) or self._symbol_ws_and_cache_fresh(
-                        sym_k, is_live_daemon_poll=True, now_ms=cur_wall * 1000.0
+                    ) or (
+                        not bool(slot.meta)
+                        and self._symbol_ws_and_cache_fresh(
+                            sym_k, is_live_daemon_poll=True, now_ms=cur_wall * 1000.0
+                        )
                     )
                     if ws_preempted:
+                        self._clear_poll_error_backoff(sym_k)
                         if is_live_net:
                             self._record_empty_http_result(sym_k, ok=True)
                         handled.add(sym_k)
@@ -2815,33 +2909,36 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
         pending_polls: list[tuple[str, Any, bool]] = []
         now_ms_scan = now_wall * 1000.0
+        err_until_map = getattr(self, "_err_backoff_until_mono", {})
+        grace_map = getattr(self, "_ws_startup_grace_until_mono", {})
         for symbol in list(self.symbols):
-            if symbol in skip_submit_syms or self._is_delegated_poller_symbol(symbol):
+            if symbol in skip_submit_syms:
                 continue
-            if self._symbol_ws_and_cache_fresh(
+            is_rth_sym = self._is_equity_instrument(symbol)
+            if not is_rth_sym and self._symbol_ws_and_cache_fresh(
                 symbol, is_live_daemon_poll=is_live_daemon_poll, now_ms=now_ms_scan
             ):
                 continue
+            if is_live_daemon_poll and now_mono < grace_map.get(symbol, 0.0):
+                continue
+            if now_mono < err_until_map.get(symbol, 0.0):
+                continue
             if is_live_net and self._is_empty_http_backed_off(symbol, now_wall):
                 continue
-            is_rth_sym = self._is_equity_instrument(symbol)
-            if is_rth_sym and self._should_skip_equity_poll_for_session(symbol, now_wall):
-                continue
-            if is_live_daemon_poll:
+            if is_rth_sym:
+                if self._should_skip_equity_poll_for_session(
+                    symbol,
+                    now_wall,
+                    now_mono=now_mono,
+                    is_live_daemon_poll=is_live_daemon_poll,
+                    mark_idle=is_live_daemon_poll,
+                ):
+                    continue
+            elif is_live_daemon_poll:
                 last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
-                eff_gap = (
-                    max(min_poll_gap, round(self.ws_timeout_sec_for(symbol) * 0.4, 3))
-                    if is_rth_sym
-                    else min_poll_gap
-                )
-                eff_fresh_ms = (
-                    round(self.ws_timeout_sec_for(symbol) * 800.0, 1)
-                    if is_rth_sym
-                    else 1_800.0
-                )
-                if last_poll > 0.0 and 0.0 <= (now_wall - last_poll) < eff_gap:
+                if last_poll > 0.0 and 0.0 <= (now_wall - last_poll) < min_poll_gap:
                     cur_ts_ms = self._cached_entry_ts_ms(symbol)
-                    if cur_ts_ms is not None and -5_000.0 <= (now_wall * 1000.0 - cur_ts_ms) < eff_fresh_ms:
+                    if cur_ts_ms is not None and -5_000.0 <= (now_wall * 1000.0 - cur_ts_ms) < 1_800.0:
                         continue
             startTime = self.fetchtime_per_symbol.get(
                 symbol, self.fallback_time_default
@@ -2857,19 +2954,27 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 if stop_ev is not None and stop_ev.is_set():
                     break
                 new_items = self._fetch_and_apply_remote_items(symbol, startTime)
+                now_done = _now_time()
+                now_done_mono = _monotonic_time()
                 if is_live_net:
                     self._record_empty_http_result(symbol, ok=bool(new_items))
                 if is_rth_sym:
                     if not new_items:
-                        self._rth_empty_backoff_ts[symbol] = _now_time()
+                        self._rth_empty_backoff_ts[symbol] = now_done
+                        self._empty_backoff_mono[symbol] = now_done_mono
                     else:
                         self._rth_empty_backoff_ts.pop(symbol, None)
+                        self._empty_backoff_mono.pop(symbol, None)
+                        self._last_equity_poll_mono[symbol] = now_done_mono
+                        self._last_http_poll_ts_per_symbol[symbol] = now_done
+                        self.mark_symbol_ws_event(symbol, now_done)
             return True
 
         pool = self._get_or_create_fallback_pool(len(pending_polls))
         submit_mono = _monotonic_time()
         submit_wall = _now_time()
         submitted_futs: dict[_futures.Future, str] = {}
+        on_done_cb = (lambda _f: wake_ev.set()) if wake_ev is not None else None
         for sym_item, st_item, is_rth_sym in pending_polls:
             slot = tracker.submit(
                 sym_item,
@@ -2878,6 +2983,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                 now_mono=submit_mono,
                 now_wall_ts=submit_wall,
                 meta=is_rth_sym,
+                on_done=on_done_cb,
             )
             if slot is not None:
                 submitted_futs[slot.future] = sym_item
@@ -2898,16 +3004,19 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
             now_s = _now_time()
             prefer_ext = bool(
                 self._is_equity_instrument(symbol)
-                and self.market_api is _market_api.api
                 and (is_us_rth_open(now_s) or is_us_extended_hours_open(now_s))
             )
             with live_price_fetch_context():
                 if provider_name is None:
-                    price = (
-                        self.market_api.get_current_price(symbol=symbol, prefer_public_extended=True)
-                        if prefer_ext
-                        else self.market_api.get_current_price(symbol=symbol)
-                    )
+                    if prefer_ext:
+                        try:
+                            price = self.market_api.get_current_price(symbol=symbol, prefer_public_extended=True)
+                        except TypeError:
+                            if self.market_api is _market_api.api:
+                                raise
+                            price = self.market_api.get_current_price(symbol=symbol)
+                    else:
+                        price = self.market_api.get_current_price(symbol=symbol)
                 else:
                     try:
                         price = (
@@ -2920,15 +3029,26 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                             )
                         )
                     except TypeError:
-                        if self.market_api is _market_api.api:
-                            raise
-                        price = self.market_api.get_current_price(symbol=symbol)
+                        if prefer_ext:
+                            try:
+                                price = self.market_api.get_current_price(
+                                    symbol=symbol, provider_name=provider_name
+                                )
+                            except TypeError:
+                                if self.market_api is _market_api.api:
+                                    raise
+                                price = self.market_api.get_current_price(symbol=symbol)
+                        else:
+                            if self.market_api is _market_api.api:
+                                raise
+                            price = self.market_api.get_current_price(symbol=symbol)
             price_val = safe_pos_float(price, default=None)
             if price_val is None:
                 return []
             ts_ms = math.trunc(_now_time() * 1000)
             return [[ts_ms, price_val]]
         except Exception as e:
+            self._record_poll_error_backoff(symbol, e)
             return self._log_remote_fetch_error("HTTP fetch", symbol, e)
 
     def _persist_items(self, symbol, new_items):
@@ -2941,19 +3061,43 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         tracker = getattr(self, "_rest_slot_tracker", None)
         if tracker is not None and tracker.has_active():
             return True
-        if not self._ws_is_healthy():
-            return True
         if not self._is_live_daemon_poll_mode():
-            return False
-        now_ms = _now_time() * 1000.0
+            return not self._ws_is_healthy()
+        now_s = _now_time()
+        now_ms = now_s * 1000.0
+        now_mono = _monotonic_time()
+        err_until_map = getattr(self, "_err_backoff_until_mono", {})
+        grace_map = getattr(self, "_ws_startup_grace_until_mono", {})
         for sym_item in list(self.symbols):
-            if self._is_delegated_poller_symbol(sym_item) or self._is_equity_instrument(sym_item):
+            if now_mono < grace_map.get(sym_item, 0.0):
                 continue
-            if not self._symbol_ws_and_cache_fresh(
+            if now_mono < err_until_map.get(sym_item, 0.0):
+                continue
+            if self._is_equity_instrument(sym_item):
+                if (
+                    not self._should_skip_equity_poll_for_session(
+                        sym_item, now_s, now_mono=now_mono, is_live_daemon_poll=True
+                    )
+                    and not self._is_empty_http_backed_off(sym_item, now_s)
+                ):
+                    return True
+            elif not self._symbol_ws_and_cache_fresh(
                 sym_item, is_live_daemon_poll=True, now_ms=now_ms
             ):
                 return True
         return False
+
+    def _wait_for_next_sync(self, wait_sec: float) -> bool:
+        if self._stop_event.is_set():
+            return True
+        tracker = getattr(self, "_rest_slot_tracker", None)
+        if tracker is not None and tracker.has_done():
+            return False
+        wake_ev = getattr(self, "_sync_wake_event", None)
+        if wake_ev is None:
+            return bool(self._stop_event.wait(wait_sec))
+        wake_ev.wait(timeout=wait_sec)
+        return self._stop_event.is_set()
 
     def _next_sync_wait_sec(self) -> float:
         base_wait = safe_nonneg_float(self.sync_ts, default=0.8)
@@ -2986,7 +3130,7 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         now = _now_time()
         is_live_daemon = self._is_live_daemon_poll_mode()
         for sym_item in list(self.symbols):
-            if self._is_delegated_poller_symbol(sym_item) or self._is_equity_instrument(sym_item):
+            if self._is_equity_instrument(sym_item):
                 continue
             sym_u, sym_clean = _norm_symbol_keys(sym_item)
             last_ts = next(
@@ -3158,6 +3302,100 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
         ):
             self.data_sync_mode = self.MODE_LIVE_READER
         ws_manager.subscribe(self)
+
+    def start_venue_ws_streams(
+        self, *, start_ws: Optional[bool] = None, startup_grace_sec: float = 2.0
+    ) -> list[Any]:
+        """Start and attach all registered public price WebSocket streams matching ``self.symbols``."""
+        if start_ws is None:
+            enable_ws = (
+                is_auto_start_websockets_enabled()
+                and is_live_network_backfill_enabled()
+            )
+        else:
+            enable_ws = _parse_bool_flag(start_ws, default=False)
+        if not enable_ws:
+            return []
+        attached_venues = getattr(self, "_attached_ws_venues", None)
+        if not isinstance(attached_venues, set):
+            attached_venues = set()
+            self._attached_ws_venues = attached_venues
+        owned = getattr(self, "_owned_ws_streams", None)
+        if not isinstance(owned, list):
+            owned = []
+            self._owned_ws_streams = owned
+        grace_map = getattr(self, "_ws_startup_grace_until_mono", None)
+        if not isinstance(grace_map, dict):
+            grace_map = {}
+            self._ws_startup_grace_until_mono = grace_map
+        eff_grace = safe_nonneg_float(startup_grace_sec, default=2.0) or 0.0
+        started: list[Any] = []
+        for venue_key, ws_name, build_ws in (
+            _VenuePriceStreamBase.iter_registered_venue_streams()
+        ):
+            v_syms = [
+                s
+                for s in list(self.symbols)
+                if (
+                    (raw_prov := self.provider_name_for(s))
+                    and normalize_venue_name(raw_prov, default="") == venue_key
+                )
+                or (not raw_prov and is_primary_stream_venue(venue_key))
+            ]
+            if not v_syms or venue_key in attached_venues:
+                continue
+            if is_primary_stream_venue(venue_key) and self._ws_manager is not None:
+                attached_venues.add(venue_key)
+                continue
+            ws_inst = build_ws(v_syms, cpm=self)
+            if ws_inst is None:
+                continue
+            self.attach_ws_manager(ws_inst)
+            if not getattr(ws_inst, "is_running", False):
+                ws_inst.start(name=ws_name, daemon=True)
+            attached_venues.add(venue_key)
+            if not is_primary_stream_venue(venue_key) and ws_inst not in owned:
+                owned.append(ws_inst)
+            if eff_grace > 0.0:
+                grace_until = _monotonic_time() + eff_grace
+                for s_item in v_syms:
+                    if not self.is_real_ws_healthy(s_item):
+                        grace_map[s_item] = grace_until
+            started.append(ws_inst)
+        return started
+
+    def _request_stop_owned_ws_streams(self) -> None:
+        for ws in list(getattr(self, "_owned_ws_streams", ()) or ()):
+            try:
+                req_stop = getattr(ws, "request_stop", None)
+                if callable(req_stop):
+                    req_stop()
+                elif (stop_ev := getattr(ws, "_stop_event", None)) is not None:
+                    stop_ev.set()
+            except Exception:
+                pass
+
+    def _stop_owned_ws_streams(self, timeout: float) -> None:
+        owned = getattr(self, "_owned_ws_streams", None)
+        if not owned:
+            return
+        eff_timeout = safe_nonneg_float(timeout, default=2.0)
+        if eff_timeout is None:
+            eff_timeout = 2.0
+        ws_deadline = _monotonic_time() + min(2.0, eff_timeout)
+        for ws in list(owned):
+            try:
+                rem = (
+                    min(eff_timeout, max(0.05, ws_deadline - _monotonic_time()))
+                    if eff_timeout > 0.0
+                    else 0.0
+                )
+                ws.stop(timeout=rem)
+            except Exception:
+                pass
+        owned.clear()
+        if isinstance(attached := getattr(self, "_attached_ws_venues", None), set):
+            attached.clear()
 
     @property
     def tick_socket_path(self) -> str:
@@ -3368,6 +3606,9 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
 
     def request_stop(self) -> None:
         super().request_stop()
+        if (wake_ev := getattr(self, "_sync_wake_event", None)) is not None:
+            wake_ev.set()
+        self._request_stop_owned_ws_streams()
         self._tick_ipc_stop.set()
         with self._tick_ipc_lock:
             srv = self._tick_ipc_server
@@ -3382,8 +3623,14 @@ class CacheCurrentPriceManager(CachePriceManagerBase):
                     pass
 
     def shutdown(self, timeout=5.0):
-        deadline = _monotonic_time() + safe_nonneg_float(timeout, default=5.0)
+        eff_timeout = safe_nonneg_float(timeout, default=5.0)
+        if eff_timeout is None:
+            eff_timeout = 5.0
+        deadline = _monotonic_time() + eff_timeout
         self.request_stop()
+        self._stop_owned_ws_streams(
+            0.0 if eff_timeout == 0.0 else max(0.0, deadline - _monotonic_time())
+        )
         stopped = super().shutdown(timeout=max(0.0, deadline - _monotonic_time()))
         self._shutdown_fallback_pool()
         for attr in ("_tick_ipc_thread", "_tick_sub_thread"):
@@ -3726,13 +3973,21 @@ def attach_default_price_ws_stream(
 
 
 def request_stop_price_ws_streams() -> None:
-    """Signal the default venue price WebSocket manager to stop."""
+    """Signal all attached venue price WebSocket streams to stop."""
     if _bn_price_prov_cls is not None:
         _bn_price_prov_cls.request_stop_price_ws_manager()
+    active_cpm = CacheManagerInterface.resolve_active_instance("CurrentPrice")
+    if active_cpm is not None and hasattr(active_cpm, "_request_stop_owned_ws_streams"):
+        active_cpm._request_stop_owned_ws_streams()
 
 
 def stop_price_ws_streams(shutdown_deadline: float) -> None:
-    """Stop the default venue price WebSocket manager and periodic clock resync thread."""
+    """Stop all venue price WebSocket streams and the Binance periodic clock resync thread."""
+    active_cpm = CacheManagerInterface.resolve_active_instance("CurrentPrice")
+    if active_cpm is not None and hasattr(active_cpm, "_stop_owned_ws_streams"):
+        active_cpm._stop_owned_ws_streams(
+            min(1.0, max(0.05, shutdown_deadline - _monotonic_time()))
+        )
     if _bn_price_prov_cls is not None:
         _bn_price_prov_cls.stop_price_ws_manager(
             timeout=min(1.0, max(0.35, shutdown_deadline - _monotonic_time()))

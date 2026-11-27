@@ -1,8 +1,9 @@
 """
-Tests for non-blocking venue price polling and REST slot tracking.
+Tests for unified multi-venue price polling and non-blocking REST slot tracking.
 
-VenuePricePoller once froze when get_current_price(HYPEUSD) blocked
-during DNS resolution. Fetches now run non-blockingly via NonBlockingRestSlotTracker
+CacheCurrentPriceManager once delegated non-Binance symbols to a separate poller
+that froze when get_current_price(HYPEUSD) blocked during DNS resolution. All
+venues now share unified CacheCurrentPriceManager WS streams and NonBlockingRestSlotTracker
 with WS preemption and hard-timeout eviction/reset.
 """
 
@@ -21,7 +22,7 @@ from providers.execution_audit import find_duplicate_ai_open_limit_order
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import extract_order_fee, validate_ohlc_candle_bar
-from providers.price_poller import VenuePricePoller, start_venue_price_poller
+from providers.price_poller import VenuePriceStreamBase
 from trailing_core import TrailingAdapterBase
 from types import SimpleNamespace
 
@@ -105,73 +106,77 @@ class TestFetchDeadline(TempDirTestCase):
         )
 
     def test_poller_requires_a_provider_for_every_symbol(self):
-        api = _FakeApi()
-        invalid_bindings = (
-            None,
-            {"HYPEUSD": "Kraken"},
-            {"HYPEUSD": "Kraken", "TAOUSD": "Binance"},
+        """CacheCurrentPriceManager.bind_providers rejects empty or conflicting venue bindings."""
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=1.0,
+            symbols=["HYPEUSD", "TAOUSD"],
+            filename=os.path.join(self.tmp, "cpm_bindings.json"),
+            provider_names={"HYPEUSD": "Kraken"},
+            read_only=True,
         )
-        for provider_names in invalid_bindings:
-            with self.subTest(provider_names=provider_names):
-                cpm = _StubCpm(api)
-                with self.assertRaisesRegex(
-                    ValueError, "explicit provider bindings are required"
-                ):
-                    start_venue_price_poller(
-                        cpm,
-                        ["HYPEUSD", "TAOUSD"],
-                        provider_names=provider_names,
-                    )
-                self.assertFalse(cpm.bind_called)
-                self.assertEqual(api.calls, 0)
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            cpm.bind_provider("TAOUSD", "")
+        with self.assertRaisesRegex(ValueError, "conflicting providers"):
+            cpm.bind_provider("HYPEUSD", "Hyperliquid")
+        self.assertEqual(cpm.provider_name_for("HYPEUSD"), "Kraken")
+
+    def _empty_cp_file(self, name: str) -> str:
+        path = os.path.join(self.tmp, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"items": {}, "fetchtime": {}}, fh)
+        return path
 
     def test_poller_survives_a_hang_and_recovers(self):
-        """The poller, with a fetch that hangs and then recovers, must NOT
-        freeze: after a hang, on a later cycle with a good fetch, it pushes the price."""
-        pushed = []
-        api = _FakeApi(hang=True)
-        cpm = _StubCpm(api, pushed=pushed)
-        # A small interval plus a short deadline, so we can observe the timeout and the recovery in the test.
-        poller = start_venue_price_poller(
-            cpm, ["HYPEUSD"], interval_sec=0.3, fetch_deadline_sec=0.5,
-            provider_names={"HYPEUSD": "Kraken"})
-        self.addCleanup(poller.stop)
-        time.sleep(2)            # while the fetch is blocked -> timeouts, NOT pushes
-        self.assertEqual(pushed, [], "while the fetch is blocked nothing must be pushed")
-        api.hang = False         # The network comes back -> the blocked fetches unblock.
-        time.sleep(3)            # A few cycles -> it should push the price.
-        self.assertTrue(any(s == "HYPEUSD" for s, _ in pushed),
-                        "once the network returns, the poller must recover and push the price")
-        self.assertEqual(cpm.bindings, {"HYPEUSD": "Kraken"})
-        self.assertTrue(api.provider_names)
-        self.assertEqual(set(api.provider_names), {"Kraken"})
+        """Unified CacheCurrentPriceManager with a fetch that hangs and then recovers must NOT
+        freeze: while hung it stays non-blocking, and once unblocked it harvests and pushes the price."""
+        api = _FakeApi(hang=True, price=55.5)
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=0.05,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_hang_recover.json"),
+            market_api=api,
+            provider_names={"HYPEUSD": "Kraken"},
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
+        )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+        self.addCleanup(lambda: cpm.shutdown(timeout=2.0))
+        try:
+            t0 = time.monotonic()
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertLess(time.monotonic() - t0, 0.25)
+            self.assertNotIn("HYPEUSD", cpm.cache)
+            api.hang = False
+            cpm._in_flight_http_futs["HYPEUSD"].future.result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertAlmostEqual(cpm.cache["HYPEUSD"][-1][1], 55.5)
+            self.assertEqual(set(api.provider_names), {"Kraken"})
+        finally:
+            api.hang = False
 
     def test_poller_marks_nonbinance_symbol_healthy_on_cpm(self):
         api = _FakeApi(hang=False, price=76.5)
         cpm = cm.CacheCurrentPriceManager(
-            sync_ts=9999,
+            sync_ts=0.05,
             symbols=["HYPEUSD"],
-            filename=os.path.join(self.tmp, "cache_current_price.json"),
+            filename=self._empty_cp_file("cache_current_price_hl.json"),
             ws_manager=None,
             api_client=api,
             market_api=api,
             provider_names={"HYPEUSD": "Hyperliquid"},
-            read_only=True,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+        self.addCleanup(lambda: cpm.shutdown(timeout=2.0))
         self.assertFalse(cpm._ws_is_healthy("HYPEUSD"))
-        poller = start_venue_price_poller(
-            cpm,
-            ["HYPEUSD"],
-            interval_sec=0.2,
-            fetch_deadline_sec=1.0,
-            provider_names={"HYPEUSD": "Hyperliquid"},
-        )
-        self.addCleanup(poller.stop)
-        deadline = time.time() + 2.0
-        while time.time() < deadline and not cpm._ws_is_healthy("HYPEUSD"):
-            time.sleep(0.05)
-        self.assertTrue(cpm._ws_is_healthy("HYPEUSD"))
-
+        self.assertTrue(cpm.query_remote_and_update_cache())
+        if "HYPEUSD" in cpm._in_flight_http_futs:
+            cpm._in_flight_http_futs["HYPEUSD"].future.result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+        self.assertAlmostEqual(cpm.cache["HYPEUSD"][-1][1], 76.5)
         # Non-finite or boolean prices must never be pushed or mark the symbol healthy
         cpm._ws_last_event_ts_per_symbol.clear()
         cpm.cache.clear()
@@ -180,12 +185,11 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertEqual(cpm.cache, {})
 
     def test_hyperliquid_and_kraken_ws_streams_feed_cpm_and_suppress_rest_polling(self):
-
         api = _FakeApi(hang=False, price=99.9)
         cpm = cm.CacheCurrentPriceManager(
-            sync_ts=9999,
+            sync_ts=0.05,
             symbols=["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"],
-            filename=os.path.join(self.tmp, "cache_current_price.json"),
+            filename=self._empty_cp_file("cache_current_price_ws.json"),
             ws_manager=None,
             api_client=api,
             market_api=api,
@@ -195,8 +199,12 @@ class TestFetchDeadline(TempDirTestCase):
                 "TAOUSD": "kraken",
                 "ADAUSD": "kraken",
             },
-            read_only=True,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
+        self.addCleanup(lambda: cpm.shutdown(timeout=2.0))
         hl_stream = cm.HyperliquidPriceStream(["HYPEUSDC"], market_api=api)
         krk_stream = cm.KrakenPriceStream(["HYPEUSD", "TAOUSD", "ADAUSD"])
         cpm.attach_ws_manager(hl_stream)
@@ -204,11 +212,7 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertEqual(hl_stream.running_symbols, {"HYPEUSDC"})
         self.assertEqual(krk_stream.running_symbols, {"HYPEUSD", "TAOUSD", "ADAUSD"})
 
-        now_ms = int(time.time() * 1000) - 2000
-        hl_stream._process_message(
-            json.dumps({"channel": "allMids", "data": {"mids": {"@107": "42.125"}}}),
-            now_ms=now_ms,
-        )
+        now_ms = int(time.time() * 1000) - 1200
         krk_stream._process_message(
             json.dumps([42, {"c": ["42.05", "1.0"], "b": ["42.00", "1"], "a": ["42.10", "1"]}, "ticker", "HYPE/USD"]),
             now_ms=now_ms,
@@ -223,7 +227,11 @@ class TestFetchDeadline(TempDirTestCase):
         )
 
         # Verify Kraken heartbeat refreshes known prices after >=1000ms so get_price never sees false staleness
-        hb_ms = now_ms + 1500
+        hb_ms = now_ms + 1150
+        hl_stream._process_message(
+            json.dumps({"channel": "allMids", "data": {"mids": {"@107": "42.125"}}}),
+            now_ms=hb_ms,
+        )
         krk_stream._process_message(json.dumps({"event": "heartbeat"}), now_ms=hb_ms)
         self.assertEqual(cpm.cache["TAOUSD"][0][0], hb_ms)
         self.assertAlmostEqual(hl_stream.get_price("HYPEUSDC"), 42.125)
@@ -241,28 +249,20 @@ class TestFetchDeadline(TempDirTestCase):
         # ADA last trade 0.80 was outside [0.74, 0.76] spread -> clamped to midpoint 0.75
         self.assertAlmostEqual(cpm.get_cached_price_observation("ADAUSD", 5.0)[1], 0.75)
 
-        # While real WS is healthy, start_venue_price_poller must NOT make any REST calls
-        poller = start_venue_price_poller(
-            cpm,
-            ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"],
-            interval_sec=0.15,
-            fetch_deadline_sec=0.5,
-            provider_names={
-                "HYPEUSDC": "hyperliquid",
-                "HYPEUSD": "kraken",
-                "TAOUSD": "kraken",
-                "ADAUSD": "kraken",
-            },
-            start_ws=False,
-        )
-        self.addCleanup(poller.stop)
-        time.sleep(0.35)
-        self.assertEqual(api.calls, 0, "REST poller must not fire while WebSocket stream is healthy")
+        # While real WS is healthy, unified CacheCurrentPriceManager must NOT make any REST calls
+        self.assertFalse(cpm._should_poll())
+        self.assertTrue(cpm.query_remote_and_update_cache())
+        self.assertEqual(api.calls, 0, "REST fallback must not fire while WebSocket stream is healthy")
 
-        # Simulate WS stream going stale for HYPEUSDC only -> poller falls back to REST only for HYPEUSDC
+        # Simulate WS stream going stale for HYPEUSDC only -> falls back to REST ONLY for HYPEUSDC
         cpm._ws_stream_event_ts_per_symbol["HYPEUSDC"] = time.time() - 60.0
-        time.sleep(0.35)
-        self.assertGreaterEqual(api.calls, 1, "REST poller must fall back when WebSocket stream goes stale")
+        cpm._ws_last_event_ts_per_symbol["HYPEUSDC"] = time.time() - 60.0
+        self.assertTrue(cpm._should_poll())
+        self.assertTrue(cpm.query_remote_and_update_cache())
+        if "HYPEUSDC" in cpm._in_flight_http_futs:
+            cpm._in_flight_http_futs["HYPEUSDC"].future.result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+        self.assertEqual(api.calls, 1, "REST fallback must poll only the stale symbol")
         self.assertEqual(set(api.provider_names), {"hyperliquid"})
 
     def test_hyperliquid_ws_user_fills_updates_ssot_trade_cache(self):
@@ -566,12 +566,11 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
 
     def test_poller_deduplicates_in_flight_hangs_and_backs_off_on_rate_limit_errors(self):
-        """VenuePricePoller must not pile duplicate hung requests into the pool and must back off on 429 errors."""
+        """Unified CacheCurrentPriceManager must not pile duplicate hung requests into the pool and must back off on 429 errors."""
         import threading
 
         release_hang = threading.Event()
         calls_by_sym = {"HYPEUSD": 0, "SPCXxUSD": 0}
-        pushed = []
 
         class _MixedApi:
             def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
@@ -581,33 +580,34 @@ class TestFetchDeadline(TempDirTestCase):
                     return 62.5
                 return 129.5
 
-        cpm = _StubCpm(_MixedApi(), pushed=pushed)
-        poller = start_venue_price_poller(
-            cpm,
-            ["HYPEUSD", "SPCXxUSD"],
-            interval_sec=0.05,
-            fetch_deadline_sec=0.08,
+        cpm = cm.CacheCurrentPriceManager(
+            sync_ts=0.05,
+            symbols=["HYPEUSD", "SPCXxUSD"],
+            filename=self._empty_cp_file("cpm_mixed_dedup.json"),
+            market_api=_MixedApi(),
             provider_names={"HYPEUSD": "Kraken", "SPCXxUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm._is_live_daemon_poll_mode = lambda: True
+        cpm._is_live_network_mode = lambda: True
         try:
-            time.sleep(0.45)
-            # HYPEUSD is hung in-flight -> at most 1 concurrent call submitted, while healthy SPCXxUSD keeps polling!
+            for _ in range(3):
+                cpm._last_http_poll_ts_per_symbol.pop("SPCXxUSD", None)
+                self.assertTrue(cpm.query_remote_and_update_cache())
             self.assertEqual(calls_by_sym["HYPEUSD"], 1)
             self.assertGreaterEqual(calls_by_sym["SPCXxUSD"], 3)
-            self.assertTrue(any(s == "SPCXxUSD" for s, _ in pushed))
-            self.assertFalse(any(s == "HYPEUSD" for s, _ in pushed))
-            # Unblocking the hung fetch lets the next cycle poll fresh and recover HYPEUSD.
+            self.assertAlmostEqual(cpm.cache["SPCXxUSD"][-1][1], 129.5)
+            self.assertNotIn("HYPEUSD", cpm.cache)
             release_hang.set()
-            deadline = time.time() + 2.0
-            while time.time() < deadline and not any(s == "HYPEUSD" for s, _ in pushed):
-                time.sleep(0.05)
-            self.assertTrue(any(s == "HYPEUSD" for s, _ in pushed))
+            cpm._in_flight_http_futs["HYPEUSD"].future.result(timeout=2.0)
+            self.assertTrue(cpm.query_remote_and_update_cache())
+            self.assertAlmostEqual(cpm.cache["HYPEUSD"][-1][1], 62.5)
         finally:
             release_hang.set()
-            poller.stop(timeout=2.0)
+            cpm.shutdown(timeout=2.0)
 
-        # 429 rate-limit exception triggers backoff instead of hammering every interval_sec.
+        # 429 rate-limit exception triggers monotonic exponential backoff instead of hammering every cycle.
         rl_calls = [0]
 
         class _RateLimitApi:
@@ -615,20 +615,28 @@ class TestFetchDeadline(TempDirTestCase):
                 rl_calls[0] += 1
                 raise RuntimeError("HTTP 429 rate limit exceeded")
 
-        cpm_rl = _StubCpm(_RateLimitApi(), pushed=[])
-        poller_rl = start_venue_price_poller(
-            cpm_rl,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            fetch_deadline_sec=0.2,
+        cpm_rl = cm.CacheCurrentPriceManager(
+            sync_ts=0.04,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_429_rl.json"),
+            market_api=_RateLimitApi(),
             provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_rl._is_live_daemon_poll_mode = lambda: True
+        cpm_rl._is_live_network_mode = lambda: True
         try:
-            time.sleep(0.35)
+            self.assertTrue(cpm_rl.query_remote_and_update_cache())
+            if "HYPEUSD" in cpm_rl._in_flight_http_futs:
+                cpm_rl._in_flight_http_futs["HYPEUSD"].future.result(timeout=2.0)
+                self.assertTrue(cpm_rl.query_remote_and_update_cache())
+            self.assertGreater(cpm_rl._err_backoff_until_mono.get("HYPEUSD", 0.0), time.monotonic() + 10.0)
+            self.assertFalse(cpm_rl._should_poll())
+            self.assertTrue(cpm_rl.query_remote_and_update_cache())
             self.assertEqual(rl_calls[0], 1)
         finally:
-            poller_rl.stop(timeout=2.0)
+            cpm_rl.shutdown(timeout=2.0)
 
     def test_cpm_fallback_nonblocking_dedup_ws_preemption_and_hard_timeout_reset(self):
         """CacheCurrentPriceManager live fallback must never block on slow HTTP, never apply false backoff while in-flight, let WS preempt stale REST, and reset wedged slots after hard timeout."""
@@ -738,43 +746,69 @@ class TestFetchDeadline(TempDirTestCase):
             cpm._shutdown_fallback_pool()
 
     def test_poller_ws_preemption_and_hard_timeout_reset(self):
-        """VenuePricePoller must discard stale REST results preempted by WS and reset genuinely wedged REST slots on hard_timeout_sec."""
+        """Unified CacheCurrentPriceManager.start_venue_ws_streams attaches all registered venue streams uniformly, discards WS-preempted REST, and resets wedged slots on hard timeout."""
         import threading
+        from unittest.mock import patch
 
-        # 1. WS preemption: while REST is in flight, real WS updates HYPEUSD -> slow REST result must NOT overwrite WS.
-        release_rest = threading.Event()
-        ws_healthy = [False]
-        pushed = []
+        # 1. Unified start_venue_ws_streams attaches registered streams for configured venues idempotently and stops owned streams on shutdown
+        started_calls = []
+        stopped_calls = []
 
-        class _SlowRestApi:
-            def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
-                release_rest.wait(timeout=5.0)
-                return 40.0
+        class _FakeWs:
+            def __init__(self, label, syms):
+                self.label = label
+                self.syms = list(syms)
+                self.is_running = False
+                self.subs = []
 
-        cpm_ws = _StubCpm(_SlowRestApi(), pushed=pushed)
-        cpm_ws.is_real_ws_healthy = lambda _s: ws_healthy[0]
-        cpm_ws._ws_stream_event_ts_per_symbol = {}
-        poller_ws = start_venue_price_poller(
-            cpm_ws,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            def subscribe(self, sub):
+                self.subs.append(sub)
+
+            def start(self, name=None, daemon=True):
+                self.is_running = True
+                started_calls.append((self.label, tuple(self.syms), name))
+
+            def request_stop(self):
+                pass
+
+            def stop(self, timeout=None):
+                self.is_running = False
+                stopped_calls.append((self.label, timeout))
+
+        fake_specs = (
+            ("binance", "BinancePriceWS", lambda syms, cpm=None: _FakeWs("binance", syms)),
+            ("hyperliquid", "HyperliquidPriceWS", lambda syms, cpm=None: _FakeWs("hyperliquid", syms)),
+            ("kraken", "KrakenPriceWS", lambda syms, cpm=None: _FakeWs("kraken", syms)),
+        )
+        cpm_ws = cm.CacheCurrentPriceManager(
+            sync_ts=0.2,
+            symbols=["BTCUSDC", "HYPEUSDC", "HYPEUSD", "NVDA_US_EQ"],
+            filename=self._empty_cp_file("cpm_unified_ws.json"),
+            provider_names={"HYPEUSDC": "hyperliquid", "HYPEUSD": "kraken", "NVDA_US_EQ": "t212"},
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
         try:
-            time.sleep(0.06)
-            ws_healthy[0] = True
-            cpm_ws._ws_stream_event_ts_per_symbol["HYPEUSD"] = time.time()
-            release_rest.set()
-            time.sleep(0.15)
-            self.assertEqual(pushed, [])
+            with patch.object(VenuePriceStreamBase, "iter_registered_venue_streams", return_value=fake_specs):
+                streams = cpm_ws.start_venue_ws_streams(start_ws=True, startup_grace_sec=0.0)
+                self.assertEqual(len(streams), 3)
+                self.assertEqual(
+                    started_calls,
+                    [
+                        ("binance", ("BTCUSDC",), "BinancePriceWS"),
+                        ("hyperliquid", ("HYPEUSDC",), "HyperliquidPriceWS"),
+                        ("kraken", ("HYPEUSD",), "KrakenPriceWS"),
+                    ],
+                )
+                # Idempotent second call must not spawn duplicate streams
+                self.assertEqual(cpm_ws.start_venue_ws_streams(start_ws=True), [])
         finally:
-            release_rest.set()
-            poller_ws.stop(timeout=2.0)
+            cpm_ws.shutdown(timeout=1.0)
+        # Non-primary owned streams (hyperliquid, kraken) are stopped cleanly by shutdown()
+        self.assertEqual({lbl for lbl, _ in stopped_calls}, {"hyperliquid", "kraken"})
 
-        # 2. Hard-timeout reset: wedged call #1 is evicted after hard_timeout_sec and fresh call #2 recovers HYPEUSD.
+        # 2. Hard-timeout reset on periodic_sync loop for a Kraken symbol: wedged call #1 evicted after hard_timeout_sec, call #2 recovers
         wedged_ev = threading.Event()
-        pushed_ht = []
         ht_calls = [0]
 
         class _WedgedOnceApi:
@@ -785,28 +819,32 @@ class TestFetchDeadline(TempDirTestCase):
                     return 10.0
                 return 77.5
 
-        cpm_ht = _StubCpm(_WedgedOnceApi(), pushed=pushed_ht)
-        poller_ht = start_venue_price_poller(
-            cpm_ht,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            hard_timeout_sec=0.12,
+        cpm_ht = cm.CacheCurrentPriceManager(
+            sync_ts=0.04,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_ht_loop.json"),
+            market_api=_WedgedOnceApi(),
             provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_ht._is_live_daemon_poll_mode = lambda: True
+        cpm_ht._is_live_network_mode = lambda: True
+        cpm_ht._rest_hard_timeout_sec = 0.12
+        cpm_ht._first_sleep = False
         try:
+            cpm_ht.periodic_sync(0.04, save_state=True)
             deadline = time.time() + 2.0
-            while time.time() < deadline and not pushed_ht:
+            while time.time() < deadline and "HYPEUSD" not in cpm_ht.cache:
                 time.sleep(0.03)
             self.assertGreaterEqual(ht_calls[0], 2)
-            self.assertTrue(any(s == "HYPEUSD" and p == 77.5 for s, p in pushed_ht))
+            self.assertAlmostEqual(cpm_ht.cache["HYPEUSD"][-1][1], 77.5)
         finally:
             wedged_ev.set()
-            poller_ht.stop(timeout=2.0)
+            cpm_ht.shutdown(timeout=2.0)
 
     def test_poller_harvests_late_valid_price_and_late_429_backoff(self):
-        """Slow responses exceeding fetch_deadline_sec must still apply valid prices and record 429 backoff on late exceptions."""
-        pushed = []
+        """Slow responses exceeding the 50ms micro-wait must wake _sync_wake_event, apply valid prices, and record 429 backoff on late exceptions."""
         slow_calls = [0]
 
         class _SlowOkApi:
@@ -815,22 +853,27 @@ class TestFetchDeadline(TempDirTestCase):
                 time.sleep(0.11)
                 return 88.25
 
-        cpm_ok = _StubCpm(_SlowOkApi(), pushed=pushed)
-        poller_ok = start_venue_price_poller(
-            cpm_ok,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            fetch_deadline_sec=0.05,
+        cpm_ok = cm.CacheCurrentPriceManager(
+            sync_ts=0.25,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_slow_ok.json"),
+            market_api=_SlowOkApi(),
             provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_ok._is_live_daemon_poll_mode = lambda: True
+        cpm_ok._is_live_network_mode = lambda: True
+        cpm_ok._first_sleep = False
         try:
+            cpm_ok.periodic_sync(0.25, save_state=True)
             deadline = time.time() + 2.0
-            while time.time() < deadline and not pushed:
-                time.sleep(0.03)
-            self.assertTrue(any(s == "HYPEUSD" and p == 88.25 for s, p in pushed))
+            while time.time() < deadline and "HYPEUSD" not in cpm_ok.cache:
+                time.sleep(0.02)
+            self.assertIn("HYPEUSD", cpm_ok.cache)
+            self.assertAlmostEqual(cpm_ok.cache["HYPEUSD"][-1][1], 88.25)
         finally:
-            poller_ok.stop(timeout=2.0)
+            cpm_ok.shutdown(timeout=2.0)
 
         late_rl_calls = [0]
 
@@ -840,52 +883,60 @@ class TestFetchDeadline(TempDirTestCase):
                 time.sleep(0.11)
                 raise RuntimeError("HTTP 429 too many requests")
 
-        cpm_rl = _StubCpm(_SlowRateLimitApi(), pushed=[])
-        poller_rl = start_venue_price_poller(
-            cpm_rl,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            fetch_deadline_sec=0.05,
+        cpm_rl = cm.CacheCurrentPriceManager(
+            sync_ts=0.04,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_slow_rl.json"),
+            market_api=_SlowRateLimitApi(),
             provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_rl._is_live_daemon_poll_mode = lambda: True
+        cpm_rl._is_live_network_mode = lambda: True
+        cpm_rl._first_sleep = False
         try:
-            time.sleep(0.45)
-            # Late 429 exception after deadline must trigger backoff instead of hammering every cycle.
+            cpm_rl.periodic_sync(0.04, save_state=True)
+            time.sleep(0.35)
             self.assertEqual(late_rl_calls[0], 1)
         finally:
-            poller_rl.stop(timeout=2.0)
+            cpm_rl.shutdown(timeout=2.0)
 
     def test_pass12_poller_late_empty_response_triggers_empty_backoff(self):
-        """Pass #12 invariant & cross-check: late-completing empty/None fetches must record empty_backoff_ts."""
+        """Pass #12 invariant & cross-check: late-completing empty/None equity fetches must record monotonic empty backoff."""
         late_empty_calls = [0]
 
         class _SlowEmptyApi:
             def get_current_price(self, symbol=None, *, provider_name=None, **_kw):
                 late_empty_calls[0] += 1
-                time.sleep(0.11)
+                time.sleep(0.09)
                 return None
 
-        cpm_empty = _StubCpm(_SlowEmptyApi(), pushed=[])
-        cpm_empty._enforce_rth_gate = True
-        poller_empty = start_venue_price_poller(
-            cpm_empty,
-            ["HYPEUSD"],
-            interval_sec=0.04,
-            fetch_deadline_sec=0.05,
-            provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+        cpm_empty = cm.CacheCurrentPriceManager(
+            sync_ts=0.04,
+            symbols=["NVDA_US_EQ"],
+            filename=self._empty_cp_file("cpm_slow_empty.json"),
+            market_api=_SlowEmptyApi(),
+            provider_names={"NVDA_US_EQ": "t212"},
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_empty._is_live_daemon_poll_mode = lambda: True
+        cpm_empty._is_live_network_mode = lambda: True
+        cpm_empty._enforce_rth_gate = True
+        cpm_empty._first_sleep = False
         try:
-            time.sleep(0.45)
-            # After the first slow None finishes late, 60s empty_backoff_ts must prevent re-polling every cycle.
+            cpm_empty.periodic_sync(0.04, save_state=True)
+            time.sleep(0.35)
+            # After the first slow None finishes late, empty backoff prevents re-polling every cycle.
             self.assertEqual(late_empty_calls[0], 1)
+            self.assertIn("NVDA_US_EQ", cpm_empty._empty_backoff_mono)
         finally:
-            poller_empty.stop(timeout=2.0)
+            cpm_empty.shutdown(timeout=2.0)
 
     def test_pass34_future_ws_ts_does_not_preempt_rest_or_block_ws_and_shutdown_submit_safe(self):
         """Pass #34 pure invariants + dependent cross-checks:
-        1. Corrupt far-future _ws_stream_event_ts_per_symbol must NOT falsely preempt REST in CPM or VenuePricePoller.
+        1. Corrupt far-future _ws_stream_event_ts_per_symbol must NOT falsely preempt REST in unified CacheCurrentPriceManager.
         2. Corrupt far-future cached entry must NOT cause on_items_update to drop real incoming WS ticks.
         3. NonBlockingRestSlotTracker.submit returns None cleanly when executor is shut down; _next_sync_wait_sec honors hard-timeout remaining.
         """
@@ -948,27 +999,27 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             cpm._shutdown_fallback_pool()
 
-        # 4. Dependent cross-check: VenuePricePoller ignores corrupt far-future _ws_stream_event_ts_per_symbol
-        pushed_p34 = []
-        cpm_nb = _StubCpm(_FakeApi(hang=False, price=66.5), pushed=pushed_p34)
-        cpm_nb.is_real_ws_healthy = lambda _s: False
-        cpm_nb._ws_stream_event_ts_per_symbol = {"HYPEUSD": future_s}
-        poller_p34 = start_venue_price_poller(
-            cpm_nb,
-            ["HYPEUSD"],
-            interval_sec=0.04,
+        # 4. Dependent cross-check: unified CacheCurrentPriceManager ignores corrupt far-future _ws_stream_event_ts_per_symbol for Kraken HYPEUSD
+        cpm_kr = cm.CacheCurrentPriceManager(
+            sync_ts=0.04,
+            symbols=["HYPEUSD"],
+            filename=self._empty_cp_file("cpm_p34_kr.json"),
+            market_api=_FakeApi(hang=False, price=66.5),
             provider_names={"HYPEUSD": "Kraken"},
-            start_ws=False,
+            read_only=False,
+            data_sync_mode=cm.CacheManagerInterface.MODE_PRODUCER,
         )
+        cpm_kr._is_live_daemon_poll_mode = lambda: True
+        cpm_kr._is_live_network_mode = lambda: True
+        cpm_kr._ws_stream_event_ts_per_symbol["HYPEUSD"] = future_s
         try:
-            deadline = time.time() + 2.0
-            while time.time() < deadline and not pushed_p34:
-                time.sleep(0.03)
-            self.assertTrue(any(s == "HYPEUSD" and p == 66.5 for s, p in pushed_p34))
-            self.assertIsInstance(poller_p34, VenuePricePoller)
-            self.assertEqual(poller_p34.thread.name, "VenuePricePoller")
+            self.assertTrue(cpm_kr.query_remote_and_update_cache())
+            if "HYPEUSD" in cpm_kr._in_flight_http_futs:
+                cpm_kr._in_flight_http_futs["HYPEUSD"].future.result(timeout=2.0)
+                self.assertTrue(cpm_kr.query_remote_and_update_cache())
+            self.assertAlmostEqual(cpm_kr.cache["HYPEUSD"][-1][1], 66.5)
         finally:
-            poller_p34.stop(timeout=2.0)
+            cpm_kr.shutdown(timeout=2.0)
 
     def test_slot_tracker_submit_thread_dedup_hard_timeout_and_late_completion(self):
         """NonBlockingRestSlotTracker.submit_thread deduplicates in-flight work, evicts wedged threads on hard timeout, and tolerates late completion."""

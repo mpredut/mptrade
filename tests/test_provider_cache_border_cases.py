@@ -260,9 +260,8 @@ from providers.order_ohlc_utils import (
 )
 from providers.price_poller import (
     KrakenPriceStream,
-    VenuePricePoller,
+    VenuePriceStreamBase,
     fetch_price_with_deadline,
-    start_venue_price_poller,
 )
 from providers.quantity import (
     BinanceFilterError,
@@ -4571,47 +4570,28 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
 
 def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_path, monkeypatch):
     """Verify Wave 27 border cases across providers/price_poller, parse_nonneg_order_field, price_series_evaluator, T212 strategy/listing_watcher, notify_engine.server, tradeall, bapi_trades, and TrendSignificanceGuard."""
-    # 1. start_venue_price_poller rejects bare string / bool symbols and sanitizes string/NaN deadlines + string-false ws_health_fn
-    pushed_prices = []
-    stub_cpm = SimpleNamespace(
+    # 1. CacheCurrentPriceManager unified multi-venue REST fallback + owned WS shutdown(timeout=0.0)
+    cpm_uni = CacheCurrentPriceManager(
+        sync_ts=0.05,
+        symbols=["XBTUSD"],
+        filename=str(tmp_path / "cpm_wave27.json"),
         market_api=SimpleNamespace(get_current_price=lambda symbol=None, provider_name=None: 44.25),
-        bind_providers=lambda _b: None,
-        is_real_ws_healthy=lambda _s: "false",
-        push_price=lambda sym, px: pushed_prices.append((sym, px)),
-        _delegated_poller_symbols=set(),
-    )
-    for bad_syms in ("XBTUSD", b"XBTUSD", True, 123):
-        with pytest.raises(ValueError, match="iterable"):
-            start_venue_price_poller(stub_cpm, bad_syms, provider_names={"XBTUSD": "kraken"}, start_ws=False)
-    with pytest.raises(ValueError, match="explicit provider bindings"):
-        start_venue_price_poller(stub_cpm, [True], provider_names={"TRUE": "kraken"}, start_ws=False)
-
-    poller = start_venue_price_poller(
-        stub_cpm,
-        ["XBTUSD"],
-        interval_sec="0.05",
-        fetch_deadline_sec=float("nan"),
         provider_names={"XBTUSD": "kraken"},
-        start_ws=False,
+        read_only=False,
+        data_sync_mode="producer",
     )
-    try:
-        deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline and not pushed_prices:
-            time.sleep(0.02)
-        assert pushed_prices and pushed_prices[0] == ("XBTUSD", pytest.approx(44.25))
-    finally:
-        poller.stop(timeout=0.5)
+    assert cpm_uni.start_venue_ws_streams(start_ws=False) == []
+    assert cpm_uni.query_remote_and_update_cache() is True
+    assert cpm_uni.cache["XBTUSD"][-1][1] == pytest.approx(44.25)
 
-    # 2. VenuePricePoller.stop(timeout=0.0) passes 0.0 to attached WS streams instead of forcing 0.05s
+    # 2. CacheCurrentPriceManager.shutdown(timeout=0.0) passes 0.0 to owned WS streams instead of forcing 0.05s
     ws_stop_timeouts = []
     dummy_ws = SimpleNamespace(
         request_stop=lambda: None,
         stop=lambda timeout=None: ws_stop_timeouts.append(timeout),
     )
-    dummy_pool = SimpleNamespace(shutdown=lambda **kw: None, _threads=())
-    dummy_thread = SimpleNamespace(join=lambda timeout=None: None, is_alive=lambda: False)
-    nb_poller = VenuePricePoller(dummy_thread, dummy_pool, threading.Event(), ws_streams=[dummy_ws])
-    assert nb_poller.stop(timeout=0.0) is True
+    cpm_uni._owned_ws_streams.append(dummy_ws)
+    assert cpm_uni.shutdown(timeout=0.0) is True
     assert ws_stop_timeouts == [0.0]
 
     # 3. fetch_price_with_deadline sanitizes invalid/negative deadline_sec instead of raising ValueError
@@ -6123,7 +6103,7 @@ def test_wave33_broker_history_order_context_and_intent_border_cases():
 
 
 def test_wave34_cpm_delegated_lifecycle_instrument_and_exit_border_cases(tmp_path, monkeypatch):
-    # 1. CacheCurrentPriceManager: _is_delegated_poller_symbol, _clone_snapshot_items,
+    # 1. CacheCurrentPriceManager: start_venue_ws_streams, _clone_snapshot_items,
     #    _symbol_ws_and_cache_fresh NaN/bool now_ms, and future cur_ts_ms HTTP poll bound.
     cpm_path = tmp_path / "cache_current_price.json"
     now_s = time.time()
@@ -6142,12 +6122,8 @@ def test_wave34_cpm_delegated_lifecycle_instrument_and_exit_border_cases(tmp_pat
         data_sync_mode="producer",
     )
     assert CacheCurrentPriceManager._clone_snapshot_items(None) == {}
-    cpm._delegated_poller_symbols = "HYPEUSDC"
-    assert cpm._is_delegated_poller_symbol("HYPE") is False
-    cpm._delegated_poller_symbols = True
-    assert cpm._is_delegated_poller_symbol("HYPE") is False
-    cpm._delegated_poller_symbols = {"HYPE"}
-    assert cpm._is_delegated_poller_symbol("hype") is True
+    assert cpm.start_venue_ws_streams(start_ws=False) == []
+    assert cpm._owned_ws_streams == []
 
     cpm.push_price("BTCUSDC", 70500.0, ts_ms=math.trunc(time.time() * 1000.0))
     monkeypatch.setattr(cpm, "_ws_is_healthy", lambda *_a, **_kw: True)
@@ -6159,7 +6135,7 @@ def test_wave34_cpm_delegated_lifecycle_instrument_and_exit_border_cases(tmp_pat
 
     # Future corrupt cur_ts_ms (+60s ahead) must NOT suppress HTTP polling during min_poll_gap.
     cpm.push_price("BTCUSDC", 70500.0, ts_ms=math.trunc((now_s + 60.0) * 1000.0))
-    monkeypatch.setattr(cpm, "_ws_is_healthy", lambda *_a, **_kw: False)
+    monkeypatch.setattr(cpm, "_ws_is_healthy", lambda sym=None, *_a, **_kw: sym == "HYPE")
     monkeypatch.setattr(cpm, "_is_live_daemon_poll_mode", lambda: True)
     cpm._last_http_poll_ts_per_symbol["BTCUSDC"] = now_s
     polled_syms = []
@@ -7292,11 +7268,8 @@ def test_wave41_broker_replay_ws_poller_exec_and_mt_accounting_border_cases(tmp_
     assert fetch_price_with_deadline(fake_mapi, "HYPEUSD", fake_pool, provider_name="null") == pytest.approx(123.45)
     assert seen_poll_kw == [{"symbol": "HYPEUSD"}]
 
-    stub_cpm = SimpleNamespace(bind_providers=lambda _b: None)
-    with pytest.raises(ValueError, match="iterable of symbol strings"):
-        start_venue_price_poller(stub_cpm, {"HYPEUSD": "kraken"}, provider_names={"HYPEUSD": "kraken"}, start_ws=False)
-    with pytest.raises(ValueError, match="explicit provider bindings"):
-        start_venue_price_poller(stub_cpm, ["null"], provider_names={"NULL": "kraken"}, start_ws=False)
+    registered_ws = {v for v, _, _ in VenuePriceStreamBase.iter_registered_venue_streams()}
+    assert {"binance", "hyperliquid", "kraken"}.issubset(registered_ws)
 
     assert vwp_mod.VenueWsProtocolInterface._iter_symbol_items(["BTCUSDC", "null", True, "BTCUSDC"]) == ("BTCUSDC",)
     assert vwp_mod.KrakenWsLedgerMixin.match_configured_pair("null") is None
@@ -7851,14 +7824,18 @@ def test_wave44_providers_base_bridge_replay_poller_metadata_ws_and_market_api_b
     assert rp.place_order("BTCUSDC", "BUY", 50.0, 1.0, kind="null") is not None
     assert "kind" not in rp.get_orders("BTCUSDC", "BUY", 3600.0)[0]
 
-    # 4. providers/price_poller: start_venue_price_poller rejects non-mapping provider_names and "null"/boolean bindings.
-    fake_cpm = SimpleNamespace(bind_providers=lambda _b: None)
-    with pytest.raises(ValueError, match="provider_names must be a mapping"):
-        start_venue_price_poller(fake_cpm, ["HYPEUSD"], provider_names=["kraken"])  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="explicit provider bindings are required"):
-        start_venue_price_poller(fake_cpm, ["HYPEUSD"], provider_names={"HYPEUSD": "null"})
-    with pytest.raises(ValueError, match="explicit provider bindings are required"):
-        start_venue_price_poller(fake_cpm, [123], provider_names={"123": "kraken"})  # type: ignore[list-item]
+    # 4. CacheCurrentPriceManager.bind_provider rejects empty or conflicting venue bindings.
+    cpm_bind = CacheCurrentPriceManager(
+        sync_ts=1.0,
+        symbols=["HYPEUSD"],
+        filename=str(tmp_path / "cpm_bind_border.json"),
+        provider_names={"HYPEUSD": "kraken"},
+        read_only=True,
+    )
+    with pytest.raises(ValueError, match="non-empty"):
+        cpm_bind.bind_provider("HYPEUSD", "")
+    with pytest.raises(ValueError, match="conflicting providers"):
+        cpm_bind.bind_provider("HYPEUSD", "hyperliquid")
 
     k_stream = KrakenPriceStream(["HYPEUSD"], ws_url="null")
     assert k_stream.ws_url == KrakenProvider.PUBLIC_WS_URL

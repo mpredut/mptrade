@@ -788,7 +788,7 @@ def _shutdown_runtime_threads_after_suite():
         "BinanceTimeResync", "CacheTradeManager",
         "CacheOrderFilledManager",
         "CacheOrderOpenManager",
-        "CacheCurrentPriceManager", "VenuePricePoller",
+        "CacheCurrentPriceManager", "HyperliquidPriceWS", "KrakenPriceWS",
         "InstantTrendFullEval", "InstantTrendFlush",
         "ShortTrendFullEval", "ShortTrendFlush",
     }

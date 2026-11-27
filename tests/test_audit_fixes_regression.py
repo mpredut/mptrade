@@ -9212,7 +9212,7 @@ def test_point3_1to1_stores_locked_merges_and_zero_io_evaluators(tmp_path: Any) 
 def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
     """Regression coverage for Cycle 19 live US RTH / London 4PM Fix prompt audit fixes:
     1. Collapsed trailing_peak below active_avg_buy_px or open LIFO lot entry_px self-heals from cycle high / entry floor.
-    2. VenuePricePoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH as well as PRE/POST.
+    2. Unified CacheCurrentPriceManager prefers live public equity quotes during US RTH as well as PRE/POST.
     3. Zero-flow, zero-OI equities suppress synthetic whale_long_pct/taker_ratio in cycle_delta history and Section 3B formatting.
     4. Criminal court bail headlines ('released on $1 million bond') do not false-match fixed-income financial context.
     """
@@ -9321,7 +9321,7 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
     assert cyc_long["pos_peak"] == pytest.approx(28.4)
     assert cyc_long["dd_from_peak_pct"] < -15.0
 
-    # 2. VenuePricePoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH
+    # 2. Unified CacheCurrentPriceManager prefers live public equity quotes during US RTH
     ny_tz = ZoneInfo("America/New_York")
     ts_rth = datetime(2026, 11, 25, 11, 4, 0, tzinfo=ny_tz).timestamp()
     rth_calls = []
@@ -9331,47 +9331,20 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
             rth_calls.append((symbol, provider_name, prefer_public_extended))
             return 116.32
 
-    class _FakeRthCpm:
-        def __init__(self):
-            self.market_api = _FakeRthApi()
-            self._enforce_rth_gate = True
-            self._delegated_poller_symbols = set()
-            self.cache = {}
-            self.pushed = []
-
-        def bind_providers(self, _b):
-            pass
-
-        @staticmethod
-        def extract_price_and_ts(entries):
-            if isinstance(entries, list) and entries:
-                return entries[-1][1], entries[-1][0]
-            return None, None
-
-        def mark_symbol_ws_event(self, _s, _t):
-            pass
-
-        def push_price(self, sym, px):
-            self.pushed.append((sym, px))
-            self.cache[sym] = [[int(ts_rth * 1000), px]]
-
-    monkeypatch.setattr(pp_mod.time, "time", lambda: ts_rth)
-    cpm_rth = _FakeRthCpm()
-    poller_rth = pp_mod.start_venue_price_poller(
-        cpm_rth,
-        ["SPCX_US_EQ"],
-        interval_sec=0.05,
-        fetch_deadline_sec=1.0,
+    monkeypatch.setattr(cp_mod, "_now_time", lambda: ts_rth)
+    cpm_rth = cp_mod.CacheCurrentPriceManager(
+        sync_ts=0.05,
+        symbols=["SPCX_US_EQ"],
+        filename=str(tmp_path / "cp_rth_unified.json"),
+        market_api=_FakeRthApi(),
         provider_names={"SPCX_US_EQ": "t212"},
-        start_ws=False,
+        read_only=False,
+        data_sync_mode="producer",
     )
-    try:
-        deadline = time.monotonic() + 2.0
-        while not cpm_rth.pushed and time.monotonic() < deadline:
-            time.sleep(0.02)
-    finally:
-        poller_rth.stop(timeout=1.0)
+    cpm_rth._enforce_rth_gate = True
+    assert cpm_rth.query_remote_and_update_cache() is True
     assert rth_calls and rth_calls[0] == ("SPCX_US_EQ", "t212", True)
+    assert cpm_rth.cache["SPCX_US_EQ"][-1][1] == pytest.approx(116.32)
 
     cp_calls = []
     monkeypatch.setattr(cp_mod, "_now_time", lambda: ts_rth)

@@ -323,7 +323,7 @@ class RuntimeImportSafetyTest(unittest.TestCase):
             forbidden = {
                 "BinanceTimeResync", "CacheTradeManager",
                 "CacheOrderFilledManager", "CacheOrderOpenManager",
-                "CacheCurrentPriceManager", "VenuePricePoller",
+                "CacheCurrentPriceManager", "HyperliquidPriceWS", "KrakenPriceWS",
                 "InstantTrendFullEval", "InstantTrendFlush",
             }
             active = {thread.name for thread in threading.enumerate()}
