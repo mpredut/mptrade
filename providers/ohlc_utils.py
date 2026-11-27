@@ -777,6 +777,17 @@ def resolve_yahoo_chart_market_state_and_price(
                 mkt_state = "POST"
             else:
                 mkt_state = "CLOSED"
+    fullday_px = safe_pos_float(meta_d.get("fulldayPrice"), default=None)
+    reg_px = safe_pos_float(meta_d.get("regularMarketPrice"), default=None)
+    last_pt_px = safe_pos_float(latest_pt[1], default=None) if latest_pt is not None else None
+    if (
+        fullday_px is not None
+        and mkt_state in ("", "CLOSED")
+        and (reg_px is not None or last_pt_px is not None)
+        and (reg_px is None or abs(fullday_px - reg_px) / reg_px >= 0.0005)
+        and (last_pt_px is None or abs(fullday_px - last_pt_px) / last_pt_px >= 0.0005)
+    ):
+        mkt_state = "OVERNIGHT"
     ext_px: Optional[float] = None
     if mkt_state in ("PRE", "POST", "PREPRE", "POSTPOST", "OVERNIGHT") or not mkt_state:
         ext_px = (
@@ -784,13 +795,15 @@ def resolve_yahoo_chart_market_state_and_price(
             if mkt_state in ("PRE", "PREPRE")
             else first_pos_float(meta_d.get("postMarketPrice"), meta_d.get("preMarketPrice"))
         )
+        if ext_px is None and mkt_state == "OVERNIGHT" and fullday_px is not None:
+            ext_px = fullday_px
         if ext_px is None and reg_time_s is not None and latest_pt is not None and latest_pt[0] > reg_time_s + 60.0:
             ext_px = safe_pos_float(latest_pt[1], default=None)
     px = first_pos_float(
-        meta_d.get("fulldayPrice"),
+        fullday_px,
         ext_px,
-        meta_d.get("regularMarketPrice"),
-        latest_pt[1] if latest_pt is not None else None,
+        reg_px,
+        last_pt_px,
     )
     return mkt_state, px, ext_px
 

@@ -1208,6 +1208,16 @@ _LOG_IGNORED_TEST_PREFIXES = (
     "deep_audit_crypto_prompt_",
     "check_crypto_prompt_quality_",
     "check_cache_coherence_",
+    "audit_prompt_invariants_",
+    "account_cache_coherence_",
+    "audit_live_prompts_",
+    "audit_cycle_",
+    "post_fix_audit_",
+    "run_15m_audit_cycle_",
+    "probe_order_guards_",
+    "ai_attribution_report_",
+    "pre_commit_gate_",
+    "chart_view_",
 )
 _ACCOUNT_CACHE_GUARD_TOKENS = (
     "account_cache_not_fresh", "account_cache_initializing",

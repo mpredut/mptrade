@@ -18938,6 +18938,104 @@ def test_price_series_loader_stitches_local_1h_ohlc_bar_archive_for_short_sparse
     assert all(px < 100.0 for px in fut_7d)
 
 
+def test_yahoo_overnight_fullday_price_and_sre_cli_log_prefix_filter(tmp_path):
+    """Verify active Yahoo overnight fulldayPrice promotes CLOSED to OVERNIGHT and SRE ignores verify_tools CLI logs."""
+    from providers.ohlc_utils import resolve_yahoo_chart_market_state_and_price
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+
+    now_s = 1795768500.0
+    ctp_future_pre = {
+        "pre": {"start": now_s + 1500.0, "end": now_s + 21300.0},
+        "regular": {"start": now_s + 21300.0, "end": now_s + 33900.0},
+        "post": {"start": now_s + 33900.0, "end": now_s + 59100.0},
+    }
+    pts_prev = [(now_s - 114000.0, 719.77), (now_s - 113400.0, 720.43)]
+
+    # 1. Live overnight fulldayPrice differing materially from both regularMarketPrice & last bar -> OVERNIGHT
+    st_ov, px_ov, ext_ov = resolve_yahoo_chart_market_state_and_price(
+        {
+            "hasPrePostMarketData": True,
+            "regularMarketPrice": 716.70,
+            "regularMarketTime": now_s - 128000.0,
+            "fulldayPrice": 729.75,
+            "currentTradingPeriod": ctp_future_pre,
+        },
+        pts_prev,
+        now_ts=now_s,
+    )
+    assert (st_ov, px_ov, ext_ov) == ("OVERNIGHT", 729.75, 729.75)
+    summary_line = format_macro_benchmarks_summary_line(
+        {
+            "ts": now_s,
+            "items": {
+                "SPY": {
+                    "symbol": "SPY",
+                    "unit": "usd",
+                    "price": px_ov,
+                    "chg_24h_pct": 1.53,
+                    "last_bar_ts": now_s - 113400.0,
+                    "bar_age_min": 1890.0,
+                    "market_state": st_ov,
+                }
+            },
+        },
+        include_crypto=False,
+    )
+    assert "SPY=$729.75 (+1.53% 24h, overnight, bar_age=31.5h)" in summary_line
+    assert "closed" not in summary_line.lower()
+
+    # 2. Weekend/holiday flat fulldayPrice matching regularMarketPrice or last bar remains CLOSED
+    st_closed_reg, px_closed_reg, ext_closed_reg = resolve_yahoo_chart_market_state_and_price(
+        {
+            "hasPrePostMarketData": True,
+            "regularMarketPrice": 716.70,
+            "regularMarketTime": now_s - 128000.0,
+            "fulldayPrice": 716.70,
+            "currentTradingPeriod": ctp_future_pre,
+        },
+        pts_prev,
+        now_ts=now_s,
+    )
+    assert (st_closed_reg, px_closed_reg, ext_closed_reg) == ("CLOSED", 716.70, None)
+
+    st_closed_bar, px_closed_bar, ext_closed_bar = resolve_yahoo_chart_market_state_and_price(
+        {
+            "hasPrePostMarketData": True,
+            "regularMarketPrice": 716.70,
+            "regularMarketTime": now_s - 128000.0,
+            "fulldayPrice": 720.43,
+            "currentTradingPeriod": ctp_future_pre,
+        },
+        pts_prev,
+        now_ts=now_s,
+    )
+    assert (st_closed_bar, px_closed_bar, ext_closed_bar) == ("CLOSED", 720.43, None)
+
+    # 3. SRE log harvester ignores read-only verify_tools CLI logs while keeping real fleet bot errors
+    log_dir = tmp_path / "logger"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_s - 60.0))
+    (log_dir / "audit_prompt_invariants_2026-11-27.log").write_text(
+        f"{ts_str} [STDERR] audit_prompt_invariants.py: error: unrecognized arguments: --summary\n"
+        f"{ts_str} [STDERR] audit_prompt_invariants.py: error: unrecognized arguments: --summary\n",
+        encoding="utf-8",
+    )
+    (log_dir / "account_cache_coherence_2026-11-27.log").write_text(
+        f"{ts_str} [STDERR] account_cache_coherence.py: error: unrecognized arguments: --bad\n",
+        encoding="utf-8",
+    )
+    (log_dir / "tradeall_2026-11-27.log").write_text(
+        f"{ts_str} [ERROR] real bot error sample\n",
+        encoding="utf-8",
+    )
+    res = harvest_log_anomalies_from_dirs([str(log_dir)], lookback_hours=24.0)
+    assert res.total_scanned_files == 1
+    assert res.error_count == 1
+    assert any("real bot error sample" in ev for ev in res.critical_events)
+    assert not any("audit_prompt_invariants" in ev or "account_cache_coherence" in ev for ev in res.critical_events)
+
+
+
 
 
 
