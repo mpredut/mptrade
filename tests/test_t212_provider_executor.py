@@ -1765,3 +1765,43 @@ def test_t212_all_balances_fail_closed_preserves_disk_cache_and_404_cancel_prese
     assert "NVDA_US_EQ" not in json.loads(fills_cache.read_text(encoding="utf-8"))["fetchtime"]
 
 
+def test_pass20_t212_shared_endpoint_pacing_truthy_zero_http_ts_invariant_and_crosscheck(tmp_path, monkeypatch):
+    """Pass 20 invariant & cross-check: truthy '0' in T212 shared-cache http_ts falls back to valid ts instead of skipping cross-process rate-limit pacing."""
+    import importlib
+    t212_client_mod = importlib.import_module("212trading.t212_client")
+
+    shared_path = tmp_path / "t212_shared_cache.json"
+    now_s = 1_795_000_000.0
+    cli = t212_client_mod.T212Client(
+        api_key="k",
+        api_secret="s",
+        min_gap_sec=2.0,
+        order_min_gap_sec=2.0,
+        portfolio_ttl_sec=10.0,
+        shared_cache_path=str(shared_path),
+        enable_shared_disk_cache=True,
+    )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(t212_client_mod.time, "time", lambda: now_s)
+    monkeypatch.setattr(t212_client_mod.time, "sleep", lambda sec: sleeps.append(sec))
+
+    # 1. Truthy "0" in http_ts with recent ts (1.0s ago) must still enforce remaining pacing sleep (> 0)
+    shared_path.write_text(
+        json.dumps({"_pf_cache": {"http_ts": "0", "ts": now_s - 1.0, "data": []}}),
+        encoding="utf-8",
+    )
+    cli._pace_shared_endpoint_locked("_pf_cache")
+    assert len(sleeps) == 1 and sleeps[0] > 0.0
+
+    # 2. Cross-check: once ts is older than eff_gap, no sleep occurs
+    sleeps.clear()
+    shared_path.write_text(
+        json.dumps({"_pf_cache": {"http_ts": "0", "ts": now_s - 30.0, "data": []}}),
+        encoding="utf-8",
+    )
+    cli._pace_shared_endpoint_locked("_pf_cache")
+    assert sleeps == []
+
+
+

@@ -1824,6 +1824,67 @@ exit 0
     assert len(curl_log.read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_pass20_os_notify_pia_common_and_wait_for_vpn_future_ts_and_monotonic_invariants_crosscheck(tmp_path):
+    """Pass 20 pure invariants & cross-checks: os_notify and pia_common reject corrupt far-future timestamps, and wait_for_vpn uses monotonic uptime instead of wall-clock EPOCHREALTIME."""
+    os_notify_sh = os.path.join(ROOT, "orchestratorOS", "lib", "os_notify.sh")
+    pia_common_sh = os.path.join(ROOT, "orchestratorOS", "lib", "pia_common.sh")
+    wait_vpn_sh = os.path.join(ROOT, "orchestratorOS", "livecheck", "wait_for_vpn.sh")
+    env_common_sh = os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh")
+
+    for sc in (os_notify_sh, pia_common_sh, wait_vpn_sh):
+        r = subprocess.run(["bash", "-n", sc], capture_output=True, text=True, check=False)
+        assert r.returncode == 0, f"bash -n failed for {sc}: {r.stderr}"
+
+    # 1. wait_for_vpn.sh uses monotonic /proc/uptime (no wall-clock EPOCHREALTIME)
+    wait_txt = open(wait_vpn_sh, encoding="utf-8").read()
+    assert "EPOCHREALTIME" not in wait_txt
+    assert "/proc/uptime" in wait_txt
+
+    # 2. pia_common.sh: corrupt far-future SUPERVISOR_TS must NOT claim supervisor owns tunnel
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_bash_stub(fake_bin, "systemctl", 'if [ "${1:-}" = "show" ] && [ "${3:-}" = "ActiveState" ]; then echo active; exit 0; fi; echo 0')
+    state_file = tmp_path / "pia_supervisor.state"
+    future_ts = int(time.time()) + 86400
+    state_file.write_text(f"SUPERVISOR_TS={future_ts}\nSUPERVISOR_PID=1\nSUPERVISOR_MODE=healthy\n", encoding="utf-8")
+    pia_cmd = (
+        f'export PATH="{fake_bin}:$PATH" PIA_SUPERVISOR_STATE_FILE="{state_file}"; '
+        f'source "{env_common_sh}"; source "{pia_common_sh}"; '
+        f'! pia_supervisor_owning_tunnel && echo FUTURE_REJECTED'
+    )
+    r_pia = subprocess.run(["bash", "-c", pia_cmd], cwd=ROOT, capture_output=True, text=True, timeout=15)
+    assert r_pia.returncode == 0 and "FUTURE_REJECTED" in r_pia.stdout, r_pia.stderr
+
+    # 3. os_notify.sh: corrupt far-future dedup / global gate / topic gate files must NOT drop or buffer alerts forever,
+    #    while fresh legitimate stamps still deduplicate/buffer.
+    fake_root = tmp_path / "repo"
+    (fake_root / "logs" / ".os_notify_dedup").mkdir(parents=True)
+    (fake_root / "config.env").write_text("NTFY_TOPIC_ERROR=ntfy-err-p20\nNTFY_TOPIC_SERVER=ntfy-srv-p20\n", encoding="utf-8")
+    (fake_root / "orchestratorOS").mkdir(parents=True)
+    (fake_root / "orchestratorOS" / "run_python.sh").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    os.chmod(fake_root / "orchestratorOS" / "run_python.sh", 0o755)
+    curl_hits = tmp_path / "curl_hits.log"
+    _write_bash_stub(fake_bin, "curl", f'printf "HIT\\n" >> "{curl_hits}"\nexit 0')
+
+    # Poison global gate and topic gate with far-future timestamps
+    dedup_dir = fake_root / "logs" / ".os_notify_dedup"
+    (dedup_dir / ".global_gate_ts").write_text(f"{future_ts}\n", encoding="utf-8")
+    (dedup_dir / ".topic_gate_ntfy-err-p20").write_text(f"{future_ts}\n", encoding="utf-8")
+
+    ntfy_cmd = (
+        f'export PATH="{fake_bin}:$PATH" REPO_ROOT="{fake_root}" ROOT="{fake_root}" '
+        f'OS_NOTIFY_DEDUP_SECONDS=900 OS_NOTIFY_GATE_SECONDS=180 OS_NOTIFY_TOPIC_BULK_SECONDS=300; '
+        f'source "{os_notify_sh}"; '
+        f'send_os_ntfy "Test Future Gate" "Body line" "default" "ntfy-err-p20" && '
+        f'send_os_ntfy "Test Future Gate" "Body line" "default" "ntfy-err-p20"'
+    )
+    r_ntfy = subprocess.run(["bash", "-c", ntfy_cmd], cwd=ROOT, capture_output=True, text=True, timeout=15)
+    assert r_ntfy.returncode == 0, r_ntfy.stderr
+    # 1st send MUST bypass the corrupt future gates (1 curl HIT) and overwrite them with now_ts; 2nd identical send is deduped (still 1 HIT)
+    assert curl_hits.read_text(encoding="utf-8").splitlines() == ["HIT"]
+
+
+
 
 
 

@@ -240,7 +240,9 @@ class T212Client:
             entry = payload.get(attr)
             if not isinstance(entry, dict):
                 return
-            last_http_ts = safe_pos_float(entry.get("http_ts") or entry.get("ts"), default=None)
+            last_http_ts = safe_pos_float(entry.get("http_ts"), default=None) or safe_pos_float(
+                entry.get("ts"), default=None
+            )
             if last_http_ts is None:
                 return
             wait = eff_gap - (time.time() - last_http_ts)

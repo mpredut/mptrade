@@ -19,9 +19,12 @@ MAX_WAIT="${AGY_VPN_WAIT_MAX_SEC:-$(env_get AGY_VPN_WAIT_MAX_SEC 8)}"
 
 SECONDS=0
 _now_ms() {
-    local rt="${EPOCHREALTIME:-}"
-    if [[ "$rt" =~ ^([0-9]+)\.([0-9]{3}) ]]; then
-        echo "$(( ${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[2]} ))"
+    local up_ms=""
+    if [ -r /proc/uptime ]; then
+        up_ms="$(awk '{printf "%.0f", $1 * 1000}' /proc/uptime 2>/dev/null || true)"
+    fi
+    if [[ "$up_ms" =~ ^[0-9]+$ ]]; then
+        echo "$up_ms"
     else
         echo "$(( SECONDS * 1000 ))"
     fi

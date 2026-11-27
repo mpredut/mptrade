@@ -724,6 +724,32 @@ if hasattr(MarketDataProvider, "bind_ssot_cache_readers"):
     )
 
 
+def _build_cache_manager_heartbeat_state(threads: list[Any]) -> tuple[dict[str, Any], list[str], int]:
+    """Return ``(hb_status_dict, dead_thread_names, alive_count)`` for ``cacheManager`` sync threads."""
+    alive_count = 0
+    dead_names: list[str] = []
+    for idx, th in enumerate(threads or ()):
+        if th is not None and callable(getattr(th, "is_alive", None)) and th.is_alive():
+            alive_count += 1
+        else:
+            dead_names.append(str(getattr(th, "name", "") or f"thread_{idx}"))
+    total_count = len(threads or ())
+    if total_count > 0 and alive_count == 0:
+        state_str = "error"
+    elif dead_names:
+        state_str = "degraded"
+    else:
+        state_str = "ok"
+    hb_status: dict[str, Any] = {
+        "status": state_str,
+        "alive_threads": alive_count,
+        "total_threads": total_count,
+    }
+    if dead_names:
+        hb_status["dead_threads"] = list(dead_names)
+    return hb_status, dead_names, alive_count
+
+
 if __name__ == "__main__":
     sys.modules.setdefault("cacheManager", sys.modules[__name__])
     single_instance("cacheManager")
@@ -865,21 +891,52 @@ if __name__ == "__main__":
     _signal.signal(_signal.SIGTERM, _request_stop)
     _signal.signal(_signal.SIGINT, _request_stop)
 
+    _unexpected_exit_code = 0
     try:
+        hb_status, dead_names, alive_count = _build_cache_manager_heartbeat_state(threads)
         touch_module_heartbeat(
             "cacheManager",
             interval_sec=30.0,
             force=True,
             symbols=list(_trend_syms or ()),
+            status=hb_status,
         )
+        last_state_str = hb_status["status"]
+        last_dead_names = list(dead_names)
         while not _stop_requested.is_set() and any(t.is_alive() for t in threads):
+            hb_status, dead_names, alive_count = _build_cache_manager_heartbeat_state(threads)
+            changed = hb_status["status"] != last_state_str or dead_names != last_dead_names
+            if changed and dead_names:
+                print(
+                    f"[cacheManager] WARNING: sync thread(s) exited unexpectedly: "
+                    f"{', '.join(dead_names)} ({alive_count}/{len(threads)} alive)"
+                )
             touch_module_heartbeat(
                 "cacheManager",
                 interval_sec=30.0,
+                force=changed,
                 symbols=list(_trend_syms or ()),
+                status=hb_status,
             )
+            last_state_str = hb_status["status"]
+            last_dead_names = list(dead_names)
             if _stop_requested.wait(timeout=5.0):
                 break
+        if not _stop_requested.is_set() and threads:
+            hb_status, dead_names, alive_count = _build_cache_manager_heartbeat_state(threads)
+            if alive_count == 0:
+                print(
+                    f"[cacheManager] ERROR: all {len(threads)} sync threads exited unexpectedly: "
+                    f"{', '.join(dead_names)}"
+                )
+                touch_module_heartbeat(
+                    "cacheManager",
+                    interval_sec=30.0,
+                    force=True,
+                    symbols=list(_trend_syms or ()),
+                    status=hb_status,
+                )
+                _unexpected_exit_code = 1
     except KeyboardInterrupt:
         print("Stopped manually.")
     finally:
@@ -919,4 +976,6 @@ if __name__ == "__main__":
                 pass
         stop_account_ws_streams(shutdown_deadline)
         stop_price_ws_streams(shutdown_deadline)
+    if _unexpected_exit_code:
+        raise SystemExit(_unexpected_exit_code)
 

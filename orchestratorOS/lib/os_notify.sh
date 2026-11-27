@@ -48,6 +48,14 @@ send_os_email() {  # $1=title $2=body [$3=topic: email only if that topic is mir
     ( cd "$ROOT" && "${cmd[@]}" >>"$log_file" 2>&1 ) </dev/null &
 }
 
+_os_notify_within_window() {  # $1=now_ts $2=prev_ts $3=window_sec
+    local now_v="$1" prev_v="${2:-}" win_v="${3:-0}" age
+    [[ "$now_v" =~ ^[0-9]+$ ]] && [[ "$prev_v" =~ ^[0-9]+$ ]] && [[ "$win_v" =~ ^[0-9]+$ ]] || return 1
+    [ "$win_v" -gt 0 ] || return 1
+    age=$((now_v - prev_v))
+    [ "$age" -ge -60 ] && [ "$age" -lt "$win_v" ]
+}
+
 send_os_ntfy() {
     local title="${1:-OS Alert}" body="${2:-}" priority="${3:-default}" topic="${4:-}"
     [ -z "${title// /}" ] && title="OS Alert"
@@ -83,18 +91,18 @@ send_os_ntfy() {
             now_ts="$(date +%s)"
             if [ -f "$stamp_file" ]; then
                 local last_ts; last_ts="$(cat "$stamp_file" 2>/dev/null || echo 0)"
-                [ -n "$last_ts" ] && [ $((now_ts - last_ts)) -lt "$dedup_sec" ] 2>/dev/null && return 0
+                _os_notify_within_window "$now_ts" "$last_ts" "$dedup_sec" && return 0
             fi
             local should_buffer=0
             if [ "$gate_sec" -gt 0 ] 2>/dev/null && [ -f "$gate_file" ]; then
                 local gate_ts; gate_ts="$(cat "$gate_file" 2>/dev/null || echo 0)"
-                if [ -n "$gate_ts" ] && [ $((now_ts - gate_ts)) -lt "$gate_sec" ] 2>/dev/null; then
+                if _os_notify_within_window "$now_ts" "$gate_ts" "$gate_sec"; then
                     should_buffer=1
                 fi
             fi
             if [ "$topic_bulk_sec" -gt 0 ] 2>/dev/null && [ -f "$topic_gate_file" ]; then
                 local t_gate_ts; t_gate_ts="$(cat "$topic_gate_file" 2>/dev/null || echo 0)"
-                if [ -n "$t_gate_ts" ] && [ $((now_ts - t_gate_ts)) -lt "$topic_bulk_sec" ] 2>/dev/null; then
+                if _os_notify_within_window "$now_ts" "$t_gate_ts" "$topic_bulk_sec"; then
                     should_buffer=1
                 fi
             fi

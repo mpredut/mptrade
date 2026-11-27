@@ -75,8 +75,12 @@ pia_supervisor_owning_tunnel() {
   [ "$st" = "active" ] || return 1
   if [ -r "$PIA_SUPERVISOR_STATE_FILE" ]; then
     sup_ts=$(awk -F= '$1=="SUPERVISOR_TS"{print $2}' "$PIA_SUPERVISOR_STATE_FILE" 2>/dev/null | tr -cd '0-9' || true)
-    [ -n "$sup_ts" ] && [ $(( $(date +%s) - sup_ts )) -lt 180 ]
-    return $?
+    if [ -n "$sup_ts" ]; then
+      local sup_age=$(( $(date +%s) - sup_ts ))
+      [ "$sup_age" -ge -60 ] && [ "$sup_age" -lt 180 ]
+      return $?
+    fi
+    return 1
   fi
   since=$(systemctl show -p ActiveEnterTimestampMonotonic --value pia.service 2>/dev/null || echo 0)
   now=$(awk '{printf "%d", $1*1000000}' /proc/uptime 2>/dev/null || echo 0)

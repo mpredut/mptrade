@@ -4013,6 +4013,56 @@ def test_pass14_current_price_disk_sync_watermark_and_rebuild_fetchtimes_invaria
     cpm2.shutdown(timeout=1.0)
 
 
+def test_pass20_cache_manager_dead_thread_heartbeat_invariant_and_crosscheck(tmp_path, monkeypatch):
+    """Pass 20 pure invariant & cross-check: cacheManager heartbeat state surfaces dead sync threads as degraded/error instead of masking them behind alive siblings."""
+    import cacheManager as cm_mod
+    from core import heartbeat_runtime as hbr
+    from state_io import read_json_dict
+
+    class _FakeThread:
+        def __init__(self, name: str, alive: bool) -> None:
+            self.name = name
+            self._alive = alive
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    # 1. Pure invariants: all alive -> ok; partial dead -> degraded; all dead -> error
+    t_price = _FakeThread("CurrentPrice", True)
+    t_open = _FakeThread("OrderOpen", True)
+    t_filled = _FakeThread("OrderFilled", False)
+
+    hb_ok, dead_ok, alive_ok = cm_mod._build_cache_manager_heartbeat_state([t_price, t_open])
+    assert hb_ok == {"status": "ok", "alive_threads": 2, "total_threads": 2}
+    assert dead_ok == [] and alive_ok == 2
+
+    hb_deg, dead_deg, alive_deg = cm_mod._build_cache_manager_heartbeat_state([t_price, t_open, t_filled])
+    assert hb_deg == {"status": "degraded", "alive_threads": 2, "total_threads": 3, "dead_threads": ["OrderFilled"]}
+    assert dead_deg == ["OrderFilled"] and alive_deg == 2
+
+    hb_err, dead_err, alive_err = cm_mod._build_cache_manager_heartbeat_state([_FakeThread("CurrentPrice", False), t_filled])
+    assert hb_err == {"status": "error", "alive_threads": 0, "total_threads": 2, "dead_threads": ["CurrentPrice", "OrderFilled"]}
+    assert dead_err == ["CurrentPrice", "OrderFilled"] and alive_err == 0
+
+    # 2. Dependent cross-check: touch_module_heartbeat persists degraded last_run status + dead_threads to cacheManager.heartbeat
+    hb_file = tmp_path / "cacheManager.heartbeat"
+    hbr.touch_module_heartbeat(
+        "cacheManager",
+        path=hb_file,
+        interval_sec=30.0,
+        force=True,
+        symbols=["BTCUSDC", "HYPEUSDC"],
+        status=hb_deg,
+    )
+    doc = read_json_dict(hb_file, default={})
+    last_run = doc.get("last_run") or {}
+    assert last_run.get("status") == "degraded"
+    assert last_run.get("dead_threads") == ["OrderFilled"]
+    assert last_run.get("alive_threads") == 2
+    assert last_run.get("total_threads") == 3
+
+
+
 
 
 
