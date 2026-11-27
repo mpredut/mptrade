@@ -505,6 +505,14 @@ def _resolve_venue_sizing_specs(
     return buy_buf, dust_spec
 
 
+def resolve_venue_sell_dust_min_usd(venue: Any, provider: Any = None) -> float:
+    """Return declarative venue minimum non-dust notional USD from ``_SELL_DUST_SPEC`` (0.0 if unset)."""
+    _, dust_spec = _resolve_venue_sizing_specs(venue, provider=provider)
+    if dust_spec is None:
+        return 0.0
+    return safe_pos_float(dust_spec[1], default=0.0) or 0.0
+
+
 def venue_fee_cap_quantity(
     venue: Any,
     side: str,

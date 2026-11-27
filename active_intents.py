@@ -37,6 +37,7 @@ from cachepaths import (
     RTRADE_PAIRS_STATE_FILENAME,
     VENUE_BALANCES_STATE_FILENAME,
     cache_relpath,
+    canonical_base_asset,
     is_cachedb_relpath,
     is_shadow_or_paper_order_id,
     is_shadow_or_paper_state_filename,
@@ -46,6 +47,7 @@ from cachepaths import (
     resolve_cachedb_filepath,
 )
 from instrument_registry import resolve_symbol_identity
+from providers.base import MarketDataProvider
 from providers.execution_audit import iter_audit_jsonl_paths
 from providers.intent_state import (
     _extract_intent_id,
@@ -79,6 +81,11 @@ from providers.order_status_ssot import (
     classify_order_lifecycle_state,
     is_open_working_status,
 )
+from providers.portfolio_state_store import (
+    load_venue_balances_state_dict,
+    resolve_venue_trade_cache_position,
+)
+from providers.quantity import resolve_venue_sell_dust_min_usd
 from state_io import (
     encode_json_payload,
     read_json_dict_recovering,
@@ -522,6 +529,90 @@ def _iter_resolved_source_paths(root: str, spec: StateSource) -> list[str]:
     ]
 
 
+def _exposure_coverage_keys(venue: Any, symbol: Any) -> set[tuple[str, str]]:
+    v_k = str(normalize_venue_name(str(venue or "")) or venue or "").strip().lower()
+    s_raw = str(symbol or "").strip()
+    if not v_k or not s_raw:
+        return set()
+    keys = {(v_k, s_raw.casefold())}
+    if canon := _canonical_symbol(s_raw):
+        keys.add((v_k, canon.casefold()))
+    if base := canonical_base_asset(s_raw):
+        keys.add((v_k, base.casefold()))
+    return keys
+
+
+def _collect_portfolio_cache_exposures(
+    root: str,
+    *,
+    covered_keys: set[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Supplement bot cycle-state exposures with live non-dust portfolio_state holdings (e.g. Kraken xStocks, Binance spot)."""
+    cachedb_dir = os.path.join(root, "cachedb")
+    vb_state = load_venue_balances_state_dict(cachedb_dir, require_exists=True)
+    if not vb_state:
+        return []
+    seen = set(covered_keys)
+    out: list[dict[str, Any]] = []
+    for key in sorted(vb_state):
+        if not (isinstance(key, str) and key.startswith("pos:")):
+            continue
+        entry = vb_state.get(key)
+        if not isinstance(entry, dict):
+            continue
+        raw_venue = _first(entry, "venue") or key.split(":", 2)[1]
+        venue = str(normalize_venue_name(str(raw_venue)) or raw_venue).strip().lower()
+        raw_sym = _first(entry, "symbol") or (key.split(":", 2)[2] if key.count(":") >= 2 else None)
+        symbol = _canonical_symbol(raw_sym)
+        if not venue or not symbol:
+            continue
+        cov_keys = _exposure_coverage_keys(venue, symbol)
+        if cov_keys & seen:
+            continue
+        qty = (safe_nonneg_float(entry.get("free_base"), default=0.0) or 0.0) + (
+            safe_nonneg_float(entry.get("locked_base_qty"), default=0.0) or 0.0
+        )
+        min_qty = safe_pos_float(entry.get("min_qty"), default=0.0) or 0.0
+        if qty <= 1e-9 or (min_qty > 0.0 and qty + 1e-12 < min_qty):
+            continue
+        price = safe_pos_float(entry.get("price"), default=None)
+        val_usd = safe_nonneg_float(entry.get("value_usd"), default=None)
+        if val_usd is None and price is not None:
+            val_usd = qty * price
+        default_min_notional = MarketDataProvider.resolve_venue_default_fee_spec(venue)[3]
+        exch_min_usd = (
+            safe_pos_float(entry.get("exchange_min_notional_usd"), default=default_min_notional)
+            or default_min_notional
+        )
+        dust_floor_usd = max(exch_min_usd, resolve_venue_sell_dust_min_usd(venue))
+        max_sell_raw = entry.get("effective_max_sell_usd")
+        max_sell_usd = safe_nonneg_float(max_sell_raw, default=None) if max_sell_raw is not None else None
+        if (max_sell_usd is not None and max_sell_usd <= 0.0) or (
+            val_usd is not None and val_usd + 1e-9 < dust_floor_usd
+        ):
+            continue
+        if val_usd is None and max_sell_usd is None:
+            continue
+        cache_pos = resolve_venue_trade_cache_position(venue, symbol, cachedb_dir, held_qty=qty)
+        cost = safe_nonneg_float(cache_pos.get("cost"), default=None) if isinstance(cache_pos, dict) else None
+        if cost is None:
+            cost = round(val_usd, 2) if val_usd is not None else None
+        entry_px = safe_pos_float(cache_pos.get("entry_price"), default=None) if isinstance(cache_pos, dict) else None
+        ts_ms = safe_pos_float(cache_pos.get("entry_ts_ms"), default=None) if isinstance(cache_pos, dict) else None
+        out.append({
+            "owner": venue,
+            "venue": venue,
+            "symbol": symbol,
+            "qty": round(qty, 8),
+            "cost": cost,
+            "entry_price": entry_px,
+            "entry_ts": round(ts_ms / 1000.0, 3) if ts_ms is not None else None,
+            "source": "portfolio_state",
+        })
+        seen.update(cov_keys)
+    return out
+
+
 def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
     """Return normalized active intents and read errors without mutating sources."""
     root = os.path.abspath(root)
@@ -559,6 +650,11 @@ def build_active_intent_index(root: str, sources=DEFAULT_SOURCES) -> dict:
                         exposures.append(exp)
             except (OSError, ValueError, TypeError) as exc:
                 errors.append({"source": relative, "error": f"{type(exc).__name__}: {exc}"})
+    if sources == DEFAULT_SOURCES:
+        covered_exp_keys: set[tuple[str, str]] = set()
+        for exp_row in exposures:
+            covered_exp_keys.update(_exposure_coverage_keys(exp_row.get("venue"), exp_row.get("symbol")))
+        exposures.extend(_collect_portfolio_cache_exposures(root, covered_keys=covered_exp_keys))
     intents = _prune_and_deduplicate_active_intents(intents, root)
     intents.sort(key=lambda row: (
         row["owner"], row.get("symbol") or "", row["side"], row["intent_id"],

@@ -15,11 +15,16 @@ from typing import Any, Callable, Collection, Mapping, Optional
 
 from cachepaths import (
     CACHE_BINANCE_BALANCE_FILENAME,
+    CACHE_BINANCE_ORDER_FILLED_FILENAME,
     CACHE_HYPERLIQUID_BALANCE_FILENAME,
+    CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME,
+    CACHE_HYPERLIQUID_TRADE_FILENAME,
     CACHE_KRAKEN_BALANCE_FILENAME,
     CACHE_KRAKEN_ORDER_FILLED_FILENAME,
     CACHE_KRAKEN_TRADE_FILENAME,
     CACHE_T212_BALANCE_FILENAME,
+    CACHE_T212_ORDER_FILLED_FILENAME,
+    CACHE_T212_TRADE_FILENAME,
     clean_scalar_str,
     normalize_venue_name,
     resolve_cachedb_filepath,
@@ -195,7 +200,16 @@ def upsert_venue_balances_snapshot(
     )
 
 
-def resolve_kraken_trade_cache_position(
+VENUE_ORDER_FILLED_CACHE_FILENAMES: dict[str, tuple[str, ...]] = {
+    "binance": (CACHE_BINANCE_ORDER_FILLED_FILENAME,),
+    "kraken": (CACHE_KRAKEN_ORDER_FILLED_FILENAME, CACHE_KRAKEN_TRADE_FILENAME),
+    "hyperliquid": (CACHE_HYPERLIQUID_ORDER_FILLED_FILENAME, CACHE_HYPERLIQUID_TRADE_FILENAME),
+    "t212": (CACHE_T212_ORDER_FILLED_FILENAME, CACHE_T212_TRADE_FILENAME),
+}
+
+
+def resolve_venue_trade_cache_position(
+    venue: str,
     symbol: str,
     cachedb_dir: str,
     *,
@@ -203,12 +217,14 @@ def resolve_kraken_trade_cache_position(
     read_json_fn: Any = None,
     now_ts: Optional[float] = None,
 ) -> Optional[dict[str, Any]]:
-    """Resolve live Kraken position/cost-basis summary from ``cache_order_filled_kraken.json`` (with Stage-1 fallback to ``cache_trade_kraken.json``)."""
+    """Resolve live position/cost-basis summary from ``cache_order_filled_<venue>.json`` (with Stage-1 trade-cache fallback)."""
+    v_norm = normalize_venue_name(venue) or ""
+    fnames = VENUE_ORDER_FILLED_CACHE_FILENAMES.get(v_norm)
     sym_s = clean_scalar_str(symbol) or ""
-    if not sym_s or not cachedb_dir:
+    if not fnames or not sym_s or not cachedb_dir:
         return None
     sym_cf = sym_s.casefold()
-    for fname in (CACHE_KRAKEN_ORDER_FILLED_FILENAME, CACHE_KRAKEN_TRADE_FILENAME):
+    for fname in fnames:
         cache_file = resolve_cachedb_filepath(os.path.join(cachedb_dir, fname))
         if not cachedb_exists(cache_file, include_previous=True):
             continue
@@ -241,3 +257,22 @@ def resolve_kraken_trade_cache_position(
             now_ts=now_ts,
         )
     return None
+
+
+def resolve_kraken_trade_cache_position(
+    symbol: str,
+    cachedb_dir: str,
+    *,
+    held_qty: Optional[float] = None,
+    read_json_fn: Any = None,
+    now_ts: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    """Resolve live Kraken position/cost-basis summary from ``cache_order_filled_kraken.json`` (with Stage-1 fallback to ``cache_trade_kraken.json``)."""
+    return resolve_venue_trade_cache_position(
+        "kraken",
+        symbol,
+        cachedb_dir,
+        held_qty=held_qty,
+        read_json_fn=read_json_fn,
+        now_ts=now_ts,
+    )

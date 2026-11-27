@@ -2924,3 +2924,123 @@ def test_pass35_ledger_dedup_lru_threadsafe_and_pricewindow_vol_memo_lock():
     assert errors == []
     assert results == expected
     assert len(pw._vol_memo_cache) <= pw._VOL_MEMO_MAX_ENTRIES
+
+
+def test_active_intents_surfaces_portfolio_cache_holdings_and_skips_dust_and_duplicates(tmp_path):
+    """Non-bot holdings (Kraken xStocks, Binance spot) surface in Net Exposures with fill-derived cost while dust/duplicates are skipped."""
+    from state_stores.portfolio_positions_state import PortfolioPositionsStateStore
+
+    cdb = tmp_path / "cachedb"
+    pos_path = PortfolioPositionsStateStore.resolve_path(str(cdb))
+    PortfolioPositionsStateStore.upsert_locked(
+        pos_path,
+        {
+            "pos:kraken:SPCXxUSD": {
+                "venue": "kraken",
+                "symbol": "SPCXxUSD",
+                "base": "SPCXx",
+                "quote": "USD",
+                "price": 132.35,
+                "free_base": 12.135889,
+                "value_usd": 1606.18,
+                "exchange_min_notional_usd": 1.0,
+                "min_qty": 0.001,
+                "effective_max_sell_usd": 1606.18,
+                "ts": 1_795_819_000.0,
+            },
+            "pos:binance:TAOUSDC": {
+                "venue": "binance",
+                "symbol": "TAOUSDC",
+                "base": "TAO",
+                "quote": "USDC",
+                "price": 186.0,
+                "free_base": 3.5,
+                "value_usd": 651.0,
+                "exchange_min_notional_usd": 5.0,
+                "min_qty": 0.0001,
+                "effective_max_sell_usd": 651.0,
+                "ts": 1_795_819_000.0,
+            },
+            "pos:binance:BTCUSDC": {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "base": "BTC",
+                "quote": "USDC",
+                "price": 60000.0,
+                "free_base": 0.000027,
+                "value_usd": 1.62,
+                "exchange_min_notional_usd": 5.0,
+                "min_qty": 0.00001,
+                "effective_max_sell_usd": 0.0,
+                "ts": 1_795_819_000.0,
+            },
+            "pos:t212:RGNT_US_EQ": {
+                "venue": "t212",
+                "symbol": "RGNT_US_EQ",
+                "base": "RGNT_US_EQ",
+                "quote": "USD",
+                "price": 0.9518,
+                "free_base": 3.93,
+                "value_usd": 3.74,
+                "exchange_min_notional_usd": 1.0,
+                "min_qty": 0.01,
+                "effective_max_sell_usd": 3.74,
+                "ts": 1_795_819_000.0,
+            },
+            "pos:hyperliquid:HYPEUSDC": {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "base": "HYPE",
+                "quote": "USDC",
+                "price": 63.6,
+                "free_base": 18.7348674,
+                "value_usd": 1191.54,
+                "exchange_min_notional_usd": 10.0,
+                "min_qty": 0.01,
+                "effective_max_sell_usd": 1191.54,
+                "ts": 1_795_819_000.0,
+            },
+        },
+    )
+    _write_intent_file(
+        cdb / "account/cache_order_filled_kraken.json",
+        {
+            "items": {
+                "SPCXxUSD": [
+                    {"id": "K-1", "symbol": "SPCXxUSD", "side": "BUY", "price": 134.844006, "executedQty": 12.135889, "status": "CLOSED", "time": 1_795_530_909_957},
+                ]
+            }
+        },
+    )
+    _write_intent_file(
+        cdb / "account/cache_order_filled_binance.json",
+        {
+            "items": {
+                "TAOUSDC": [
+                    {"orderId": "B-1", "symbol": "TAOUSDC", "side": "BUY", "price": 180.0, "executedQty": 3.5, "status": "FILLED", "time": 1_795_814_016_000},
+                ]
+            }
+        },
+    )
+    _write_intent_file(
+        tmp_path / "hyperliquid/.state_HYPE.json",
+        {"qty": 18.7348674, "cost": 1199.31, "entry_price": 64.01},
+    )
+    _write_intent_file(
+        tmp_path / "212trading/.state_RGNT_US_EQ.json",
+        {"qty": 0.0, "cost_usd": 0.0},
+    )
+
+    result = build_active_intent_index(str(tmp_path))
+    by_sym = {e["symbol"]: e for e in result["exposures"]}
+    assert set(by_sym) == {"HYPE", "SPCXxUSD", "TAOUSDC"}
+    assert by_sym["SPCXxUSD"]["venue"] == "kraken"
+    assert by_sym["SPCXxUSD"]["qty"] == pytest.approx(12.135889)
+    assert by_sym["SPCXxUSD"]["cost"] == pytest.approx(1636.45, abs=0.02)
+    assert by_sym["TAOUSDC"]["venue"] == "binance"
+    assert by_sym["TAOUSDC"]["cost"] == pytest.approx(630.0, abs=0.02)
+    assert result["summary"]["net_exposures"]["total_cost"] == pytest.approx(1199.31 + 1636.45 + 630.0, abs=0.05)
+    formatted = format_summary(result)
+    assert "SPCXxUSD: 12.135889 ($1636.45) [kraken]" in formatted
+    assert "TAOUSDC: 3.5 ($630.00) [binance]" in formatted
+
