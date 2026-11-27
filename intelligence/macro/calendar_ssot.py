@@ -363,7 +363,7 @@ def _detect_macro_calendar_headlines(breaking_news: Optional[Sequence[Any]]) -> 
             t_words = set(_ALPHA_WORD_RE.findall(low_t))
             if (
                 matched_kws == ["inflation"]
-                and (t_words & _PARTISAN_ELECTION_CONTEXT_WORDS)
+                and (t_words & (_PARTISAN_ELECTION_CONTEXT_WORDS | {"gift", "gifts", "holiday", "holidays", "shopper", "shoppers", "toy", "toys"}))
                 and not _MACRO_DATA_ANCHOR_RE.search(low_t)
             ):
                 continue

@@ -3214,6 +3214,116 @@ def test_pass7_us_holiday_session_coherence_and_since_close_prompt(tmp_path) -> 
     assert "Thanksgiving Day" in geo_cap.last_prompt
 
 
+def test_pass8_post_early_close_benchmarks_skew_sign_trimmed_breadth_and_holiday_shopping_filter(tmp_path) -> None:
+    """Verify post-early-close SPY/QQQ/IBIT/DXY flip to CLOSED, Geo/Sentiment prompts specify Skew_25d sign, SentimentAdvisor shows outlier-trimmed breadth mean, and holiday-shopping/stock-pick spam is filtered."""
+    from datetime import datetime
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+    from intelligence.macro.geopolitical_analyzer import GeopoliticalThreatAnalyzer
+    from intelligence.macro.lexicon_ssot import has_financial_or_geopolitical_context
+    from intelligence.sentiment.collectors.macro_telemetry_collector import MacroAndNewsSensorsCollector
+    from intelligence.sentiment.sentiment_advisor import SentimentAdvisor, _format_breadth_line
+
+    et = ZoneInfo("America/New_York")
+    # 1. Black Friday 17:35 EST (after 17:00 ET extended close & Friday FX close): SPY/QQQ/IBIT/DXY transition to CLOSED and drop stale 1h/15m deltas
+    bf_closed_ts = datetime(2026, 11, 27, 17, 35, tzinfo=et).timestamp()
+    raw_mb = {
+        "ts": bf_closed_ts - 15.0,
+        "items": {
+            "SPY": {"symbol": "SPY", "price": 731.30, "chg_24h_pct": 2.04, "chg_1h_pct": 0.04, "chg_15m_pct": 0.11, "last_bar_ts": bf_closed_ts - 2400.0, "market_state": "POST"},
+            "QQQ": {"symbol": "QQQ", "price": 650.62, "chg_24h_pct": 2.63, "chg_1h_pct": 0.0, "last_bar_ts": bf_closed_ts - 2400.0, "market_state": "POST"},
+            "IBIT": {"symbol": "IBIT", "price": 33.85, "chg_24h_pct": -0.65, "chg_1h_pct": 0.21, "last_bar_ts": bf_closed_ts - 2400.0, "market_state": "POST"},
+            "DXY": {"symbol": "DXY", "price": 104.01, "chg_24h_pct": 0.34, "chg_1h_pct": 0.05, "last_bar_ts": bf_closed_ts - 2100.0},
+        },
+    }
+    norm_mb = MacroAndNewsSensorsCollector._normalize_macro_benchmarks_items(
+        raw_mb, cache_dir=str(tmp_path), now_ts=bf_closed_ts
+    )
+    for sym in ("SPY", "QQQ", "IBIT", "DXY"):
+        it = norm_mb["items"][sym]
+        assert it["market_state"] == "CLOSED", f"{sym} should be CLOSED after Black Friday 17:00 ET"
+        assert "chg_1h_pct" not in it and "chg_15m_pct" not in it
+    assert "post" not in norm_mb["summary_line"]
+    assert "DXY=104.01 (+0.34% 24h, closed" in norm_mb["summary_line"]
+
+    # 2. SentimentAdvisor _format_breadth_line exposes outlier-trimmed mean when |mean - trimmed| >= 1.0pp
+    b_skewed = SimpleNamespace(
+        advance_ratio=0.5217,
+        median_change_pct=0.186,
+        mean_change_pct=5.072,
+        trimmed_mean_change_pct=0.511,
+        dispersion_std=34.959,
+        advancing_count=24,
+        total_count=46,
+    )
+    b_line = _format_breadth_line(b_skewed)
+    assert "mean +5.07% (trimmed +0.51%)" in b_line
+    b_clean = SimpleNamespace(
+        advance_ratio=0.55,
+        median_change_pct=1.0,
+        mean_change_pct=1.2,
+        trimmed_mean_change_pct=1.1,
+        dispersion_std=3.0,
+        advancing_count=22,
+        total_count=40,
+    )
+    assert "(trimmed" not in _format_breadth_line(b_clean)
+
+    # 3. GeopoliticalThreatAnalyzer & SentimentAdvisor prompts explicitly state Skew_25d = Put_IV - Call_IV sign convention
+    class _Cap:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+            self.last_prompt = ""
+
+        def query_json(self, prompt: str, **kwargs):
+            self.last_prompt = prompt
+            return self.payload
+
+    geo_cap = _Cap({"threat_level": "NORMAL", "risk_score": 0.2, "summary": "Calm.", "recommended_brake": "NONE"})
+    GeopoliticalThreatAnalyzer(
+        gemini_client=geo_cap,
+        state_file=str(tmp_path / "macro" / "geopolitical_eval.json"),
+        start_sync=False,
+    ).assess(
+        NewsFeedCollector.parse_rss_xml(SAMPLE_RSS_XML_WAR),
+        force_refresh=True,
+        now_ts=bf_closed_ts,
+        allow_llm=True,
+    )
+    assert "Skew_25d = Put_IV - Call_IV: >0 reflects put-buying fear" in geo_cap.last_prompt
+
+    sa_cap = _Cap({"market_bias": "NEUTRAL", "risk_level": "MODERATE", "confidence": 0.7, "summary": "Balanced.", "key_risks": [], "recommended_action": "HOLD"})
+    SentimentAdvisor(
+        gemini_client=sa_cap,
+        cache_file=str(tmp_path / "macro" / "sentiment_eval.json"),
+        start_sync=False,
+    ).review(now_ts=bf_closed_ts, force_refresh=True, allow_llm=True)
+    assert "Skew_25d = Put_IV - Call_IV: >0 reflects put-buying fear" in sa_cap.last_prompt
+
+    # 4. Holiday shopping fluff & Motley-Fool/TipRanks stock-pick clickbait excluded from breaking news & live_macro_headlines
+    shopping_inf = "Inflation has shoppers hunting for value. That bodes well for Black Friday"
+    assert not has_financial_or_geopolitical_context(shopping_inf)
+    assert not has_financial_or_geopolitical_context(
+        "Even the price of toys is on the rise. How Americans are scaling back holiday plans"
+    )
+    assert not has_financial_or_geopolitical_context(
+        "Anthropic vs. Coinbase: One Stock Is Overhyped, One Is Oversold, Says Top Investor"
+    )
+    assert has_financial_or_geopolitical_context(
+        "US Core CPI inflation rises 0.3% m/m, keeping Fed rate path in focus"
+    )
+    cal = resolve_macro_economic_calendar(
+        now_ts=bf_closed_ts,
+        breaking_news=[shopping_inf, "Core PCE inflation ticks up to 2.8% y/y as Fed weighs December pause"],
+        calendar_snapshot={"ts": bf_closed_ts, "events_ok": True, "events": []},
+    )
+    assert shopping_inf not in (cal.get("detected_macro_headlines") or [])
+    assert any("Core PCE inflation" in h for h in (cal.get("detected_macro_headlines") or []))
+
+
+
 
 
 def test_pass4_polymarket_bettor_clickbait_filter_and_90m_corporate_risk_decay(tmp_path):

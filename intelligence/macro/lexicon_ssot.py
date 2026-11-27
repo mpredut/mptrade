@@ -692,6 +692,10 @@ _EDITORIAL_CLICKBAIT_SUBSTRINGS: Tuple[str, ...] = (
     "what is open and closed",
     "here's where they're investing",
     "here's where to invest",
+    "says top investor",
+    "one stock is overhyped",
+    "is oversold, says",
+    "holiday plans",
 )
 
 _EDITORIAL_CLICKBAIT_OR_ADVICE_RE = re.compile(
@@ -1449,7 +1453,9 @@ def has_financial_or_geopolitical_context(title: Any) -> bool:
         words & {"asian", "european", "japanese", "chinese", "british", "german", "emerging", "sector"}
     ):
         return False
-    if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "grocery", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "xbox"}):
+    if matched_fin and matched_fin <= {"price", "prices"} and (words & {"apparel", "clothes", "clothing", "console", "fabric", "fabrics", "fashion", "gift", "gifts", "grocery", "holiday", "holidays", "menu", "nintendo", "playstation", "shoes", "shopper", "shoppers", "sneakers", "switch", "ticket", "tickets", "toy", "toys", "xbox"}):
+        return False
+    if matched_fin and matched_fin <= {"inflation"} and (words & {"gift", "gifts", "holiday", "holidays", "shopper", "shoppers", "toy", "toys"}) and not (words & (_BROAD_MARKET_INDEX_CONTEXT_WORDS | {"bank", "banks", "bls", "cpi", "fed", "fomc", "pce", "powell", "ppi", "rate", "rates", "treasury", "yield", "yields"})):
         return False
     if (
         matched_fin
