@@ -33,6 +33,7 @@ from botcore import (
     load_local_module,
     normalize_epoch_sec,
     normalize_side,
+    normalize_timestamp_ms,
     resolve_patched_attr,
     safe_nonneg_float,
     safe_pos_float,
@@ -1216,6 +1217,18 @@ class KrakenProvider(KrakenWsLedgerMixin, MarketDataProvider):
             if (pair_dec := exact_nonneg_int(p_meta.get("pair_decimals"), default=None)) is not None and pair_dec <= 18:
                 out["tick_size"] = round(10.0 ** (-pair_dec), 8)
         return out
+
+    @classmethod
+    def public_server_time_spec(cls):
+        return (
+            "https://api.kraken.com/0/public/Time",
+            lambda payload: (
+                normalize_timestamp_ms(payload["result"].get("unixtime"), default=None)
+                if isinstance(payload, dict) and isinstance(payload.get("result"), dict)
+                else None
+            ),
+            1000,
+        )
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:

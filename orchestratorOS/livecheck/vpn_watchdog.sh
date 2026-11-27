@@ -19,6 +19,9 @@ source "$ROOT/orchestratorOS/lib/pia_common.sh"
 : "${PIA_RESOLVED_CPU_THRESHOLD:?missing PIA_RESOLVED_CPU_THRESHOLD}"
 : "${PIA_RESOLVED_CPU_CONSECUTIVE:?missing PIA_RESOLVED_CPU_CONSECUTIVE}"
 : "${PIA_RESOLVED_CPU_SAMPLE_SEC:?missing PIA_RESOLVED_CPU_SAMPLE_SEC}"
+: "${CLOCK_OFFSET_WARN_MS:?missing CLOCK_OFFSET_WARN_MS}"
+: "${CLOCK_SYNC_CONSECUTIVE:?missing CLOCK_SYNC_CONSECUTIVE}"
+CLOCK_MAKESTEP_MS=$(( CLOCK_OFFSET_WARN_MS * 10 ))
 
 STATE_DIR="/var/lib/pia_selfheal"
 SPOOL="$STATE_DIR/alert_spool"
@@ -104,6 +107,136 @@ check_resolved_cpu() {
         fi
     else
         [ "$count" -eq 0 ] || log "systemd-resolved CPU recovered: ${cpu}%"
+        printf '0\n' > "$count_file"
+    fi
+    return 0
+}
+
+sample_clock_sync() {
+    # Output: service|synced(yes/no)|offset_ms(float or na)|stratum(int)
+    local csv svc synced off_ms strat ts_out
+    if command -v chronyc >/dev/null 2>&1 && systemctl is-active --quiet chrony.service 2>/dev/null; then
+        csv=$(chronyc -c tracking 2>/dev/null | head -1 || true)
+        if [ -n "$csv" ]; then
+            awk -F',' '{
+                strat = ($3 + 0)
+                leap = $14
+                synced = (strat > 0 && leap != "Not synchronised") ? "yes" : "no"
+                off_ms = sprintf("%.3f", ($5 + 0) * 1000.0)
+                printf "chrony|%s|%s|%d\n", synced, off_ms, strat
+            }' <<< "$csv"
+            return 0
+        fi
+        echo "chrony|no|na|0"
+        return 0
+    fi
+    svc="systemd-timesyncd"
+    if command -v chronyd >/dev/null 2>&1 && systemctl list-unit-files chrony.service >/dev/null 2>&1; then
+        svc="chrony"
+    fi
+    synced=$(timedatectl show -p NTPSynchronized --value 2>/dev/null | tr -d '\r' || echo "no")
+    [ "$synced" = "yes" ] || synced="no"
+    ts_out=$(timedatectl timesync-status 2>/dev/null || true)
+    off_ms=$(awk '
+        /^[[:space:]]*Offset:/ {
+            line = $0
+            sub(/^[[:space:]]*Offset:[[:space:]]*/, "", line)
+            sign = 1.0
+            if (substr(line, 1, 1) == "-") { sign = -1.0; line = substr(line, 2) }
+            else if (substr(line, 1, 1) == "+") { line = substr(line, 2) }
+            total = 0.0; found = 0
+            n = split(line, toks, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) {
+                t = toks[i]
+                if (match(t, /^([0-9]+(\.[0-9]+)?)(us|ms|s|min)$/)) {
+                    val = t; unit = t
+                    sub(/(us|ms|s|min)$/, "", val)
+                    sub(/^[0-9]+(\.[0-9]+)?/, "", unit)
+                    if (unit == "us") total += (val + 0.0) / 1000.0
+                    else if (unit == "ms") total += (val + 0.0)
+                    else if (unit == "s") total += (val + 0.0) * 1000.0
+                    else if (unit == "min") total += (val + 0.0) * 60000.0
+                    found = 1
+                }
+            }
+            if (found) { printf "%.3f", sign * total; exit }
+        }
+    ' <<< "$ts_out")
+    strat=$(awk '/^[[:space:]]*Stratum:/ { print ($2 + 0); exit }' <<< "$ts_out")
+    echo "${svc}|${synced}|${off_ms:-na}|${strat:-0}"
+}
+
+check_clock_sync() {
+    local count_file="$STATE_DIR/clock_drift_count" count=0
+    local sample svc synced off_ms strat target_svc unhealthy=0
+    if command -v chronyd >/dev/null 2>&1 && systemctl list-unit-files chrony.service >/dev/null 2>&1; then
+        target_svc="chrony.service"
+    else
+        target_svc="systemd-timesyncd.service"
+    fi
+
+    if ! systemctl is-active --quiet "$target_svc" 2>/dev/null; then
+        log "clock sync daemon $target_svc inactive -> starting"
+        systemctl start "$target_svc" >/dev/null 2>&1 || true
+        sleep 3
+        if systemctl is-active --quiet "$target_svc" 2>/dev/null; then
+            alert "Clock sync daemon restarted ($(hostname))" \
+                "$target_svc was inactive and was started automatically by vpn_watchdog." \
+                "$(ntfy_server_topic)"
+        else
+            alert "Clock sync daemon FAILED ($(hostname))" \
+                "$target_svc is inactive and failed to start automatically."
+            return 0
+        fi
+    fi
+
+    sample=$(sample_clock_sync)
+    IFS='|' read -r svc synced off_ms strat <<< "$sample"
+    if [ "$synced" != "yes" ]; then
+        unhealthy=1
+    elif [ "$off_ms" != "na" ] && awk -v o="$off_ms" -v lim="$CLOCK_OFFSET_WARN_MS" 'BEGIN { if (o<0) o=-o; exit !(o >= lim) }'; then
+        unhealthy=1
+    fi
+
+    [ -f "$count_file" ] && { read -r count < "$count_file" || true; }
+    [[ "${count:-}" =~ ^[0-9]+$ ]] || count=0
+    if [ "$unhealthy" = 1 ]; then
+        count=$((count + 1)); printf '%s\n' "$count" > "$count_file"
+        log "clock sync degraded: svc=${svc} synced=${synced} offset=${off_ms}ms stratum=${strat} (${count}/${CLOCK_SYNC_CONSECUTIVE})"
+        if [ "$count" -ge "$CLOCK_SYNC_CONSECUTIVE" ]; then
+            local repair_action=""
+            if [ "$target_svc" = "chrony.service" ]; then
+                repair_action="chronyc burst 4/4"
+                if ! chronyc -a burst 4/4 >/dev/null 2>&1; then
+                    repair_action="systemctl restart chrony.service"
+                    systemctl restart chrony.service >/dev/null 2>&1 || true
+                fi
+                if [ "$synced" != "yes" ] || { [ "$off_ms" != "na" ] && awk -v o="$off_ms" -v lim="$CLOCK_MAKESTEP_MS" 'BEGIN { if (o<0) o=-o; exit !(o >= lim) }'; }; then
+                    sleep 2
+                    chronyc -a makestep >/dev/null 2>&1 || true
+                    repair_action="${repair_action} + makestep"
+                fi
+            else
+                repair_action="systemctl restart systemd-timesyncd.service"
+                systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || true
+            fi
+            sleep 4
+            sample=$(sample_clock_sync)
+            IFS='|' read -r svc synced off_ms strat <<< "$sample"
+            if [ "$synced" = "yes" ] && { [ "$off_ms" = "na" ] || awk -v o="$off_ms" -v lim="$CLOCK_OFFSET_WARN_MS" 'BEGIN { if (o<0) o=-o; exit !(o < lim) }'; }; then
+                printf '0\n' > "$count_file"
+                log "clock sync auto-repaired (${repair_action}): svc=${svc} synced=${synced} offset=${off_ms}ms stratum=${strat}"
+                alert "Clock sync auto-repaired ($(hostname))" \
+                    "Action: ${repair_action} | Result: svc=${svc}, synced=${synced}, offset=${off_ms}ms, stratum=${strat}" \
+                    "$(ntfy_server_topic)"
+            else
+                log "clock sync STILL degraded after ${repair_action}: svc=${svc} synced=${synced} offset=${off_ms}ms stratum=${strat}"
+                alert "Clock sync degraded ($(hostname))" \
+                    "Clock stayed unsynced or above ${CLOCK_OFFSET_WARN_MS}ms after ${repair_action}: svc=${svc}, synced=${synced}, offset=${off_ms}ms, stratum=${strat}."
+            fi
+        fi
+    else
+        [ "$count" -eq 0 ] || log "clock sync recovered: svc=${svc} synced=${synced} offset=${off_ms}ms stratum=${strat}"
         printf '0\n' > "$count_file"
     fi
     return 0
@@ -315,6 +448,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
     echo "  raw internet   : $(net_raw_ok && echo OK || echo DOWN)"
     echo "  vpn_healthy    : $(vpn_healthy && echo YES || echo NO)"
     echo "  resolved CPU   : $(resolved_cpu_percent 2>/dev/null || echo unavailable)%"
+    echo "  clock sync     : $(sample_clock_sync 2>/dev/null || echo unavailable)"
     echo "  spooled alerts : $([ -f "$SPOOL" ] && wc -l < "$SPOOL" || echo 0)"
     exit 0
 fi
@@ -372,6 +506,7 @@ Check the fleet: systemctl is-active python_orchestrator.service ." \
 "PIA is healthy but python_orchestrator.service was down; the watchdog restarted it. Touch FLEET_PAUSED to pause this." \
             "$(ntfy_server_topic)"
     fi
+    check_clock_sync
     log "OK (tun0 + HTTPS through the tunnel), region=$(pia get region) vpnip=$(pia get vpnip)"
     exit 0
 fi

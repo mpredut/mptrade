@@ -11,6 +11,7 @@ This directory contains the systemd services, administration tools, and deployme
    - `trading-admin restart|stop|start`: Control the fleet and VPN services safely.
    - `trading-admin reinstall`: Re-render systemd units and crontabs from a clean git repo.
    - `trading-admin pin-dns`: Apply DNS cache tuning and restart systemd-resolved without restarting the fleet.
+   - `trading-admin sync-clock`: Apply chrony NTP tuning and force an immediate clock resync without restarting the fleet.
 4. **`crontab.root.prod.txt`**: Root-level cron jobs (such as `vpn_watchdog.sh` and `manage_gitautodeploy.sh`).
 5. **`crontab.prod.txt`**: Unprivileged trading user cron jobs (such as log pruning, deadman switch, backups, resource watchdog, PROD $\rightarrow$ DEV sync via `sync_cache_to.sh dev`, scheduled DEV backtests via `run_backtest_cycle.sh remote`, and `manage_agy.sh` watchdog/update).
 6. **`antigravity-cli-daemon.service` & `agy-bot`**:
@@ -20,6 +21,7 @@ This directory contains the systemd services, administration tools, and deployme
    - `agy-bot`: Wrapper script installed to `~/.local/bin/agy-bot` that isolates headless bot/supervisor LLM invocations in `~/agy_bot_home` so automated prompts never overwrite the human Web UI summary store.
 7. **Network & System Tuning**:
    - `resolved-20-trading-cache.conf`: Systemd-resolved DNS cache drop-in.
+   - `chrony-trading.conf` & `install_clock_sync.sh`: Low-latency multi-source chrony UTC sync (`time.cloudflare.com`, `ro.pool.ntp.org`, `europe.pool.ntp.org`) with zero-downtime install for PROD and DEV.
    - `netplan-99-force-gateway.yaml`: Direct uplink routing bypass for Proxmox hairpinning.
    - `logrotate-pia-daemon.conf`: Caps PIA daemon debug logs to prevent disk exhaustion.
    - `pia_settings_mtu.sh`: Pre-start WireGuard MTU clamp.

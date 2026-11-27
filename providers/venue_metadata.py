@@ -7,7 +7,7 @@ import os
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from botcore import (
     _parse_bool_flag,
@@ -18,6 +18,11 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
     split_csv,
+)
+from core.clock_sync import (
+    DEFAULT_CLOCK_SYNC_SERVICE,
+    HttpVenueClockProbe,
+    register_venue_clock_loader,
 )
 from cachepaths import (
     cache_path,
@@ -716,3 +721,45 @@ class ProviderVenueMetadataMixin:
         except Exception as exc:
             cls._log_orderbook_provider_error("aggregated spot flow request resolution", v_norm, query_sym, exc)
             return None, None
+
+    @classmethod
+    def public_server_time_spec(cls) -> Optional[tuple[str, Callable[[Any], Optional[int]], int]]:
+        """Return ``(url, extract_server_time_ms, resolution_ms)`` for a venue's public UTC clock, or ``None``."""
+        return None
+
+    @classmethod
+    def iter_venue_clock_probes(cls) -> tuple[HttpVenueClockProbe, ...]:
+        """Polymorphically discover ``HttpVenueClockProbe`` leaves across all registered venue providers."""
+        probes: list[HttpVenueClockProbe] = []
+        for v_key in cls._VENUE_PROVIDER_SPECS:
+            prov_cls = cls.resolve_venue_provider_class(v_key)
+            if prov_cls is None:
+                continue
+            spec = prov_cls.public_server_time_spec()
+            if not spec:
+                continue
+            url, extract_ms_fn, res_ms = spec
+            probes.append(HttpVenueClockProbe(v_key, url, extract_ms_fn, resolution_ms=res_ms))
+        return tuple(probes)
+
+    @classmethod
+    def probe_all_venue_clock_offsets(
+        cls,
+        *,
+        timeout_sec: float = 4.0,
+        fetch_json_fn: Optional[Callable[..., Any]] = None,
+        now_ms_fn: Optional[Callable[[], int]] = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Probe every registered venue clock source via canonical ``core.clock_sync``."""
+        samples = DEFAULT_CLOCK_SYNC_SERVICE.probe_venues(
+            timeout_sec=timeout_sec,
+            fetch_json_fn=fetch_json_fn,
+            now_ms_fn=now_ms_fn,
+        )
+        return {k: s.to_dict() for k, s in samples.items()}
+
+
+register_venue_clock_loader(
+    "provider_venue_metadata",
+    ProviderVenueMetadataMixin.iter_venue_clock_probes,
+)

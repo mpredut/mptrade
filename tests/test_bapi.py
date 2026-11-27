@@ -1916,6 +1916,76 @@ def test_us_and_ns_timestamp_normalization_in_binance_ws_and_bridge():
         bapi_ws_bridge._ws_is_healthy = orig_healthy
 
 
+def test_bapi_client_sync_time_rtt_retry_us_support_and_venue_clock_probes(monkeypatch):
+    """Verify bapi_client.sync_time RTT retry + telemetry, polymorphic venue probes, and SYNC_CLOCK repair."""
+    from orchestratorOS.lib.technical_repair_ssot import (
+        ALL_REPAIR_ACTIONS,
+        build_system_admin_command,
+        normalize_repair_action,
+    )
+    from providers.venue_metadata import ProviderVenueMetadataMixin
+    import verify_tools.check_cache_coherence as ccc
+
+    # 1. bapi_client.sync_time normalizes microsecond serverTime, retries once on high RTT, records telemetry
+    fake_cli = MagicMock()
+    fake_cli.timestamp_offset = 0
+    t_seq = iter([1_795_000_000.000, 1_795_000_001.600, 1_795_000_001.600, 1_795_000_001.630, 1_795_000_001.640])
+    fake_cli.get_server_time.side_effect = [
+        {"serverTime": 1_795_000_000_850_000},  # slow RTT=1600ms (microseconds)
+        {"serverTime": 1_795_000_001_620_000},  # fast RTT=30ms (microseconds -> exact 1795000001620 ms)
+    ]
+    with monkeypatch.context() as mp:
+        mp.setattr(bapi_client.time, "time", lambda: next(t_seq))
+        mp.setattr(bapi_client, "_client", fake_cli)
+        off = bapi_client.sync_time(safety_margin_ms=1000)
+    assert fake_cli.get_server_time.call_count == 2
+    assert off == (1_795_000_001_620 - 1_795_000_001_615) - 1000
+    st = bapi_client.get_time_sync_status()
+    assert st["server_ms"] == 1_795_000_001_620 and st["rtt_ms"] == 30 and st["raw_offset_ms"] == 5
+
+    # 2. Polymorphic registry probes Binance (1ms res) and Kraken (1000ms res)
+    p_times = iter([1_795_000_000_000, 1_795_000_000_040, 1_795_000_000_100, 1_795_000_000_160])
+
+    def _fake_fetch(url, timeout=4.0):
+        _ = timeout
+        if "binance.com" in url:
+            return {"serverTime": 1_795_000_000_025}
+        if "kraken.com" in url:
+            return {"error": [], "result": {"unixtime": 1_795_000_000}}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    probes = ProviderVenueMetadataMixin.probe_all_venue_clock_offsets(
+        fetch_json_fn=_fake_fetch, now_ms_fn=lambda: next(p_times)
+    )
+    assert probes["binance"]["ok"] is True and probes["binance"]["offset_ms"] == 5 and probes["binance"]["rtt_ms"] == 40
+    assert probes["kraken"]["ok"] is True and probes["kraken"]["resolution_ms"] == 1000
+
+    # 3. SYNC_CLOCK repair taxonomy + check_cache_coherence auto-repair loop
+    assert "SYNC_CLOCK" in ALL_REPAIR_ACTIONS
+    assert normalize_repair_action({"action": "FIX_CLOCK", "target": "chrony"}, ".")["action"] == "SYNC_CLOCK"
+    assert normalize_repair_action({"action": "RESTART_MODULE", "target": "ntp"}, ".")["action"] == "SYNC_CLOCK"
+    cmd_desc = build_system_admin_command("SYNC_CLOCK", admin_bin="/nonexistent/trading-admin")
+    assert cmd_desc is not None and cmd_desc[0][:2] == ["sudo", "-n"]
+
+    calls = []
+    states = iter([
+        {"healthy": False, "needs_repair": True, "reasons": ["os_offset_ms=+120.0(limit=50)"],
+         "os_clock": {"service": "chrony", "synchronized": True, "offset_ms": 120.0, "stratum": 2},
+         "venue_probes": {}},
+        {"healthy": True, "needs_repair": False, "reasons": [],
+         "os_clock": {"service": "chrony", "synchronized": True, "offset_ms": 0.4, "stratum": 2},
+         "venue_probes": {}},
+    ])
+    _, probs = ccc.check_clock_sync_coherence(
+        auto_repair=True,
+        include_venue_probes=True,
+        gather_fn=lambda **_kw: next(states),
+        repair_fn=lambda: (calls.append("repaired"), (True, "chrony synced"))[1],
+    )
+    assert calls == ["repaired"] and probs == []
+
+
+
 
 
 

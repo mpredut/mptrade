@@ -31,7 +31,6 @@ from botcore import (
     _parse_bool_flag,
     _sign_ed25519,
     clamp_price_to_bbo_mid,
-    normalize_timestamp_ms,
     safe_float,
     safe_int,
     safe_pos_float,
@@ -223,19 +222,7 @@ class BinancePriceStream(PublicPriceStreamBase):
                 if not isinstance(data.get("E"), bool) and data.get("E") is not None
                 else data.get("C")
             )
-            if isinstance(raw_ts, bool):
-                raw_ts = None
-            now_ms = math.trunc(time.time() * 1000)
-            if raw_ts is not None:
-                ts_ms = normalize_timestamp_ms(raw_ts, default=None)
-                if ts_ms is None:
-                    if safe_float(raw_ts, default=None) is None:
-                        raise ValueError(f"invalid ticker timestamp: {raw_ts!r}")
-                    ts_ms = now_ms
-            else:
-                ts_ms = now_ms
-            if ts_ms <= 0 or ts_ms > now_ms + 60_000:
-                ts_ms = now_ms
+            ts_ms = self._normalize_tick_timestamp_ms(raw_ts, strict_invalid=True)
             with self._lock:
                 self._prices[symbol] = price
             self._notify_subscribers(symbol, [[ts_ms, price]])

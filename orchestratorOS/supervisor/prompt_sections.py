@@ -919,6 +919,19 @@ def _format_sre_and_fleet_section(
             f"vpn_outage_active={sv.get('vpn_outage_active', False)}\n"
             f"- Configuration Files Audit: {cfg_summary}"
             + (
+                f"\n- Clock Sync (NTP): service={(sv['clock_sync'].get('os_clock') or {}).get('service', 'unknown')}, "
+                f"synced={(sv['clock_sync'].get('os_clock') or {}).get('synchronized', False)}, "
+                f"offset_ms={(sv['clock_sync'].get('os_clock') or {}).get('offset_ms', 'N/A')}, "
+                f"healthy={sv['clock_sync'].get('healthy', False)}"
+                + (
+                    f", reasons={sv['clock_sync'].get('reasons')}"
+                    if sv["clock_sync"].get("reasons")
+                    else ""
+                )
+                if isinstance(sv.get("clock_sync"), dict)
+                else ""
+            )
+            + (
                 f"\n- Sustained High-Resource Processes (os_resources_watchdog_state.json): "
                 f"{_format_compact_kv_value(sv['resource_watchdog_offenders'])}"
                 if sv.get("resource_watchdog_offenders")

@@ -18,6 +18,7 @@ from cachepaths import (
     has_equity_suffix,
     safe_float,
     safe_nonneg_float,
+    safe_nonneg_int,
     safe_pos_float,
     safe_pos_int,
 )
@@ -221,6 +222,7 @@ _EPOCH_MS_MIN = 100_000_000_000                 # 1e11 (1973-03-03 in ms; year 5
 _EPOCH_US_MIN = 100_000_000_000_000             # 1e14 (1973-03-03 in us; year 5138 in ms)
 _EPOCH_NS_MIN = 100_000_000_000_000_000         # 1e17 (1973-03-03 in ns; year 5138 in us)
 _EPOCH_NS_MAX = 100_000_000_000_000_000_000     # 1e20 (year 5138 in ns)
+MAX_FUTURE_TIMESTAMP_SKEW_MS = 60_000           # +60s wall-clock ceiling for live venue timestamps
 
 
 def _epoch_sec_divisor(val: int | float) -> int:
@@ -362,6 +364,35 @@ def normalize_timestamp_ms(value: object, default: int | None = None) -> int | N
     if _EPOCH_NS_MIN <= numeric < _EPOCH_NS_MAX:
         return math.trunc(numeric) // 1_000_000
     return round(numeric)
+
+
+def clamp_event_timestamp_ms(
+    raw_ts: object,
+    *,
+    now_ms: object = None,
+    max_future_ms: int = MAX_FUTURE_TIMESTAMP_SKEW_MS,
+    strict_invalid: bool = False,
+) -> int:
+    """Normalize any venue timestamp (s/ms/us/ns/ISO) to ms and clamp corrupt/future values to ``now_ms``.
+
+    When ``strict_invalid=True``, non-numeric garbage (e.g. ``'not-an-int'``, ``NaN``, ``Inf``)
+    raises ``ValueError`` while ``None``, booleans, non-positive values, and far-future values
+    (``> now_ms + max_future_ms``) clamp safely to ``now_ms``.
+    """
+    eff_now_ms = resolve_now_ms(now_ms)
+    eff_skew = safe_nonneg_int(max_future_ms, default=MAX_FUTURE_TIMESTAMP_SKEW_MS)
+    if eff_skew is None:
+        eff_skew = MAX_FUTURE_TIMESTAMP_SKEW_MS
+    if raw_ts is None or isinstance(raw_ts, bool):
+        return eff_now_ms
+    ts_ms = normalize_timestamp_ms(raw_ts, default=None)
+    if ts_ms is None:
+        if strict_invalid and safe_float(raw_ts, default=None) is None:
+            raise ValueError(f"invalid event timestamp: {raw_ts!r}")
+        return eff_now_ms
+    if ts_ms <= 0 or ts_ms > eff_now_ms + eff_skew:
+        return eff_now_ms
+    return ts_ms
 
 
 def _ts_ms_to_s(ts_ms: float | int) -> float:

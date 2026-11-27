@@ -7,7 +7,8 @@ import weakref
 
 import requests
 from binance.client import Client
-from botcore import _parse_bool_flag, exact_pos_int, safe_nonneg_float
+from botcore import _parse_bool_flag, normalize_timestamp_ms, safe_nonneg_float
+from core.clock_sync import measure_rtt_compensated_offset_ms, resolve_clock_sync_policy
 import credentials as _credentials
 from providers.ws_stream import mount_connect_retry
 
@@ -33,27 +34,60 @@ _resync_thread = None
 _resync_stop_event = threading.Event()
 _resync_lock = threading.Lock()
 _client_lock = threading.Lock()
+_sync_status_lock = threading.Lock()
+_last_sync_info: dict[str, object] = {}
+
+
+def get_time_sync_status() -> dict[str, object]:
+    """Return the latest Binance server-time synchronization telemetry snapshot."""
+    with _sync_status_lock:
+        return dict(_last_sync_info)
 
 
 def sync_time(safety_margin_ms=TIME_SAFETY_MARGIN_MS):
-    """Synchronize ``client.timestamp_offset`` with Binance server time.
+    """Synchronize ``client.timestamp_offset`` with Binance server time via canonical ``core.clock_sync``.
 
-    Correct local clock skew, commonly observed in WSL, which causes
-    APIError(-1021): 'Timestamp for this request was 1000ms ahead of server's time'.
-    The unsigned public endpoint does not itself depend on the timestamp."""
+    Corrects local clock skew (which triggers APIError(-1021)), supports s/ms/us/ns
+    ``serverTime`` payloads, retries once on high-RTT samples, and records telemetry.
+    """
     if _client is None:
         return None
     try:
         margin_ms = math.trunc(safe_nonneg_float(safety_margin_ms, default=TIME_SAFETY_MARGIN_MS) or 0.0)
-        t0_ms = math.trunc(time.time() * 1000)
-        srv_resp = _client.get_server_time()
-        raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
-        server_ms = exact_pos_int(raw_srv, default=None)
-        if server_ms is None:
-            raise ValueError("invalid serverTime in Binance response")
-        t1_ms = math.trunc(time.time() * 1000)
-        local_ms = (t0_ms + t1_ms) // 2
-        _client.timestamp_offset = server_ms - local_ms - margin_ms
+        try:
+            pol = resolve_clock_sync_policy()
+            max_rtt_ms = pol.max_sync_rtt_ms
+            venue_warn_ms = pol.venue_warn_ms
+        except Exception:
+            max_rtt_ms = 1000.0
+            venue_warn_ms = 200.0
+
+        def _fetch_server_ms():
+            srv_resp = _client.get_server_time()
+            raw_srv = srv_resp.get("serverTime") if isinstance(srv_resp, dict) else None
+            return normalize_timestamp_ms(raw_srv, default=None)
+
+        server_ms, raw_offset_ms, rtt_ms = measure_rtt_compensated_offset_ms(
+            _fetch_server_ms,
+            now_ms_fn=lambda: math.trunc(time.time() * 1000),
+            max_rtt_ms=max_rtt_ms,
+            max_attempts=2,
+        )
+        _client.timestamp_offset = raw_offset_ms - margin_ms
+        with _sync_status_lock:
+            _last_sync_info.clear()
+            _last_sync_info.update({
+                "ts": time.time(),
+                "server_ms": server_ms,
+                "raw_offset_ms": raw_offset_ms,
+                "timestamp_offset_ms": _client.timestamp_offset,
+                "rtt_ms": rtt_ms,
+            })
+        if abs(raw_offset_ms) - (rtt_ms / 2.0) >= venue_warn_ms:
+            print(
+                f"[bapi_client][WARN] Binance clock skew detected: "
+                f"raw_offset_ms={raw_offset_ms:+d} rtt_ms={rtt_ms} (limit={venue_warn_ms:.0f}ms)"
+            )
         return _client.timestamp_offset
     except Exception as e:
         print("[bapi_client] sync_time failed:", e)

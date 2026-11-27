@@ -17,6 +17,7 @@ from botcore import (
     exact_pos_int,
     extract_order_id,
     normalize_side,
+    normalize_timestamp_ms,
     require_pos_float,
     resolve_patched_attr,
     safe_nonneg_float,
@@ -622,6 +623,18 @@ class BinanceProvider(MarketDataProvider):
         except BinanceFilterError as exc:
             return binance_filter_refusal_reason(exc)
         return None
+
+    @classmethod
+    def public_server_time_spec(cls):
+        return (
+            f"https://{cls._PUBLIC_ORDERBOOK_HOST}/api/v3/time",
+            lambda payload: (
+                normalize_timestamp_ms(payload.get("serverTime"), default=None)
+                if isinstance(payload, dict)
+                else None
+            ),
+            1,
+        )
 
     @classmethod
     def public_orderbook_depth_urls(cls, symbol: str) -> tuple[tuple[str, ...], tuple[str, ...]]:

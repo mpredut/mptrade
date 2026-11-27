@@ -24,7 +24,12 @@ from botcore import (  # noqa: E402
     extract_current_price_timestamp_sec,
     first_epoch_sec,
     first_pos_float,
+    optional_env,
     summarize_current_price_cache_freshness,
+)
+from orchestratorOS.lib.technical_repair_ssot import (  # noqa: E402
+    attempt_clock_sync_autorepair,
+    gather_clock_sync_telemetry,
 )
 from cachepaths import (  # noqa: E402
     CACHE_ACCOUNT_HEALTH_FILENAME,
@@ -87,6 +92,42 @@ def expected_symbols():
     if not syms:
         raise ValueError("No configured symbols to verify")
     return syms
+
+
+def check_clock_sync_coherence(
+    *,
+    auto_repair: bool = True,
+    include_venue_probes: bool = True,
+    gather_fn=None,
+    repair_fn=None,
+) -> tuple[dict, list[str]]:
+    """Audit OS NTP + venue UTC clock alignment and trigger non-disruptive auto-repair on drift."""
+    collect = gather_fn if callable(gather_fn) else gather_clock_sync_telemetry
+    repair = repair_fn if callable(repair_fn) else attempt_clock_sync_autorepair
+    tel = collect(include_venue_probes=include_venue_probes)
+    repaired_msg = ""
+    if auto_repair and isinstance(tel, dict) and tel.get("needs_repair"):
+        ok_rep, repaired_msg = repair()
+        print(f"   AUTO-REPAIR ({'OK' if ok_rep else 'FAIL'}): {repaired_msg}")
+        tel = collect(include_venue_probes=include_venue_probes)
+    os_clk = tel.get("os_clock") if isinstance(tel, dict) and isinstance(tel.get("os_clock"), dict) else {}
+    v_probes = tel.get("venue_probes") if isinstance(tel, dict) and isinstance(tel.get("venue_probes"), dict) else {}
+    v_parts = [
+        f"{vk}={vp['offset_ms']:+.0f}ms(rtt={vp['rtt_ms']}ms)"
+        if isinstance(vp, dict) and vp.get("ok")
+        else f"{vk}=ERR({vp.get('error', 'fail') if isinstance(vp, dict) else 'fail'})"
+        for vk, vp in sorted(v_probes.items())
+    ]
+    v_str = f" | venues: {', '.join(v_parts)}" if v_parts else ""
+    healthy = bool(isinstance(tel, dict) and tel.get("healthy"))
+    reasons = list(tel.get("reasons") or []) if isinstance(tel, dict) else ["clock_telemetry_invalid"]
+    print(
+        f"-- clock sync (OS NTP + venues): svc={os_clk.get('service', 'unknown')} "
+        f"synced={os_clk.get('synchronized', False)} offset={os_clk.get('offset_ms', 'n/a')}ms "
+        f"stratum={os_clk.get('stratum', 0)}{v_str} -> {'OK' if healthy else f'FAIL ({reasons})'}"
+    )
+    clock_problems = [] if healthy else [f"clock_sync {'; '.join(reasons)}"]
+    return tel if isinstance(tel, dict) else {}, clock_problems
 
 
 def main() -> int:
@@ -255,6 +296,12 @@ def main() -> int:
                 print(f"   FAIL {viol.format_line()}")
         else:
             print("   all venue reflections (open/filled/trade/balance/ledger/health) -> OK")
+
+    # 5. OS & venue clock sync (live runs probe Binance/Kraken UTC and auto-repair via trading-admin)
+    in_pytest = bool(optional_env("PYTEST_CURRENT_TEST"))
+    if is_default_cache and not in_pytest:
+        _, clock_problems = check_clock_sync_coherence(auto_repair=True, include_venue_probes=True)
+        problems.extend(clock_problems)
 
     if problems:
         print(f"\nPROBLEMS ({len(problems)}): {problems}")

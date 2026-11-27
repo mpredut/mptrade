@@ -1691,5 +1691,153 @@ def test_normalize_epoch_and_timestamp_ms_supports_exact_us_and_ns():
     assert botcore.normalize_epoch_sec(10**400, default=None) is None
 
 
+def test_clock_sync_policy_parsers_and_health_evaluator():
+    """Verify SSOT core.clock_sync policy, parsers, pure evaluator, and Open-Closed extensibility."""
+    from core.clock_sync import (
+        ClockProbeRegistry,
+        ClockRepairRegistry,
+        ClockRepairResult,
+        ClockRepairStrategyBase,
+        ClockSample,
+        ClockSyncService,
+        OsClockProbeBase,
+        VenueClockProbeBase,
+        evaluate_clock_sync_health,
+        parse_chronyc_tracking_csv,
+        parse_timesync_status_text,
+        resolve_clock_sync_policy,
+    )
+
+    pol = resolve_clock_sync_policy()
+    assert pol.warn_ms == pytest.approx(50.0)
+    assert pol.step_ms == pytest.approx(500.0)
+    assert pol.venue_warn_ms == pytest.approx(200.0)
+    assert pol.max_sync_rtt_ms == pytest.approx(1000.0)
+    assert pol.consecutive_checks == 3
+
+    # 1. chronyc -c tracking CSV parsing (synced + unsynced)
+    csv_ok = "A29FC801,162.159.200.1,2,1795771800.123456,-0.000421,-0.000310,0.000500,-38.500,0.012,0.120,0.004200,0.000800,64.2,Normal"
+    c_ok = parse_chronyc_tracking_csv(csv_ok)
+    assert c_ok is not None
+    assert c_ok.source == "chrony" and c_ok.synchronized is True and c_ok.stratum == 2
+    assert c_ok.offset_ms == pytest.approx(-0.421)
+    assert c_ok.root_delay_ms == pytest.approx(4.2)
+
+    csv_unsync = "00000000,0.0.0.0,0,0.000000,0.000000,0.000000,0.000000,0.000,0.000,0.000,0.000000,0.000000,0.0,Not synchronised"
+    c_bad = parse_chronyc_tracking_csv(csv_unsync)
+    assert c_bad is not None and c_bad.synchronized is False
+
+    # 2. timedatectl timesync-status parsing across us/ms/s/min units
+    ts_txt = (
+        "       Server: 185.125.190.56 (ntp.ubuntu.com)\n"
+        "         Leap: normal\n"
+        "      Stratum: 2\n"
+        "       Offset: -3.216ms\n"
+        "        Delay: 54.254ms\n"
+        "       Jitter: 512us\n"
+    )
+    t_ok = parse_timesync_status_text(ts_txt, ntp_synchronized=True)
+    assert t_ok is not None
+    assert t_ok.synchronized is True and t_ok.offset_ms == pytest.approx(-3.216)
+    assert t_ok.jitter_ms == pytest.approx(0.512)
+    t_big = parse_timesync_status_text("Stratum: 2\nOffset: -1min 2.500s\n", ntp_synchronized=True)
+    assert t_big is not None and t_big.offset_ms == pytest.approx(-62500.0)
+
+    # 3. Pure health evaluation: Kraken 1s truncation (-850ms) and noisy RTT do not false-alarm
+    ev_ok = evaluate_clock_sync_health(
+        c_ok,
+        {
+            "binance": {"ok": True, "offset_ms": -12, "rtt_ms": 38, "resolution_ms": 1},
+            "kraken": {"ok": True, "offset_ms": -850, "rtt_ms": 44, "resolution_ms": 1000},
+        },
+        policy=pol,
+    )
+    assert ev_ok.healthy is True and ev_ok.needs_repair is False
+
+    ev_noisy = evaluate_clock_sync_health(
+        c_ok,
+        {"binance": {"ok": True, "offset_ms": 230, "rtt_ms": 120, "resolution_ms": 1}},
+        policy=pol,
+    )
+    assert ev_noisy.healthy is True
+
+    # 4. Real OS drift (>50ms) triggers slew repair; severe drift (>=500ms) flags makestep
+    c_ok_d = c_ok.to_dict()
+    ev_warn = evaluate_clock_sync_health({**c_ok_d, "offset_ms": 75.0}, policy=pol)
+    assert ev_warn.healthy is False and ev_warn.needs_repair is True and ev_warn.needs_makestep is False
+    ev_crit = evaluate_clock_sync_health({**c_ok_d, "offset_ms": -650.0}, policy=pol)
+    assert ev_crit.healthy is False and ev_crit.needs_makestep is True and ev_crit.severity == "CRITICAL"
+
+    # 5. Real venue clock skew beyond RTT + venue tolerance triggers repair
+    ev_venue = evaluate_clock_sync_health(
+        c_ok,
+        {"binance": {"ok": True, "offset_ms": 420, "rtt_ms": 40, "resolution_ms": 1}},
+        policy=pol,
+    )
+    assert ev_venue.healthy is False and any("binance_offset_ms=" in r for r in ev_venue.reasons)
+
+    # 6. Open-Closed Principle extensibility: register custom OS probe, venue probe & repair strategy
+    # without modifying any existing core class
+    repaired_flag = [False]
+
+    class _MockPtpOsProbe(OsClockProbeBase):
+        name = "ptp4l"
+        priority = 5
+
+        def is_available(self) -> bool:
+            return True
+
+        def probe(self, *, timeout_sec: float = 3.0):
+            _ = timeout_sec
+            return ClockSample(
+                source="ptp4l", kind="os", ok=True, synchronized=True, stratum=1,
+                offset_ms=0.05 if repaired_flag[0] else 120.0,
+            )
+
+    class _MockNewVenueProbe(VenueClockProbeBase):
+        name = "custom_venue"
+        url = "https://example.invalid/time"
+        resolution_ms = 1
+
+        def extract_server_time_ms(self, payload):
+            return botcore.normalize_timestamp_ms(payload.get("ts"), default=None)
+
+        def probe(self, **kwargs):
+            _ = kwargs
+            return ClockSample(source=self.name, kind="venue", ok=True, server_ms=1_795_000_000_000, offset_ms=4.0, rtt_ms=20)
+
+    class _MockRepairStrategy(ClockRepairStrategyBase):
+        name = "mock-ptp-resync"
+        priority = 1
+
+        def can_apply(self) -> bool:
+            return True
+
+        def repair(self, *, needs_makestep: bool = False) -> ClockRepairResult:
+            _ = needs_makestep
+            repaired_flag[0] = True
+            return ClockRepairResult(ok=True, strategy=self.name, message="ptp4l resynced")
+
+    p_reg = ClockProbeRegistry()
+    p_reg.register_os_probe(_MockPtpOsProbe())
+    p_reg.register_venue_probe(_MockNewVenueProbe())
+    r_reg = ClockRepairRegistry()
+    r_reg.register_strategy(_MockRepairStrategy())
+    svc = ClockSyncService(probe_registry=p_reg, repair_registry=r_reg)
+    rep, repair_res = svc.check(include_venue_probes=True, auto_repair=True, policy=pol)
+    assert repair_res is not None and repair_res.ok is True and repair_res.strategy == "mock-ptp-resync"
+    assert rep.healthy is True and rep.os_clock["service"] == "ptp4l"
+    assert rep.venue_probes["custom_venue"]["ok"] is True
+
+    # 7. Canonical clamp_event_timestamp_ms (used by PublicPriceStreamBase for all venues)
+    now_ms = 1_795_000_000_000
+    assert botcore.clamp_event_timestamp_ms(1_795_000_000_000_999 - 2_000_000, now_ms=now_ms) == now_ms - 2_000
+    assert botcore.clamp_event_timestamp_ms(now_ms + 120_000, now_ms=now_ms) == now_ms
+    with pytest.raises(ValueError):
+        botcore.clamp_event_timestamp_ms("not-a-timestamp", now_ms=now_ms, strict_invalid=True)
+
+
+
+
 
 

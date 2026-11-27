@@ -22,7 +22,8 @@ TUSER="${TRADING_USER:-$(stat -c %U "$(svc_root)" 2>/dev/null || id -un)}"
 require_clean_repo() {              # refuse to run privileged repo scripts if edited locally
   local root="$1"
   git -C "$root" -c safe.directory="$root" diff --quiet HEAD -- \
-      systemd/install_prod.sh systemd/resolved-20-trading-cache.conf 2>/dev/null \
+      systemd/install_prod.sh systemd/install_clock_sync.sh \
+      systemd/resolved-20-trading-cache.conf systemd/chrony-trading.conf 2>/dev/null \
     || { echo "REFUSED: privileged scripts differ from the committed version (git tree not clean)." >&2; exit 1; }
 }
 
@@ -52,5 +53,34 @@ case "$cmd" in
       /etc/systemd/resolved.conf.d/20-trading-cache.conf
     systemctl restart systemd-resolved
     resolvectl status 2>/dev/null | grep -m1 'Current DNS Server' || true ;;
-  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|pin-dns|reboot}" >&2; exit 2 ;;
+  sync-clock)
+    # Clock-only sync/repair: apply committed chrony config (if chrony is installed) and force a
+    # fresh NTP poll without restarting the trading fleet or VPN.
+    R="$(svc_root)"; [ -d "$R" ] || { echo "cannot resolve trading root from python_orchestrator.service" >&2; exit 1; }
+    git -C "$R" -c safe.directory="$R" diff --quiet HEAD -- systemd/chrony-trading.conf 2>/dev/null \
+      || { echo "REFUSED: chrony config differs from the committed version." >&2; exit 1; }
+    if command -v chronyc >/dev/null 2>&1 && systemctl list-unit-files chrony.service >/dev/null 2>&1; then
+      log "sync clock: apply chrony config + burst poll (no fleet restart)"
+      systemctl stop systemd-timesyncd.service 2>/dev/null || true
+      if ! cmp -s "$R/systemd/chrony-trading.conf" /etc/chrony/chrony.conf 2>/dev/null; then
+        install -m 0644 -o root -g root "$R/systemd/chrony-trading.conf" /etc/chrony/chrony.conf
+        chronyd -p -f /etc/chrony/chrony.conf >/dev/null
+        systemctl restart chrony.service
+      elif ! systemctl is-active --quiet chrony.service; then
+        systemctl start chrony.service
+      fi
+      chronyc -a burst 4/4 >/dev/null 2>&1 || true
+      sleep 2
+      off_abs=$(chronyc -c tracking 2>/dev/null | awk -F',' '{v=$5+0; if (v<0) v=-v; printf "%.6f", v}')
+      if [ -n "${off_abs:-}" ] && awk -v v="$off_abs" 'BEGIN { exit !(v >= 0.5) }'; then
+        log "sync clock: large offset (${off_abs}s >= 0.5s) -> chronyc makestep"
+        chronyc -a makestep >/dev/null 2>&1 || true
+      fi
+      chronyc tracking 2>/dev/null || true
+    else
+      log "sync clock: restart systemd-timesyncd (chrony not yet installed; no fleet restart)"
+      systemctl restart systemd-timesyncd.service
+      timedatectl timesync-status 2>/dev/null || timedatectl status 2>/dev/null || true
+    fi ;;
+  *) echo "usage: trading-admin {restart|stop|start|status|reinstall|pin-dns|sync-clock|reboot}" >&2; exit 2 ;;
 esac

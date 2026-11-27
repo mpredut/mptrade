@@ -75,6 +75,7 @@ install -m 0644 "$SYSTEMD_DIR/logrotate-pia-daemon.conf" /etc/logrotate.d/pia-da
 install -m 0755 "$SYSTEMD_DIR/trading-admin" /usr/local/sbin/trading-admin
 install -m 0440 "$TMP_DIR/sudoers-trading" /etc/sudoers.d/trading
 visudo -cf /etc/sudoers.d/trading
+bash "$SYSTEMD_DIR/install_clock_sync.sh"
 
 if systemctl is-enabled binance.service >/dev/null 2>&1 || systemctl is-active binance.service >/dev/null 2>&1; then
   systemctl stop binance.service 2>/dev/null || true

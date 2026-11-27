@@ -1270,7 +1270,9 @@ def test_backup_sync_common_modular_primitives(tmp_path):
         os.path.join(ROOT, "offline", "runners", "run_overnight_master_suite.sh"),
         os.path.join(ROOT, "offline", "research", "kraken_continuous_grid", "run_all.sh"),
         os.path.join(ROOT, "systemd", "pia_settings_mtu.sh"),
+        os.path.join(ROOT, "systemd", "install_clock_sync.sh"),
         os.path.join(ROOT, "systemd", "install_prod.sh"),
+        os.path.join(ROOT, "systemd", "trading-admin"),
         os.path.join(ROOT, "systemd", "agy-bot"),
     ]
     for script in scripts:

@@ -58,6 +58,12 @@ from cachepaths import (
     normalize_venue_name,
     resolve_cachedb_filepath,
 )
+from core.clock_sync import (
+    ClockRepairRegistry,
+    ClockSyncService,
+    DEFAULT_CLOCK_SYNC_SERVICE,
+    TradingAdminClockRepairStrategy,
+)
 from core.config import parse_dotenv
 from core.llm_topics import resolve_configured_llm_models
 from instrument_registry import canonical_display_symbol, is_xstock_trading_enabled
@@ -75,6 +81,7 @@ import notify_engine.ntfyapi as _ntfyapi
 import notify_engine.ntfypolicy as _ntfypolicy
 from orchestratorOS.agy.paths import resolve_agy_bot_bin
 from providers.intent_state import decision_has_cancel_directive, normalize_trading_decisions
+import providers.venue_metadata as _venue_metadata  # noqa: F401 -- registers venue clock probes with core.clock_sync
 from state_io import (
     atomic_write_text,
     generation_file_lock,
@@ -108,7 +115,7 @@ def _resolve_repair_json_reader(read_json_fn: Any = None) -> Any:
 
 BOT_MODULE_REPAIR_ACTIONS: Tuple[str, ...] = ("RESTART_BOT", "RESTART_MODULE")
 FLEET_REPAIR_ACTIONS: Tuple[str, ...] = ("RESTART_FLEET",)
-SYSTEM_INFRA_REPAIR_ACTIONS: Tuple[str, ...] = ("RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM")
+SYSTEM_INFRA_REPAIR_ACTIONS: Tuple[str, ...] = ("RESTART_VPN", "PIN_DNS", "SYNC_CLOCK", "REBOOT_SYSTEM")
 VENUE_ORDER_REPAIR_ACTIONS: Tuple[str, ...] = ("CANCEL_ORDER", "SYNC_POSITION")
 
 ALL_REPAIR_ACTIONS: Tuple[str, ...] = (
@@ -146,6 +153,7 @@ SYSTEM_ADMIN_ACTION_SPECS: Dict[str, Tuple[str, List[str], str]] = {
     "RESTART_FLEET": ("restart", ["/bin/systemctl", "restart", "python_orchestrator.service"], "Restarting entire trading fleet + VPN"),
     "RESTART_VPN": ("restart", ["/bin/systemctl", "restart", "pia.service"], "Restarting VPN service (wgpia0) + fleet"),
     "PIN_DNS": ("pin-dns", ["/bin/systemctl", "restart", "systemd-resolved"], "Pinning DNS and restarting systemd-resolved"),
+    "SYNC_CLOCK": ("sync-clock", ["/bin/systemctl", "restart", "chrony.service"], "Synchronizing OS clock via chrony/NTP without restarting fleet"),
     "REBOOT_SYSTEM": ("reboot", ["/bin/systemctl", "reboot"], "Rebooting entire Linux system"),
 }
 
@@ -155,6 +163,8 @@ ACTION_SYNONYM_MAP: Dict[str, str] = {
     "REBOOT_FLEET": "RESTART_FLEET", "RESTART_ORCHESTRATOR": "RESTART_FLEET", "RESTART_ALL": "RESTART_FLEET",
     "REBOOT_VPN": "RESTART_VPN", "RESTART_PIA": "RESTART_VPN", "RECONNECT_VPN": "RESTART_VPN",
     "FIX_DNS": "PIN_DNS", "RESTART_DNS": "PIN_DNS", "RESET_DNS": "PIN_DNS",
+    "FIX_CLOCK": "SYNC_CLOCK", "RESYNC_CLOCK": "SYNC_CLOCK", "RESTART_NTP": "SYNC_CLOCK",
+    "RESTART_CHRONY": "SYNC_CLOCK", "SYNC_NTP": "SYNC_CLOCK",
     "REBOOT_BOT": "RESTART_BOT", "REBOOT_MODULE": "RESTART_MODULE",
     "RESTART_PROCESS": "RESTART_MODULE", "RESTART_SERVICE": "RESTART_MODULE",
 }
@@ -167,6 +177,10 @@ VPN_TARGET_ALIASES: FrozenSet[str] = frozenset({
 })
 DNS_TARGET_ALIASES: FrozenSet[str] = frozenset({
     "dns", "resolved", "systemd-resolved", "systemd-resolved.service", "resolv.conf", "pin-dns",
+})
+CLOCK_TARGET_ALIASES: FrozenSet[str] = frozenset({
+    "clock", "ntp", "chrony", "chronyd", "chrony.service", "timesyncd", "systemd-timesyncd",
+    "systemd-timesyncd.service", "time", "sync-clock",
 })
 SYSTEM_REBOOT_TARGET_ALIASES: FrozenSet[str] = frozenset({
     "system", "host", "machine", "linux", "os", "server", "kernel", "full_system",
@@ -239,7 +253,7 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
     reason = _nonbool_str(act.get("reason"))
     sym_lower, venue_lower = symbol.lower(), venue.lower()
 
-    if action_type in (*BOT_MODULE_REPAIR_ACTIONS, "RESTART_FLEET", "RESTART_VPN", "PIN_DNS", "REBOOT_SYSTEM"):
+    if action_type in (*BOT_MODULE_REPAIR_ACTIONS, "RESTART_FLEET", "RESTART_VPN", "PIN_DNS", "SYNC_CLOCK", "REBOOT_SYSTEM"):
         if sym_lower in SYSTEM_REBOOT_TARGET_ALIASES and action_type in (*BOT_MODULE_REPAIR_ACTIONS, "REBOOT_SYSTEM"):
             action_type, venue, symbol = "REBOOT_SYSTEM", "system", symbol or "SYSTEM"
         elif action_type in BOT_MODULE_REPAIR_ACTIONS:
@@ -249,6 +263,8 @@ def normalize_repair_action(act: Any, workspace_dir: str) -> Dict[str, Any]:
                 action_type, venue, symbol = "RESTART_VPN", "system", symbol or "wgpia0"
             elif sym_lower in DNS_TARGET_ALIASES or venue_lower in DNS_TARGET_ALIASES:
                 action_type, venue, symbol = "PIN_DNS", "system", symbol or "dns"
+            elif sym_lower in CLOCK_TARGET_ALIASES or venue_lower in CLOCK_TARGET_ALIASES:
+                action_type, venue, symbol = "SYNC_CLOCK", "system", symbol or "clock"
 
     matched_proc: Optional[Dict[str, Any]] = None
     if action_type in BOT_MODULE_REPAIR_ACTIONS and symbol:
@@ -895,6 +911,31 @@ def gather_basic_os_resources(workspace_dir: str) -> Dict[str, Any]:
     return stats
 
 
+def gather_clock_sync_telemetry(
+    *,
+    include_venue_probes: bool = False,
+    probe_timeout_sec: float = 4.0,
+) -> Dict[str, Any]:
+    """Collect OS NTP telemetry and optional venue UTC clock offsets via canonical ``core.clock_sync``."""
+    report, _ = DEFAULT_CLOCK_SYNC_SERVICE.check(
+        include_venue_probes=include_venue_probes,
+        auto_repair=False,
+        probe_timeout_sec=probe_timeout_sec,
+    )
+    return report.to_dict()
+
+
+def attempt_clock_sync_autorepair(*, admin_bin: str = TRADING_ADMIN_BIN) -> Tuple[bool, str]:
+    """Run non-disruptive OS clock resync via canonical ``core.clock_sync`` repair strategies."""
+    if admin_bin != TRADING_ADMIN_BIN:
+        reg = ClockRepairRegistry()
+        reg.register_strategy(TradingAdminClockRepairStrategy(admin_bin=admin_bin))
+        res = ClockSyncService(repair_registry=reg).repair()
+    else:
+        res = DEFAULT_CLOCK_SYNC_SERVICE.repair()
+    return res.ok, res.message
+
+
 def gather_system_and_vpn_telemetry(
     workspace_dir: str,
     *,
@@ -990,6 +1031,10 @@ def gather_system_and_vpn_telemetry(
             sys_vpn["resource_watchdog_offenders"] = offenders
 
     sys_vpn["config_audit"] = audit_workspace_configs(workspace_dir)
+    try:
+        sys_vpn["clock_sync"] = gather_clock_sync_telemetry(include_venue_probes=False)
+    except Exception:
+        pass
     if llm_cat := audit_llm_model_catalog_and_binaries(workspace_dir):
         sys_vpn["llm_catalog_audit"] = llm_cat
     return sys_vpn

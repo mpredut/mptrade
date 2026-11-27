@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover
 from botcore import (
     _parse_bool_flag,
     async_interruptible_sleep,
+    clamp_event_timestamp_ms,
     clean_scalar_str,
     clean_upper_scalar,
     is_worker_thread_alive,
@@ -225,6 +226,16 @@ class PublicPriceStreamBase(AsyncReconnectStreamBase):
     """Shared base class for public WebSocket price streams across crypto venues."""
 
     _MAX_STREAMS: Optional[int] = None
+
+    @staticmethod
+    def _normalize_tick_timestamp_ms(
+        raw_ts: object,
+        *,
+        now_ms: Optional[int] = None,
+        strict_invalid: bool = False,
+    ) -> int:
+        """Normalize any venue tick timestamp (s/ms/us/ns/ISO) and clamp future/invalid values to ``now_ms``."""
+        return clamp_event_timestamp_ms(raw_ts, now_ms=now_ms, strict_invalid=strict_invalid)
 
     @staticmethod
     def _norm_ws_symbol(symbol: object) -> Optional[str]:
