@@ -107,8 +107,15 @@ if [ -n "$last_sha" ] && [ "$last_sha" = "$remote_sha" ] && [ "$deploy_age" -ge 
     exit 0
 fi
 
-printf '%s %s\n' "$remote_sha" "$(date +%s)" > "$LAST_MARK"
 log "deployed $remote_sha; restarting python_orchestrator.service (role=fleet reloads; role=bot reload on next supervise)"
-systemctl restart python_orchestrator.service >/dev/null 2>&1
-alert "autodeploy ($(hostname))" \
-    "Deployed $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
+if systemctl restart python_orchestrator.service >/dev/null 2>&1; then
+    printf '%s %s\n' "$remote_sha" "$(date +%s)" > "$LAST_MARK"
+    alert "autodeploy ($(hostname))" \
+        "Deployed $BRANCH -> ${remote_sha:0:9} and restarted the fleet (python_orchestrator.service). PIA untouched, no reboot."
+else
+    log "ERROR: systemctl restart python_orchestrator.service failed after pulling $remote_sha"
+    alert "autodeploy FAILED ($(hostname))" \
+        "Pulled $BRANCH -> ${remote_sha:0:9} but systemctl restart python_orchestrator.service failed; check systemd status." \
+        "high" "$(ntfy_error_topic)"
+    exit 1
+fi

@@ -11295,5 +11295,144 @@ def test_delta_gate_multi_venue_partial_fill_and_unactionable_baseline_invariant
     assert skip_u is True and "quiet_flat" in rsn_u
 
 
+def test_pass28_delta_gate_wakeup_and_prompt_partial_fill_timestamp_invariants():
+    """Pass 28 invariants + cross-checks: bounded wakeup timestamps, venue-shaped partial fills in Section 0 & Section 1, and zero/future recent_orders timestamps."""
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+        evaluate_crypto_executor_delta_gate,
+        is_extreme_stakes_delta_gate_wakeup,
+        is_urgent_delta_gate_wakeup,
+    )
+    from orchestratorOS.supervisor.prompt_formatters import _build_section0_trigger_context
+    from orchestratorOS.supervisor.prompt_sections import (
+        _format_open_limit_orders_table,
+        _format_recent_order_line,
+    )
+
+    t0 = 1_795_800_000.0
+    prev_eval = {
+        "ts": t0 - 300.0,
+        "model_used": "gemini-3.1-pro-high",
+        "market_trading_decisions": [{"decision": "HOLD"}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 90000.0},
+            "geo_ts": t0 - 600.0,
+            "geo_verdict": "CRITICAL_SHOCK|HALT",
+            "latest_fill_ts": t0 - 600.0,
+            "open_order_ids": [],
+            "order_attention_flags": {},
+            "plan_states": {},
+        },
+    }
+
+    # 1. Pure invariant + cross-check: corrupt far-future geo_ts / fill ts_ms must NOT escalate urgent/extreme wakeups.
+    corrupt_future_sensors = SimpleNamespace(
+        evaluated_at_ts=t0,
+        prices_and_trends={"BTCUSDC": {"price": 90010.0}},
+        portfolio_summary={
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "price": 90010.0, "effective_max_buy_usd": 1000.0, "effective_max_sell_usd": 1000.0}
+            ],
+            "open_limit_orders": [],
+            "recent_orders": {
+                "BTCUSDC": {
+                    "ts_ms": (t0 + 86400.0) * 1000.0,
+                    "last_buy": {"price": 89000.0, "ts_ms": (t0 + 86400.0) * 1000.0},
+                }
+            },
+        },
+        geopolitical_threat={"threat_level": "CRITICAL_SHOCK", "recommended_brake": "HALT", "ts": t0 + 86400.0},
+        sentiment_advisor={},
+        source_timestamps={},
+    )
+    skip_cf, rsn_cf, _, _ = evaluate_crypto_executor_delta_gate(corrupt_future_sensors, prev_eval, now_ts=t0)
+    assert skip_cf is True and "quiet_flat" in rsn_cf
+    assert is_urgent_delta_gate_wakeup("", sensors=corrupt_future_sensors, prev_eval=prev_eval, now_ts=t0) is False
+    assert is_extreme_stakes_delta_gate_wakeup("", sensors=corrupt_future_sensors, prev_eval=prev_eval, now_ts=t0) is False
+
+    # Valid recent fill still escalates consistently across delta gate + urgent + extreme.
+    fresh_fill_sensors = SimpleNamespace(
+        **{
+            **corrupt_future_sensors.__dict__,
+            "geopolitical_threat": {"threat_level": "NORMAL", "recommended_brake": "NONE", "ts": t0 - 600.0},
+            "portfolio_summary": {
+                **corrupt_future_sensors.portfolio_summary,
+                "recent_orders": {
+                    "BTCUSDC": {
+                        "ts_ms": (t0 - 60.0) * 1000.0,
+                        "last_buy": {"price": 89500.0, "ts_ms": (t0 - 60.0) * 1000.0},
+                    }
+                },
+            },
+        }
+    )
+    skip_ff, rsn_ff, esc_ff, _ = evaluate_crypto_executor_delta_gate(fresh_fill_sensors, prev_eval, now_ts=t0)
+    assert (skip_ff, rsn_ff, esc_ff) == (False, "new_fill", True)
+    assert is_urgent_delta_gate_wakeup("", sensors=fresh_fill_sensors, prev_eval=prev_eval, now_ts=t0) is True
+    assert is_extreme_stakes_delta_gate_wakeup("", sensors=fresh_fill_sensors, prev_eval=prev_eval, now_ts=t0) is True
+
+    # 2. Pure invariant + cross-check: venue-shaped partial fills appear in Section 0 trigger AND Section 1 open orders table.
+    venue_partial_orders = [
+        {"venue": "binance", "symbol": "BTCUSDC", "side": "BUY", "price": 89000.0, "origQty": "0.02", "executedQty": "0.005", "orderId": "bn-1"},
+        {"venue": "hyperliquid", "symbol": "HYPEUSDC", "side": "SELL", "price": 66.0, "origSz": "10.0", "sz": "6.5", "order_id": "hl-1"},
+        {"venue": "kraken", "symbol": "SOLUSDC", "side": "BUY", "price": 72.0, "qty": "5.0", "vol_exec": "0.0", "order_id": "kr-1"},
+    ]
+    trig_line, trig_syms = _build_section0_trigger_context(
+        "open_order_partial_fill",
+        None,
+        {"open_limit_orders": venue_partial_orders},
+        {"BTCUSDC", "HYPEUSDC", "SOLUSDC"},
+        now_ts=t0,
+    )
+    assert trig_line is not None
+    assert "BTCUSDC partial_fill 0.005/0.02(rem=0.015)" in trig_line
+    assert "HYPEUSDC partial_fill 3.5/10.0(rem=6.5)" in trig_line
+    assert "SOLUSDC partial_fill" not in trig_line
+    assert trig_syms == {"BTCUSDC", "HYPEUSDC"}
+
+    tbl_lines = "\n".join(_format_open_limit_orders_table(venue_partial_orders))
+    assert "0.005(rem=0.015)" in tbl_lines
+    assert "3.5(rem=6.5)" in tbl_lines
+    assert "| kraken | SOLUSDC | BUY | 72.0 | 5.0 | 0 |" in tbl_lines
+
+    # 3. Pure invariant + cross-check: "0" in ts_ms falls through to valid ts, and far-future ts_ms never fabricates age=0.0h or lot_harvested.
+    trig_zero, trig_zero_syms = _build_section0_trigger_context(
+        "new_fill",
+        None,
+        {
+            "recent_orders": {
+                "ETHUSDC": {
+                    "last_buy": {"price": 1750.0, "ts_ms": "0", "ts": t0 - 120.0, "actor": "BOT"},
+                }
+            }
+        },
+        {"ETHUSDC"},
+        now_ts=t0,
+    )
+    assert trig_zero is not None and "ETHUSDC BUY FILLED@1750.0(BOT)" in trig_zero
+    assert "ETHUSDC" in trig_zero_syms
+
+    line_future = _format_recent_order_line(
+        "BTCUSDC",
+        {
+            "last_buy": {"price": 89000.0, "qty": 0.01, "ts_ms": (t0 + 86400.0) * 1000.0},
+            "last_sell": {"price": 91000.0, "qty": 0.01, "ts_ms": (t0 + 172800.0) * 1000.0},
+            "open_lots": [{"entry_px": 89000.0, "qty": 0.01}],
+        },
+        now_ms=t0 * 1000.0,
+    )
+    assert "age=0.0h" not in line_future
+    assert "lot_harvested" not in line_future
+
+    line_zero_fb = _format_recent_order_line(
+        "ETHUSDC",
+        {
+            "last_buy": {"price": 1750.0, "qty": 1.0, "ts_ms": "0", "ts": t0 - 7200.0},
+        },
+        now_ms=t0 * 1000.0,
+    )
+    assert "age=2.0h" in line_zero_fb
+
+
+
 
 

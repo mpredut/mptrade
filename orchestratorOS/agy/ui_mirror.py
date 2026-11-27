@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import time
 from typing import Optional
 
 _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -107,7 +108,7 @@ def sync_topic_thread_from_ui(
             shutil.copy2(ui_db, bot_db + ".tmp")
             drop_wal_sidecars(bot_db, force=True)
             durable_replace_file(bot_db + ".tmp", bot_db)
-            mtime = os.stat(ui_db).st_mtime
+            mtime = latest_valid_file_mtime((ui_db,)) or time.time()
             os.utime(bot_db, (mtime, mtime))
 
             ui_brain = os.path.join(src_base, "brain", cid)
@@ -172,7 +173,8 @@ def mirror_topic_thread_to_ui(
             finally:
                 conn.close()
             drop_wal_sidecars(dst_db, force=True)
-            mtime = os.stat(dst_db).st_mtime
+            mtime = latest_valid_file_mtime((dst_db,)) or time.time()
+            os.utime(dst_db, (mtime, mtime))
             os.utime(src_db, (mtime, mtime))
 
             # Drop any stale visible-dir copy so pending_ui_sync() detects the updated topic trajectory and

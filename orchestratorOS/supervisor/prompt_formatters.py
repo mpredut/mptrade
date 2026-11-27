@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from botcore import (
+    first_epoch_sec,
     is_us_rth_open,
     load_key_value_conf,
     normalize_epoch_sec,
@@ -39,6 +40,7 @@ from orchestratorOS.lib.technical_repair_ssot import (
     AUDITED_CONFIG_FILES,
     DIAGNOSED_SEVERITIES,
 )
+from orchestratorOS.supervisor.crypto_executor_delta_gate import _extract_open_order_filled_qty
 from orchestratorOS.supervisor.prompt_sections import (
     _extract_active_portfolio_symbols,
     _fmt_plain_float,
@@ -179,8 +181,13 @@ def _build_section0_trigger_context(
             sym = str(oo.get("symbol") or "").strip()
             if not sym:
                 continue
-            qty_v = safe_pos_float(oo.get("qty"), default=None)
-            filled_v = safe_float(oo.get("filled_qty"), 0.0) or 0.0
+            raw_qty_v = (
+                oo.get("qty")
+                if oo.get("qty") is not None
+                else (oo.get("origQty") if oo.get("origQty") is not None else oo.get("origSz"))
+            )
+            qty_v = safe_pos_float(raw_qty_v, default=None)
+            filled_v = _extract_open_order_filled_qty(oo)
             st_u = str(oo.get("status") or "").strip().upper()
             if filled_v > 0.0 or st_u == "PARTIALLY_FILLED":
                 rem_s = ""
@@ -242,8 +249,9 @@ def _build_section0_trigger_context(
                     leg = ro_info.get(leg_k)
                     if not isinstance(leg, dict) or (ro_sym_s.upper(), leg_side) in seen_fills:
                         continue
-                    leg_ts = normalize_epoch_sec(
-                        leg.get("ts_ms") if leg.get("ts_ms") is not None else leg.get("ts"),
+                    leg_ts = first_epoch_sec(
+                        leg.get("ts_ms"),
+                        leg.get("ts"),
                         default=0.0,
                         allow_iso=True,
                     ) or 0.0

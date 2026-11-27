@@ -490,4 +490,59 @@ class TestPruneCliThreads:
         assert pruned == 1
         assert _remaining_cids(db_path) == {"fresh-wal-thread"}
 
+    def test_pass28_corrupt_future_db_timestamp_does_not_pin_max_threads_or_evict_fresh(self, tmp_path):
+        """Pass 28 pure invariant + cross-check: far-future DB/file timestamps cannot pin max_threads slots or evict real fresh threads."""
+        from orchestratorOS.admin.prune_llm_threads import _partition_prune_candidates
+
+        now = datetime.now(timezone.utc)
+        now_ts = now.timestamp()
+        ts_future = (now + timedelta(days=10)).isoformat()
+        ts_fresh = (now - timedelta(minutes=10)).isoformat()
+        ts_mid = (now - timedelta(hours=4)).isoformat()
+
+        cli_base, db_path = _init_summaries_db(
+            tmp_path,
+            [
+                ("future-db-stale-file", "Automated reasoning", "run", ts_future, AUTONOMOUS_PROJECT_UUID),
+                ("future-db-future-file", "Automated reasoning", "run", ts_future, AUTONOMOUS_PROJECT_UUID),
+                ("fresh-valid", "Automated reasoning", "run", ts_fresh, AUTONOMOUS_PROJECT_UUID),
+                ("mid-valid", "Automated reasoning", "run", ts_mid, AUTONOMOUS_PROJECT_UUID),
+            ],
+            create_files=True,
+        )
+        stale_mtime = (now - timedelta(days=5)).timestamp()
+        future_mtime = (now + timedelta(days=5)).timestamp()
+        os.utime(os.path.join(cli_base, "conversations", "future-db-stale-file.db"), (stale_mtime, stale_mtime))
+        os.utime(os.path.join(cli_base, "conversations", "future-db-future-file.db"), (future_mtime, future_mtime))
+
+        # Pure invariant on _partition_prune_candidates
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT * FROM conversation_summaries").fetchall()
+        finally:
+            conn.close()
+        cands, kept = _partition_prune_candidates(
+            rows,
+            protected=set(),
+            autonomous_projects={AUTONOMOUS_PROJECT_UUID},
+            all_threads_in_project=False,
+            cutoff=now - timedelta(days=1),
+            cli_base=cli_base,
+            now_ts=now_ts,
+        )
+        assert "future-db-stale-file" in cands
+        kept_cids = {cid for _, cid in kept}
+        assert "future-db-future-file" not in kept_cids
+        assert kept_cids == {"fresh-valid", "mid-valid"}
+
+        # Dependent cross-check: max_threads=1 keeps fresh-valid, evicts mid-valid + future-db-stale-file, and does NOT let future-db-future-file displace fresh-valid.
+        pruned, _ = prune_old_cli_threads(cli_base=cli_base, retention_days=1.0, max_threads=1, dry_run=False)
+        assert pruned == 2
+        rem = _remaining_cids(db_path)
+        assert "fresh-valid" in rem
+        assert "mid-valid" not in rem
+        assert "future-db-stale-file" not in rem
+
+
 

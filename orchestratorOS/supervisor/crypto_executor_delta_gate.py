@@ -187,12 +187,22 @@ def _has_unacknowledged_trade_plan_invalidation(
     return str(plan_trig or "").strip().lower().startswith("trade_plan_invalidated")
 
 
+def _resolve_wakeup_now_ts(sensors: Any, now_ts: Optional[float] = None) -> float:
+    return (
+        normalize_epoch_sec(now_ts, default=None)
+        or normalize_epoch_sec(getattr(sensors, "evaluated_at_ts", None), default=None)
+        or normalize_epoch_sec(getattr(sensors, "ts", None), default=None)
+        or time.time()
+    )
+
+
 def is_urgent_delta_gate_wakeup(
     gate_reason: str = "",
     *,
     focus_symbols: Optional[Sequence[str]] = None,
     sensors: Any = None,
     prev_eval: Optional[Mapping[str, Any]] = None,
+    now_ts: Optional[float] = None,
 ) -> bool:
     """Return True when a wakeup reflects an urgent catalyst (impulse, fill, trade-plan break, or fresh geo shock)."""
     if focus_symbols and parse_symbol_list(focus_symbols):
@@ -201,14 +211,15 @@ def is_urgent_delta_gate_wakeup(
     if reason_lc.startswith(("focus_symbols(", "trade_plan_", "new_fill", "geo_unassessed_acute")):
         return True
     if sensors is not None:
+        eff_now = _resolve_wakeup_now_ts(sensors, now_ts=now_ts)
         gt = getattr(sensors, "geopolitical_threat", None)
         src_ts = getattr(sensors, "source_timestamps", None)
         if _has_unacknowledged_geo_shock(
-            gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None
+            gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None, max_ts=eff_now
         ) or _has_unacknowledged_acute_geo_headline(gt, prev_eval):
             return True
         ps = getattr(sensors, "portfolio_summary", None)
-        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
+        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval, max_ts=eff_now):
             return True
         if _has_unacknowledged_trade_plan_invalidation(sensors, prev_eval):
             return True
@@ -220,6 +231,7 @@ def is_extreme_stakes_delta_gate_wakeup(
     *,
     sensors: Any = None,
     prev_eval: Optional[Mapping[str, Any]] = None,
+    now_ts: Optional[float] = None,
 ) -> bool:
     """Return True ONLY for ultra-rare extreme-complexity catalysts warranting ``-xhigh`` reasoning:
     active trade-plan invalidation (thesis break vs stop-hunt), new real fill (next-cycle planning),
@@ -228,12 +240,15 @@ def is_extreme_stakes_delta_gate_wakeup(
     if reason_lc.startswith(("trade_plan_invalidated", "new_fill")):
         return True
     if sensors is not None:
+        eff_now = _resolve_wakeup_now_ts(sensors, now_ts=now_ts)
         gt = getattr(sensors, "geopolitical_threat", None)
         src_ts = getattr(sensors, "source_timestamps", None)
-        if _has_unacknowledged_geo_shock(gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None):
+        if _has_unacknowledged_geo_shock(
+            gt, prev_eval, src_ts_map=src_ts if isinstance(src_ts, Mapping) else None, max_ts=eff_now
+        ):
             return True
         ps = getattr(sensors, "portfolio_summary", None)
-        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval):
+        if isinstance(ps, Mapping) and prev_eval is not None and _has_new_fill_since_prev(ps, prev_eval, max_ts=eff_now):
             return True
         if _has_unacknowledged_trade_plan_invalidation(sensors, prev_eval):
             return True

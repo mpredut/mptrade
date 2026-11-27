@@ -193,11 +193,15 @@ def _partition_prune_candidates(
             if not (all_threads_in_project or automated or short_autonomous):
                 continue
         dt = parse_db_timestamp(row["last_modified_time"] if "last_modified_time" in row_keys else None)
+        if dt is not None and dt.timestamp() > eff_now_ts + 60.0:
+            dt = None
         if dt is None and cli_base:
             db_file = os.path.join(cli_base, "conversations", f"{cid}.db")
             try:
                 if os.path.exists(db_file):
-                    dt = datetime.fromtimestamp(os.path.getmtime(db_file), tz=timezone.utc)
+                    db_mtime = os.path.getmtime(db_file)
+                    if 0.0 < db_mtime <= eff_now_ts + 60.0:
+                        dt = datetime.fromtimestamp(db_mtime, tz=timezone.utc)
             except OSError:
                 pass
         if dt is None:

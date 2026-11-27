@@ -95,9 +95,18 @@ backup_price_data_only() {
     \) ! -name '*.tmp*' ! -name '*.previous' ! -name '*.lock' | sort)"
     [ -n "$PRICE_FILES" ] || { echo "❌ no raw price files found in cachedb/"; exit 1; }
 
-    printf '%s\n' "$PRICE_FILES" | tar czf "$PRICE_TAR" \
+    local tmp_tar="${PRICE_TAR}.tmp.$$"
+    printf '%s\n' "$PRICE_FILES" | tar czf "$tmp_tar" \
         --warning=no-file-changed --warning=no-file-removed --ignore-failed-read -C "$ROOT" -T -
-    chmod 600 "$PRICE_TAR"
+    local ps=("${PIPESTATUS[@]}")
+    local tar_rc="${ps[1]:-1}"
+    if [ "$tar_rc" -gt 1 ] || [ ! -s "$tmp_tar" ]; then
+        rm -f "$tmp_tar"
+        echo "ERROR: failed to build price archive (tar_rc=$tar_rc)" >&2
+        return 1
+    fi
+    chmod 600 "$tmp_tar"
+    mv -f "$tmp_tar" "$PRICE_TAR"
     echo "=== PRICE-ONLY archive: $(printf '%s\n' "$PRICE_FILES" | wc -l) raw price files -> $PRICE_TAR ==="
 }
 
@@ -196,14 +205,20 @@ backup_remote() {
     local KEEP="${BACKUP_KEEP:-7}"
 
     echo "$(date '+%F %T') === backup_remote (local full DR + Storj price archive + encrypted statedb) ==="
-    backup_local "$HOME/$LOCAL_BACKUP_NAME"
-    backup_price_data_only "$PRICE_TAR"
+    backup_local "$HOME/$LOCAL_BACKUP_NAME" || return 1
+    backup_price_data_only "$PRICE_TAR" || return 1
 
     [[ "$REMOTE" == storj:* ]] && rclone_cmd mkdir "${REMOTE%/}" 2>/dev/null || true
-    rclone_cmd copyto "$PRICE_TAR" "${REMOTE}${PRICE_NAME}.tar.gz" --transfers 1
-    echo "$(date '+%F %T') ✔ remote price upload -> ${REMOTE}${PRICE_NAME}.tar.gz"
-    rclone_cmd copyto "$PRICE_TAR" "${REMOTE}${DATED_NAME}" --transfers 1
-    echo "$(date '+%F %T') ✔ remote dated price upload -> ${REMOTE}${DATED_NAME}"
+    rclone_cmd copyto "$PRICE_TAR" "${REMOTE}${PRICE_NAME}.tar.gz" --transfers 1 || {
+        echo "$(date '+%F %T') ERROR: remote price upload failed -> ${REMOTE}${PRICE_NAME}.tar.gz" >&2
+        return 1
+    }
+    echo "$(date '+%F %T') OK remote price upload -> ${REMOTE}${PRICE_NAME}.tar.gz"
+    rclone_cmd copyto "$PRICE_TAR" "${REMOTE}${DATED_NAME}" --transfers 1 || {
+        echo "$(date '+%F %T') ERROR: remote dated price upload failed -> ${REMOTE}${DATED_NAME}" >&2
+        return 1
+    }
+    echo "$(date '+%F %T') OK remote dated price upload -> ${REMOTE}${DATED_NAME}"
     _rclone_prune_dated "$REMOTE" "${PRICE_NAME}-????????.tar.gz" "$KEEP"
 
     if [ -d "$ROOT/statedb" ]; then
@@ -220,13 +235,27 @@ pull_remote_price_data() {
     local REMOTE="${RCLONE_REMOTE:-storj:${STORJ_BUCKET_RESOLVED:-mptrade-price-data}/}"
     local PRICE_NAME="${PRICE_BACKUP_NAME:-mptrade-price-data}"
     local PRICE_TAR="$HOME/${PRICE_NAME}.tar.gz"
+    local tmp_tar="${PRICE_TAR}.tmp.$$"
 
     echo "$(date '+%F %T') === pull_remote_price_data from ${REMOTE}${PRICE_NAME}.tar.gz ==="
-    rclone_cmd copyto "${REMOTE}${PRICE_NAME}.tar.gz" "$PRICE_TAR" --transfers 1
-    [ -f "$PRICE_TAR" ] || { echo "❌ failed to download $PRICE_TAR from Storj"; exit 1; }
+    rclone_cmd copyto "${REMOTE}${PRICE_NAME}.tar.gz" "$tmp_tar" --transfers 1 || {
+        rm -f "$tmp_tar"
+        echo "ERROR: failed to download ${REMOTE}${PRICE_NAME}.tar.gz from Storj" >&2
+        return 1
+    }
+    [ -s "$tmp_tar" ] || {
+        rm -f "$tmp_tar"
+        echo "ERROR: downloaded price archive is empty: $tmp_tar" >&2
+        return 1
+    }
+    chmod 600 "$tmp_tar" 2>/dev/null || true
+    mv -f "$tmp_tar" "$PRICE_TAR"
     mkdir -p "$ROOT/cachedb"
-    tar xzf "$PRICE_TAR" -C "$ROOT"
-    echo "$(date '+%F %T') ✔ restored raw price archives into $ROOT/cachedb"
+    tar xzf "$PRICE_TAR" -C "$ROOT" || {
+        echo "ERROR: failed to extract $PRICE_TAR into $ROOT/cachedb" >&2
+        return 1
+    }
+    echo "$(date '+%F %T') OK restored raw price archives into $ROOT/cachedb"
 }
 
 restore_backup() {

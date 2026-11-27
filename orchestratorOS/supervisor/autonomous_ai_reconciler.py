@@ -379,6 +379,7 @@ class AutonomousAIReconciler:
             min_usd = safe_pos_float(getattr(gw, "min_notional_usd", None), default=10.0) or 10.0
             min_conf = safe_nonneg_float(getattr(gw, "min_confidence", None), default=0.85)
 
+        eval_ts = normalize_epoch_sec(getattr(sensors, "evaluated_at_ts", None), default=None)
         effective_escalate = _parse_bool_flag(escalate_high_effort, False) or bool(
             focus_symbols and parse_symbol_list(focus_symbols)
         )
@@ -386,15 +387,13 @@ class AutonomousAIReconciler:
             _parse_bool_flag(urgent_escalation, False)
             or bool(focus_symbols and parse_symbol_list(focus_symbols))
             if urgent_escalation is not None
-            else is_urgent_delta_gate_wakeup("", focus_symbols=focus_symbols, sensors=sensors)
+            else is_urgent_delta_gate_wakeup("", focus_symbols=focus_symbols, sensors=sensors, now_ts=eval_ts)
         )
         effective_extreme = (
             _parse_bool_flag(extreme_escalation, False)
             if extreme_escalation is not None
-            else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors)
+            else is_extreme_stakes_delta_gate_wakeup("", sensors=sensors, now_ts=eval_ts)
         )
-
-        eval_ts = normalize_epoch_sec(getattr(sensors, "evaluated_at_ts", None), default=None)
         iteration_num: Optional[int] = None
         try:
             iteration_num = get_topic_turn_count(topic_key) + 1
@@ -810,11 +809,13 @@ class AutonomousAIReconciler:
                 focus_symbols=focus_symbols,
                 sensors=sensors,
                 prev_eval=prev_eval,
+                now_ts=now,
             )
             extreme_escalation = is_extreme_stakes_delta_gate_wakeup(
                 gate_reason,
                 sensors=sensors,
                 prev_eval=prev_eval,
+                now_ts=now,
             )
             if delta_gate_enabled and should_skip_llm:
                 prev_meta = prev_eval.get("delta_gate_meta") if isinstance(prev_eval.get("delta_gate_meta"), dict) else {}

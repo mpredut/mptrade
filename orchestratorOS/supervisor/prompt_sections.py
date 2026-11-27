@@ -24,7 +24,6 @@ from botcore import (
     fmt_signed,
     is_us_rth_open,
     normalize_epoch_sec,
-    normalize_timestamp_ms,
     parse_symbol_list,
     resolve_now_ts,
     safe_float,
@@ -99,6 +98,7 @@ from providers.intent_telemetry import (
     compute_order_plan_rr,
     match_open_order_resting_plan,
 )
+from orchestratorOS.supervisor.crypto_executor_delta_gate import _extract_open_order_filled_qty
 from providers.order_id_context import format_actor_tag
 
 
@@ -2115,9 +2115,14 @@ def _format_open_limit_orders_table(
         sym = str(o.get("symbol") or "-")
         side = str(o.get("side") or "-")
         px = _fmt_plain_float(o.get("price")) if o.get("price") is not None else "-"
-        qty_v = safe_pos_float(o.get("qty"), default=None)
-        qty = _fmt_plain_float(o.get("qty")) if o.get("qty") is not None else "-"
-        filled_v = safe_float(o.get("filled_qty"), 0.0) or 0.0
+        raw_qty = (
+            o.get("qty")
+            if o.get("qty") is not None
+            else (o.get("origQty") if o.get("origQty") is not None else o.get("origSz"))
+        )
+        qty_v = safe_pos_float(raw_qty, default=None)
+        qty = _fmt_plain_float(raw_qty) if raw_qty is not None else "-"
+        filled_v = _extract_open_order_filled_qty(o)
         if filled_v > 0.0:
             if qty_v is not None and qty_v > filled_v:
                 rem_v = round(max(0.0, qty_v - filled_v), 8)
@@ -2433,14 +2438,20 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         px = round_opt_px(entry.get("price"), 6)
         if px is None:
             return "none"
-        ts = normalize_timestamp_ms(entry.get("ts_ms"), default=0) or 0
+        ts_s = first_epoch_sec(entry.get("ts_ms"), entry.get("ts"), default=None, allow_iso=True)
+        ts = round(ts_s * 1000.0) if (ts_s is not None and ts_s * 1000.0 <= now_ms + 60_000.0) else 0
         age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
         tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
         qty_v = entry.get("qty")
         qty_pfx = f"{_fmt_plain_float(qty_v)} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
         other_entry = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-        other_ts = normalize_timestamp_ms(other_entry.get("ts_ms"), default=0) or 0
+        other_ts_s = first_epoch_sec(other_entry.get("ts_ms"), other_entry.get("ts"), default=None, allow_iso=True)
+        other_ts = (
+            round(other_ts_s * 1000.0)
+            if (other_ts_s is not None and other_ts_s * 1000.0 <= now_ms + 60_000.0)
+            else 0
+        )
         if key == "last_buy" and is_last_buy_lot_harvested(
             px,
             open_lots_ro,

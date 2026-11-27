@@ -1970,6 +1970,146 @@ def test_pass27_shell_rollback_gap_clamp_and_log_harvest_future_mtime_crosscheck
     assert "old_clock_failure_shifted_by_mtime" not in joined_events
 
 
+def test_pass28_manage_backups_and_gitautodeploy_fail_closed_on_errors(tmp_path):
+    """Pass 28 pure invariant + cross-check: manage_backups.sh and manage_gitautodeploy.sh fail closed instead of printing success or extracting stale archives on errors."""
+    import shutil
+    import tarfile
+
+    backup_script = os.path.join(ROOT, "orchestratorOS", "admin", "manage_backups.sh")
+    autodeploy_script = os.path.join(ROOT, "orchestratorOS", "admin", "manage_gitautodeploy.sh")
+    for sc in (backup_script, autodeploy_script):
+        res = subprocess.run(["bash", "-n", sc], capture_output=True, text=True, check=False)
+        assert res.returncode == 0, res.stderr
+
+    # 1. manage_backups.sh pull-prices must NOT extract a stale local archive when rclone download fails.
+    fake_root = tmp_path / "bk_repo"
+    fake_home = tmp_path / "bk_home"
+    (fake_root / "cachedb" / "prices").mkdir(parents=True)
+    fake_home.mkdir(parents=True)
+    stale_src = tmp_path / "stale_payload"
+    (stale_src / "cachedb" / "prices").mkdir(parents=True)
+    (stale_src / "cachedb" / "prices" / "cache_365_price_STALE.jsonl").write_text("stale\n", encoding="utf-8")
+    stale_tar = fake_home / "mptrade-price-data.tar.gz"
+    with tarfile.open(stale_tar, "w:gz") as tf:
+        tf.add(stale_src / "cachedb", arcname="cachedb")
+
+    failing_rclone = tmp_path / "failing_rclone.sh"
+    failing_rclone.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    failing_rclone.chmod(0o755)
+    bk_env = {
+        **os.environ,
+        "REPO_ROOT": str(fake_root),
+        "ROOT": str(fake_root),
+        "HOME": str(fake_home),
+        "RCLONE": str(failing_rclone),
+        "RCLONE_REMOTE": str(tmp_path / "remote") + "/",
+    }
+    res_pull = subprocess.run(
+        ["bash", backup_script, "pull-prices"],
+        env=bk_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_pull.returncode != 0
+    assert "OK restored" not in res_pull.stdout
+    assert not (fake_root / "cachedb" / "prices" / "cache_365_price_STALE.jsonl").exists()
+
+    # 2. manage_backups.sh remote must fail closed and NOT prune remote archives when rclone upload fails.
+    fake_remote = tmp_path / "bk_remote"
+    fake_remote.mkdir()
+    kept_dated = fake_remote / "mptrade-price-data-20250101.tar.gz"
+    kept_dated.write_bytes(b"good-backup")
+    (fake_root / "cachedb" / "prices" / "cache_365_price_BTCUSDC.jsonl").write_text("live\n", encoding="utf-8")
+    # Initialize git repo so backup_local finds ignored/untracked file cleanly
+    subprocess.run(["git", "init", "-q"], cwd=fake_root, check=True)
+    (fake_root / ".env").write_text("DUMMY=1\n", encoding="utf-8")
+    (fake_root / ".gitignore").write_text(".env\n", encoding="utf-8")
+
+    fail_copyto_rclone = tmp_path / "fail_copyto_rclone.sh"
+    fail_copyto_rclone.write_text(
+        "#!/usr/bin/env bash\n"
+        "while [ $# -gt 0 ]; do case \"$1\" in --contimeout|--timeout|--retries|--low-level-retries) shift 2 ;; *) break ;; esac; done\n"
+        "cmd=\"$1\"; shift\n"
+        "case \"$cmd\" in mkdir) mkdir -p \"$1\" ;; copyto) exit 1 ;; lsf) echo mptrade-price-data-20250101.tar.gz ;; deletefile) rm -f \"$1\" ;; esac\n",
+        encoding="utf-8",
+    )
+    fail_copyto_rclone.chmod(0o755)
+    res_rem = subprocess.run(
+        ["bash", backup_script, "remote"],
+        env={**bk_env, "RCLONE": str(fail_copyto_rclone), "RCLONE_REMOTE": str(fake_remote) + "/", "BACKUP_KEEP": "0"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert res_rem.returncode != 0
+    assert "OK remote price upload" not in res_rem.stdout
+    assert kept_dated.exists()
+
+    # 3. manage_gitautodeploy.sh must NOT record last_deploy or send success alert when systemctl restart fails.
+    ad_repo = tmp_path / "ad_repo"
+    ad_origin = tmp_path / "ad_origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(ad_origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(ad_repo)], check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=ad_repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=ad_repo, check=True)
+    (ad_repo / "orchestratorOS" / "admin").mkdir(parents=True)
+    (ad_repo / "orchestratorOS" / "lib").mkdir(parents=True)
+    (ad_repo / "logs").mkdir(parents=True)
+    (ad_repo / "procs.conf").write_text("", encoding="utf-8")
+    (ad_repo / "config.env").write_text("NTFY_TOPIC_SERVER=ntfy-srv-p28\nNTFY_TOPIC_ERROR=ntfy-err-p28\n", encoding="utf-8")
+    shutil.copy2(autodeploy_script, ad_repo / "orchestratorOS" / "admin" / "manage_gitautodeploy.sh")
+    shutil.copy2(os.path.join(ROOT, "orchestratorOS", "lib", "os_notify.sh"), ad_repo / "orchestratorOS" / "lib" / "os_notify.sh")
+    shutil.copy2(os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh"), ad_repo / "orchestratorOS" / "lib" / "env_common.sh")
+    subprocess.run(["git", "add", "."], cwd=ad_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=ad_repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(ad_origin)], cwd=ad_repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=ad_repo, check=True)
+    fake_bin = tmp_path / "ad_bin"
+    fake_bin.mkdir()
+    curl_log = tmp_path / "ad_curl.log"
+    _write_bash_stub(fake_bin, "systemctl", "exit 1")
+    _write_bash_stub(fake_bin, "curl", f'printf "%s\\n" "$*" >> "{curl_log}"\nexit 0')
+    (ad_repo / "autodeploy.local.conf").write_text(
+        f'PATH="{fake_bin}:$PATH"\nAUTODEPLOY_MODE=on\nAUTODEPLOY_RESTART_ON_LOCAL=true\n',
+        encoding="utf-8",
+    )
+    ad_env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(fake_home),
+        "OS_NOTIFY_DEDUP_SECONDS": "0",
+        "OS_NOTIFY_GATE_SECONDS": "0",
+        "OS_NOTIFY_TOPIC_BULK_SECONDS": "0",
+    }
+    res_ad = subprocess.run(
+        ["bash", str(ad_repo / "orchestratorOS" / "admin" / "manage_gitautodeploy.sh")],
+        env=ad_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_ad.returncode != 0
+    assert "ERROR: systemctl restart python_orchestrator.service failed" in res_ad.stdout
+    assert not (ad_repo / "logs" / ".git_autodeploy" / "last_deploy").exists()
+    curl_out = curl_log.read_text(encoding="utf-8")
+    assert "autodeploy FAILED" in curl_out
+    assert "restarted the fleet" not in curl_out
+
+    # When systemctl restart succeeds, last_deploy IS recorded and success alert is emitted.
+    curl_log.unlink()
+    _write_bash_stub(fake_bin, "systemctl", "exit 0")
+    res_ad_ok = subprocess.run(
+        ["bash", str(ad_repo / "orchestratorOS" / "admin" / "manage_gitautodeploy.sh")],
+        env=ad_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_ad_ok.returncode == 0
+    assert (ad_repo / "logs" / ".git_autodeploy" / "last_deploy").is_file()
+    assert "restarted the fleet" in curl_log.read_text(encoding="utf-8")
+
+
 
 
 

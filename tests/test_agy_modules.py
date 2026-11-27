@@ -1030,3 +1030,48 @@ def test_pass17_future_mtime_guard_in_summary_store_topics_and_ui_mirror(tmp_pat
     assert sync_topic_thread_from_ui(cid, bot_cli_base=bot_base, ui_cli_base=ui_base) is True
 
 
+def test_pass28_ui_mirror_does_not_propagate_far_future_mtime(tmp_path):
+    """Pass 28 pure invariant + cross-check: syncing/mirroring topic DBs clamps corrupt far-future mtimes instead of propagating them across stores."""
+    import time
+    from orchestratorOS.agy.ui_mirror import mirror_topic_thread_to_ui, sync_topic_thread_from_ui
+
+    now_s = time.time()
+    bot_base = str(tmp_path / "bot_cli")
+    ui_base = str(tmp_path / "ui_cli")
+    os.makedirs(os.path.join(bot_base, "conversations"), exist_ok=True)
+    os.makedirs(os.path.join(ui_base, "conversations"), exist_ok=True)
+
+    cid = "cid-pass28-mtime"
+    bot_conv = os.path.join(bot_base, "conversations", f"{cid}.db")
+    ui_conv = os.path.join(ui_base, "conversations", f"{cid}.db")
+    _make_conv_db(bot_conv)
+    _make_conv_db(ui_conv)
+    _make_summary_db(
+        os.path.join(bot_base, "conversation_summaries.db"),
+        [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 4, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    _make_summary_db(
+        os.path.join(ui_base, "conversation_summaries.db"),
+        [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 8, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    # Poison UI DB with far-future mtime while ui_steps > bot_steps forces sync
+    os.utime(ui_conv, (now_s + 7200.0, now_s + 7200.0))
+    assert sync_topic_thread_from_ui(cid, bot_cli_base=bot_base, ui_cli_base=ui_base) is True
+    assert os.stat(bot_conv).st_mtime <= time.time() + 60.0
+
+    # Reverse direction: bot_steps >= ui_steps with poisoned far-future bot DB mtime must not leave far-future mtime on either store
+    os.remove(os.path.join(bot_base, "conversation_summaries.db"))
+    _make_summary_db(
+        os.path.join(bot_base, "conversation_summaries.db"),
+        [(cid, "x", "p", datetime.now(timezone.utc).isoformat(), "autonommptrade", 10, "CASCADE_RUN_STATUS_IDLE")],
+        schema="topic",
+    )
+    os.utime(bot_conv, (now_s + 7200.0, now_s + 7200.0))
+    assert mirror_topic_thread_to_ui(cid, "Topic Title", bot_cli_base=bot_base, ui_cli_base=ui_base) is True
+    assert os.stat(ui_conv).st_mtime <= time.time() + 60.0
+    assert os.stat(bot_conv).st_mtime <= time.time() + 60.0
+
+
+
