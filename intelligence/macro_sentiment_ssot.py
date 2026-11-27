@@ -1094,28 +1094,11 @@ def get_yahoo_chart_url(symbol: str) -> str:
     return _require_feed_str("yahoo_chart_url_template").format(symbol=urllib.parse.quote(str(symbol or "").strip()))
 
 
-def get_yahoo_daily_chart_url(symbol: str, range_str: str) -> str:
-    return _require_feed_str("yahoo_daily_chart_url_template").format(
-        symbol=urllib.parse.quote(str(symbol or "").strip()),
-        range_str=urllib.parse.quote(str(range_str or "3y").strip()),
-    )
-
-
 def get_yahoo_ohlc_chart_url(symbol: str, range_str: str, interval: str = "1d") -> str:
     return _require_feed_str("yahoo_ohlc_chart_url_template").format(
         symbol=urllib.parse.quote(str(symbol or "").strip()),
         range_str=urllib.parse.quote(str(range_str or "6mo").strip()),
         interval=urllib.parse.quote(str(interval or "1d").strip()),
-    )
-
-
-def get_binance_daily_klines_url(symbol: str, limit: int, end_ms: int) -> str:
-    lim_i = max(1, min(1000, _botcore.safe_int(limit, default=365)))
-    end_i = max(1, _botcore.safe_int(end_ms, default=1))
-    return _require_feed_str("binance_daily_klines_url_template").format(
-        symbol=urllib.parse.quote(str(symbol or "").strip().upper()),
-        limit=lim_i,
-        end_ms=end_i,
     )
 
 
@@ -1127,14 +1110,6 @@ def get_binance_ohlc_klines_url(symbol: str, interval: str, limit: int, end_ms: 
         interval=urllib.parse.quote(str(interval or "1d").strip()),
         limit=lim_i,
         end_ms=end_i,
-    )
-
-
-def get_kraken_daily_ohlc_url(pair: str, since_sec: int) -> str:
-    since_i = max(0, _botcore.safe_int(since_sec, default=0))
-    return _require_feed_str("kraken_daily_ohlc_url_template").format(
-        pair=urllib.parse.quote(str(pair or "").strip()),
-        since_sec=since_i,
     )
 
 
