@@ -1853,5 +1853,69 @@ def test_pass36_ws_bridge_isolation_epoch_norm_price_future_ts_and_hl_parse():
     assert meta_results == [2] * 8
 
 
+def test_us_and_ns_timestamp_normalization_in_binance_ws_and_bridge():
+    """Verify microsecond/nanosecond timestamps are preserved accurately in BinancePriceStream,
+    bapi_ws_normalize, and bapi_ws_bridge, while true far-future timestamps are still clamped."""
+    from binance_api import bapi_ws_bridge
+
+    ps = BinancePriceStream(symbols=["BTCUSDC"])
+    delivered = []
+    ps.subscribe(SimpleNamespace(on_items_update=lambda sym, items: delivered.append((sym, items))))
+
+    now_ms = int(time.time() * 1000)
+    expected_us_ms = now_ms - 2_500
+    expected_ns_ms = now_ms - 3_200
+
+    # 1. Microsecond integer event time -> converted to exact ms, preserving exchange timestamp
+    ps._process_message(json.dumps({
+        "data": {"s": "BTCUSDC", "c": "70100.5", "E": expected_us_ms * 1_000 + 999}
+    }))
+    # 2. Nanosecond string event time near ms boundary -> exact integer ms (no float64 +1ms drift)
+    ps._process_message(json.dumps({
+        "data": {"s": "BTCUSDC", "c": "70200.5", "E": str(expected_ns_ms * 1_000_000 + 999_999)}
+    }))
+    # 3. True far-future microsecond timestamp (+1h in us) -> normalized, then clamped to now_ms
+    ps._process_message(json.dumps({
+        "data": {"s": "BTCUSDC", "c": "70300.5", "E": (now_ms + 3_600_000) * 1_000 + 500}
+    }))
+    # 4. Negative timestamp -> clamped to now_ms (not dropped as non-numeric)
+    ps._process_message(json.dumps({
+        "data": {"s": "BTCUSDC", "c": "70400.5", "E": -50}
+    }))
+
+    assert len(delivered) == 4
+    assert delivered[0] == ("BTCUSDC", [[expected_us_ms, 70100.5]])
+    assert delivered[1] == ("BTCUSDC", [[expected_ns_ms, 70200.5]])
+    assert abs(delivered[2][1][0][0] - now_ms) <= 5_000 and delivered[2][1][0][1] == pytest.approx(70300.5)
+    assert abs(delivered[3][1][0][0] - now_ms) <= 5_000 and delivered[3][1][0][1] == pytest.approx(70400.5)
+
+    # 5. bapi_ws_normalize execution reports & outboundAccountPosition normalize us/ns via SSOT
+    res_ord = bapi_ws_normalize.parse_order_execution_report(
+        {"s": "BTCUSDC", "x": "TRADE", "X": "FILLED", "t": 77, "i": 101, "L": "70100", "l": "0.02",
+         "T": expected_us_ms * 1_000 + 999}
+    )
+    assert res_ord is not None and res_ord[1]["timestamp"] == expected_us_ms
+    res_pos = bapi_ws_normalize.parse_outbound_account_position(
+        {"e": "outboundAccountPosition", "E": str(expected_ns_ms * 1_000_000 + 999_999),
+         "B": [{"a": "USDC", "f": "100.0", "l": "0.0"}]}
+    )
+    assert res_pos is not None and res_pos[1] == pytest.approx(expected_ns_ms / 1000.0, abs=1e-3)
+
+    # 6. mark_ws_event_received normalizes us and ns into epoch seconds
+    orig_ts = bapi_ws_bridge._ws_last_event_ts
+    orig_healthy = bapi_ws_bridge._ws_is_healthy
+    try:
+        assert bapi_ws_bridge.mark_ws_event_received(expected_us_ms * 1_000 + 456) == pytest.approx(
+            expected_us_ms / 1000.0 + 0.000456, abs=1e-6
+        )
+        assert bapi_ws_bridge.mark_ws_event_received(str(expected_ns_ms * 1_000_000 + 999_999)) == pytest.approx(
+            expected_ns_ms / 1000.0 + 0.001, abs=1e-5
+        )
+    finally:
+        bapi_ws_bridge._ws_last_event_ts = orig_ts
+        bapi_ws_bridge._ws_is_healthy = orig_healthy
+
+
+
 
 

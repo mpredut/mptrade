@@ -1655,4 +1655,41 @@ def test_pass14_heartbeat_clock_rollback_and_daemon_ssot_future_ts_invariants(tm
     assert stub._last_step_ts == pytest.approx(now_s + 31.0)
 
 
+def test_normalize_epoch_and_timestamp_ms_supports_exact_us_and_ns():
+    """Verify s/ms/us/ns unit normalization preserves exact integer precision without float64 drift."""
+    # Exact boundary near a millisecond roll-over: float("1795000000123999999") rounds UP to .124e18!
+    ns_boundary_int = 1_795_000_000_123_999_999
+    ns_boundary_str = "1795000000123999999"
+    us_boundary_int = 1_795_000_000_123_999
+    us_boundary_str = "1795000000123999"
+
+    # 1. normalize_timestamp_ms exact integer path (no float64 +1ms rounding drift)
+    assert botcore.normalize_timestamp_ms(1_795_000_000) == 1_795_000_000_000
+    assert botcore.normalize_timestamp_ms(1_795_000_000_123) == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms(us_boundary_int) == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms(us_boundary_str) == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms(ns_boundary_int) == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms(ns_boundary_str) == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms("1795000000123456.75") == 1_795_000_000_123
+    assert botcore.normalize_timestamp_ms("2026-11-27T09:30:00.123456Z") == 1_795_771_800_123
+
+    # 2. normalize_epoch_sec scales ms, us, and ns without premature float quantization
+    assert botcore.normalize_epoch_sec(1_795_000_000_123) == pytest.approx(1_795_000_000.123, abs=1e-6)
+    assert botcore.normalize_epoch_sec(us_boundary_int) == pytest.approx(1_795_000_000.123999, abs=1e-6)
+    assert botcore.normalize_epoch_sec(us_boundary_str) == pytest.approx(1_795_000_000.123999, abs=1e-6)
+    assert botcore.normalize_epoch_sec(ns_boundary_int) == pytest.approx(1_795_000_000.124, abs=1e-6)
+    assert botcore.normalize_epoch_sec(ns_boundary_str) == pytest.approx(1_795_000_000.124, abs=1e-6)
+
+    # 3. extract_timestamp_ms / extract_timestamp_s inherit exact us/ns support automatically
+    assert botcore.extract_timestamp_ms({"E": us_boundary_int}) == 1_795_000_000_123
+    assert botcore.extract_timestamp_ms({"E": ns_boundary_str}) == 1_795_000_000_123
+    assert botcore.extract_timestamp_s({"E": us_boundary_int}) == pytest.approx(1_795_000_000.123999, abs=1e-6)
+
+    # 4. Out-of-range / overflow safety: >= 1e20 stays unscaled; huge ints never raise OverflowError
+    assert botcore.normalize_timestamp_ms(10**25) == 10**25
+    assert botcore.normalize_epoch_sec(10**25) == pytest.approx(1e25)
+    assert botcore.normalize_epoch_sec(10**400, default=None) is None
+
+
+
 

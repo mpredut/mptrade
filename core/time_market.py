@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from functools import lru_cache
+import math
 import sys
 import threading
 import time as _time
@@ -12,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 from cachepaths import (
     _parse_bool_flag,
+    exact_nonneg_int,
+    exact_pos_int,
     has_equity_suffix,
     safe_float,
     safe_nonneg_float,
@@ -213,10 +216,31 @@ def parse_iso_datetime_utc(raw: str) -> datetime | None:
         return None
 
 
+_EPOCH_SEC_MIN = 1_000_000_000                  # 1e9  (2001-09-09 in s)
+_EPOCH_MS_MIN = 100_000_000_000                 # 1e11 (1973-03-03 in ms; year 5138 in s)
+_EPOCH_US_MIN = 100_000_000_000_000             # 1e14 (1973-03-03 in us; year 5138 in ms)
+_EPOCH_NS_MIN = 100_000_000_000_000_000         # 1e17 (1973-03-03 in ns; year 5138 in us)
+_EPOCH_NS_MAX = 100_000_000_000_000_000_000     # 1e20 (year 5138 in ns)
+
+
+def _epoch_sec_divisor(val: int | float) -> int:
+    """Return the divisor scaling ``val`` from ms/us/ns into epoch seconds, or ``1``."""
+    if _EPOCH_MS_MIN <= val < _EPOCH_US_MIN:
+        return 1_000
+    if _EPOCH_US_MIN <= val < _EPOCH_NS_MIN:
+        return 1_000_000
+    if _EPOCH_NS_MIN <= val < _EPOCH_NS_MAX:
+        return 1_000_000_000
+    return 1
+
+
 def normalize_epoch_sec(
     val: object, default: float | None = None, *, allow_zero: bool = False, allow_iso: bool = False
 ) -> float | None:
-    """Normalize a timestamp in seconds, milliseconds (>= 1e11), or optional ISO-8601 string into epoch seconds."""
+    """Normalize a timestamp in s, ms, us, ns, or optional ISO-8601 string into epoch seconds."""
+    exact_i = exact_nonneg_int(val, default=None) if allow_zero else exact_pos_int(val, default=None)
+    if exact_i is not None and exact_i < _EPOCH_NS_MAX:
+        return exact_i / _epoch_sec_divisor(exact_i)
     f = safe_nonneg_float(val, default=None) if allow_zero else safe_pos_float(val, default=None)
     if f is None and allow_iso and isinstance(val, str):
         s = val.strip()
@@ -227,7 +251,7 @@ def normalize_epoch_sec(
                     f = ts_s
     if f is None:
         return default
-    return f / 1000.0 if f >= 1e11 else f
+    return f / _epoch_sec_divisor(f)
 
 
 def first_epoch_sec(
@@ -310,7 +334,18 @@ def _parse_epoch_or_iso_s(value: object) -> float | None:
 
 
 def normalize_timestamp_ms(value: object, default: int | None = None) -> int | None:
-    """Normalize a raw timestamp (in seconds, milliseconds, or ISO-8601 string) to integer milliseconds."""
+    """Normalize a raw timestamp (in s, ms, us, ns, or ISO-8601 string) to integer milliseconds."""
+    exact_i = exact_nonneg_int(value, default=None)
+    if exact_i is not None:
+        if exact_i == 0:
+            return 0
+        if _EPOCH_SEC_MIN <= exact_i < _EPOCH_MS_MIN:
+            return exact_i * 1_000
+        if _EPOCH_US_MIN <= exact_i < _EPOCH_NS_MIN:
+            return exact_i // 1_000
+        if _EPOCH_NS_MIN <= exact_i < _EPOCH_NS_MAX:
+            return exact_i // 1_000_000
+        return exact_i
     numeric = safe_nonneg_float(value, default=None)
     if numeric is None:
         numeric = _parse_epoch_or_iso_s(value)
@@ -318,10 +353,14 @@ def normalize_timestamp_ms(value: object, default: int | None = None) -> int | N
         return default
     if numeric == 0.0:
         return 0
-    if 1_000_000_000.0 <= numeric < 100_000_000_000.0 or (
-        0.0 < numeric < 1_000_000_000.0 and isinstance(value, float) and not numeric.is_integer()
+    if _EPOCH_SEC_MIN <= numeric < _EPOCH_MS_MIN or (
+        0.0 < numeric < _EPOCH_SEC_MIN and isinstance(value, float) and not numeric.is_integer()
     ):
         return round(numeric * 1000.0)
+    if _EPOCH_US_MIN <= numeric < _EPOCH_NS_MIN:
+        return math.trunc(numeric) // 1_000
+    if _EPOCH_NS_MIN <= numeric < _EPOCH_NS_MAX:
+        return math.trunc(numeric) // 1_000_000
     return round(numeric)
 
 
