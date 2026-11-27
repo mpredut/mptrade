@@ -9212,7 +9212,7 @@ def test_point3_1to1_stores_locked_merges_and_zero_io_evaluators(tmp_path: Any) 
 def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
     """Regression coverage for Cycle 19 live US RTH / London 4PM Fix prompt audit fixes:
     1. Collapsed trailing_peak below active_avg_buy_px or open LIFO lot entry_px self-heals from cycle high / entry floor.
-    2. NonBinanceTrendPoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH as well as PRE/POST.
+    2. VenuePricePoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH as well as PRE/POST.
     3. Zero-flow, zero-OI equities suppress synthetic whale_long_pct/taker_ratio in cycle_delta history and Section 3B formatting.
     4. Criminal court bail headlines ('released on $1 million bond') do not false-match fixed-income financial context.
     """
@@ -9321,7 +9321,7 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
     assert cyc_long["pos_peak"] == pytest.approx(28.4)
     assert cyc_long["dd_from_peak_pct"] < -15.0
 
-    # 2. NonBinanceTrendPoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH
+    # 2. VenuePricePoller and CacheCurrentPriceManager prefer live public equity quotes during US RTH
     ny_tz = ZoneInfo("America/New_York")
     ts_rth = datetime(2026, 11, 25, 11, 4, 0, tzinfo=ny_tz).timestamp()
     rth_calls = []
@@ -9357,7 +9357,7 @@ def test_cycle19_prompt_audit_fixes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pp_mod.time, "time", lambda: ts_rth)
     cpm_rth = _FakeRthCpm()
-    poller_rth = pp_mod.start_nonbinance_trend_poller(
+    poller_rth = pp_mod.start_venue_price_poller(
         cpm_rth,
         ["SPCX_US_EQ"],
         interval_sec=0.05,

@@ -2324,6 +2324,258 @@ def test_pass29_future_row_timestamps_never_blind_coherence_rules_invariant_and_
     assert evaluate_account_cache_coherence(snap_clean, sync_grace_sec=15.0, ledger_grace_sec=30.0) == []
 
 
+def test_account_multi_venue_bridges_nonblocking_isolation_and_hard_timeout_reset(monkeypatch):
+    """_VenueOpenOrdersBridge and _VenueBalancesBridge must isolate hung venues (zero head-of-line blocking) and evict/retry wedged venues after hard_timeout_sec."""
+    import threading
+    import time
+
+    # 1. _VenueOpenOrdersBridge: T212 hangs while Kraken and Hyperliquid keep syncing freely;
+    #    after hard_timeout_sec, T212 slot is evicted and retried fresh without stalling siblings.
+    release_t212_oo = threading.Event()
+    oo_calls: dict[str, int] = {"kraken": 0, "hyperliquid": 0, "t212": 0}
+    oo_ok: dict[str, int] = {"kraken": 0, "hyperliquid": 0, "t212": 0}
+    oo_lock = threading.Lock()
+
+    bridge_oo = cacheaccount._VenueOpenOrdersBridge(hard_timeout_sec=0.12, poll_interval_sec=0.03)
+
+    def _fake_oo_sync(v_key: str, *, now_ms=None, trigger_balance_refresh=True) -> bool:
+        with oo_lock:
+            oo_calls[v_key] = oo_calls.get(v_key, 0) + 1
+            call_n = oo_calls[v_key]
+        if v_key == "t212" and call_n == 1:
+            release_t212_oo.wait(timeout=5.0)
+            return False
+        with oo_lock:
+            oo_ok[v_key] = oo_ok.get(v_key, 0) + 1
+        return True
+
+    monkeypatch.setattr(bridge_oo, "sync_venue_once", _fake_oo_sync)
+    assert bridge_oo.start() is True
+    try:
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
+            with oo_lock:
+                if oo_ok["kraken"] >= 3 and oo_ok["hyperliquid"] >= 3 and oo_ok["t212"] >= 1:
+                    break
+            time.sleep(0.02)
+        with oo_lock:
+            assert oo_ok["kraken"] >= 3, f"Kraken stalled behind hung T212: {oo_ok}"
+            assert oo_ok["hyperliquid"] >= 3, f"Hyperliquid stalled behind hung T212: {oo_ok}"
+            assert oo_calls["t212"] >= 2 and oo_ok["t212"] >= 1, f"T212 failed to evict & retry: {oo_calls} / {oo_ok}"
+    finally:
+        release_t212_oo.set()
+        bridge_oo.stop(timeout=2.0)
+
+    # 2. _VenueBalancesBridge: hung T212 does not stall Binance/Kraken/Hyperliquid; after hard timeout,
+    #    T212 recovers and once seeded during closed US hours it is skipped while crypto venues keep polling.
+    release_t212_bal = threading.Event()
+    bal_calls: dict[str, int] = {"binance": 0, "kraken": 0, "hyperliquid": 0, "t212": 0}
+    bal_ok: dict[str, int] = {"binance": 0, "kraken": 0, "hyperliquid": 0, "t212": 0}
+    bal_lock = threading.Lock()
+    monkeypatch.setattr(cacheaccount, "is_symbol_market_open", lambda _s, _ts=None: False)
+
+    bridge_bal = cacheaccount._VenueBalancesBridge(hard_timeout_sec=0.12, poll_interval_sec=0.03)
+
+    def _fake_bal_sync(v_key: str, *, now_s=None) -> bool:
+        with bal_lock:
+            bal_calls[v_key] = bal_calls.get(v_key, 0) + 1
+            call_n = bal_calls[v_key]
+        if v_key == "t212" and call_n == 1:
+            release_t212_bal.wait(timeout=5.0)
+            return False
+        with bal_lock:
+            bal_ok[v_key] = bal_ok.get(v_key, 0) + 1
+        return True
+
+    monkeypatch.setattr(bridge_bal, "sync_venue_once", _fake_bal_sync)
+    assert bridge_bal.start() is True
+    try:
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
+            with bal_lock:
+                if (
+                    bal_ok["binance"] >= 3
+                    and bal_ok["kraken"] >= 3
+                    and bal_ok["hyperliquid"] >= 3
+                    and bal_ok["t212"] >= 1
+                ):
+                    break
+            time.sleep(0.02)
+        time.sleep(0.12)
+        with bal_lock:
+            assert bal_ok["binance"] >= 3
+            assert bal_ok["kraken"] >= 3
+            assert bal_ok["hyperliquid"] >= 3
+            assert bal_calls["t212"] == 2 and bal_ok["t212"] == 1
+    finally:
+        release_t212_bal.set()
+        bridge_bal.stop(timeout=2.0)
+
+
+def test_hl_and_kraken_ws_bg_rest_resync_hard_timeout_eviction_and_recovery(tmp_path, monkeypatch):
+    """Wedged background REST resync threads on Hyperliquid and Kraken WS bridges must evict after hard timeout instead of locking resync forever."""
+    import sys
+    import threading
+    import time
+    import types
+
+    acct_dir = tmp_path / "account_ht"
+    acct_dir.mkdir(parents=True)
+    monkeypatch.setattr(cacheaccount, "_record_venue_health_sync", lambda *_a, **_kw: True)
+    monkeypatch.setattr(cacheaccount, "request_venue_account_refresh", lambda *_a, **_kw: True)
+
+    # 1. Hyperliquid _HyperliquidAccountTradeBridge._schedule_invalidated_fills_resync
+    hl_tr = acct_dir / "cache_trade_hyperliquid.json"
+    hl_fo = acct_dir / "cache_order_filled_hyperliquid.json"
+    monkeypatch.setattr(cacheaccount, "_sibling_order_filled_path", lambda _p, _v: str(hl_fo))
+    release_hl = threading.Event()
+    hl_started = threading.Event()
+    hl_done = threading.Event()
+    hl_calls = [0]
+    t0_ms = 1_795_760_000_000
+
+    class _FakeHlProv:
+        def __init__(self, token=None):
+            self.token = token
+
+        def fetch_remote_trades(self, sym_s, _start):
+            hl_calls[0] += 1
+            if hl_calls[0] == 1:
+                hl_started.set()
+                release_hl.wait(timeout=5.0)
+                raise RuntimeError("stale wedged timeout")
+            rows = [{"symbol": sym_s, "id": "HL-REC-1", "orderId": "HL-O1", "side": "BUY", "price": 65.0, "qty": 1.0, "quantity": 1.0, "status": "FILLED", "time": t0_ms + 1000}]
+            hl_done.set()
+            return rows
+
+        @staticmethod
+        def resolve_ws_user_address(addr, resolve_env=None):
+            return addr
+
+    monkeypatch.setattr(
+        cacheaccount.MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda _cls, v: _FakeHlProv if v == "hyperliquid" else None),
+    )
+
+    class _DummyWs:
+        _lock = threading.Lock()
+        _symbols = ("HYPEUSDC",)
+
+    bridge = cacheaccount._HyperliquidAccountTradeBridge(_DummyWs(), user_address="0xabc", fills_cache_path=str(hl_tr))
+    bridge._rest_resync_hard_timeout_sec = 0.08
+    try:
+        assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(hl_tr), t0_ms, blocking=False) is True
+        assert hl_started.wait(timeout=2.0)
+        # Immediate duplicate before hard timeout must be deduplicated
+        assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(hl_tr), t0_ms + 1000, blocking=False) is False
+        time.sleep(0.11)
+        # After hard timeout, wedged slot is evicted and fresh retry runs & recovers cache
+        assert bridge._schedule_invalidated_fills_resync(("HYPEUSDC",), str(hl_tr), t0_ms + 2000, blocking=False) is True
+        assert hl_done.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not hl_fo.exists():
+            time.sleep(0.02)
+        assert hl_calls[0] == 2
+        assert hl_fo.exists()
+        # Late completion of wedged call #1 must NOT poison backoff after fresh call #2 succeeded
+        release_hl.set()
+        time.sleep(0.08)
+        assert bridge._rest_backoff_sec == 0.0
+        assert bridge._next_rest_resync_ms == 0
+    finally:
+        release_hl.set()
+
+    # 2. Kraken run_kraken_trade_ws_loop periodic background REST Ledgers resync
+    kr_tr = acct_dir / "cache_trade_kraken.json"
+    kr_fo = acct_dir / "cache_order_filled_kraken.json"
+    monkeypatch.setattr(cacheaccount, "_sibling_order_filled_path", lambda _p, _v: str(kr_fo))
+    release_kr = threading.Event()
+    kr_wedged_started = threading.Event()
+    kr_recovered = threading.Event()
+    kr_calls = [0]
+    now_ref = [t0_ms]
+    monkeypatch.setattr(cacheaccount, "resolve_now_ms", lambda v=None: now_ref[0] if v is None else int(v))
+
+    class _FakeKrProv:
+        PRIVATE_WS_URL = "wss://ws-auth.kraken.com/"
+
+        @staticmethod
+        def fetch_ledger_fills_by_symbol(_client, *, pairs, lookback_sec):
+            kr_calls[0] += 1
+            if kr_calls[0] == 1:
+                return {"HYPEUSD": []}  # initial seed
+            if kr_calls[0] == 2:
+                kr_wedged_started.set()
+                release_kr.wait(timeout=5.0)
+                raise RuntimeError("stale wedged kraken call")
+            kr_recovered.set()
+            return {"HYPEUSD": [{"symbol": "HYPEUSD", "id": "KR-REC-1", "orderId": "KR-O1", "side": "BUY", "price": 66.0, "qty": 1.0, "quantity": 1.0, "status": "FILLED", "time": t0_ms + 5000}]}
+
+        @staticmethod
+        def build_ws_own_trades_subscription(_c):
+            return '{"event":"subscribe"}'
+
+        @staticmethod
+        def extract_ws_own_trades(_d, *, pairs):
+            return None
+
+        @staticmethod
+        def classify_ws_control_event(_d):
+            return "keepalive", ""
+
+    monkeypatch.setattr(
+        cacheaccount.MarketDataProvider,
+        "resolve_venue_provider_class",
+        classmethod(lambda _cls, v: _FakeKrProv if v == "kraken" else None),
+    )
+    stop_ev = threading.Event()
+
+    class _FakeKrWs:
+        def __init__(self, _url, *, on_open, on_message, on_error):
+            self._on_open = on_open
+            self._on_message = on_message
+            self.keep_running = True
+
+        def send(self, _p):
+            pass
+
+        def run_forever(self, **_kw):
+            self._on_open(self)
+            # Trigger wedged periodic REST sync #2
+            now_ref[0] = t0_ms + 320_000
+            self._on_message(self, '{"event":"heartbeat"}')
+            assert kr_wedged_started.wait(timeout=2.0)
+            # Keepalive before hard timeout must be deduplicated (no 3rd call yet)
+            now_ref[0] = t0_ms + 340_000
+            self._on_message(self, '{"event":"heartbeat"}')
+            assert kr_calls[0] == 2
+            # Wait past rest_hard_timeout_sec -> next keepalive evicts wedged slot and runs call #3
+            time.sleep(0.11)
+            now_ref[0] = t0_ms + 360_000
+            self._on_message(self, '{"event":"heartbeat"}')
+            assert kr_recovered.wait(timeout=2.0)
+            stop_ev.set()
+
+    monkeypatch.setitem(sys.modules, "websocket", types.SimpleNamespace(WebSocketApp=_FakeKrWs))
+    try:
+        cacheaccount.run_kraken_trade_ws_loop(
+            object(),
+            cache_file=str(kr_tr),
+            pairs=("HYPEUSD",),
+            poll_interval=30.0,
+            backoff_init=5.0,
+            backoff_max=60.0,
+            lookback_sec=3600.0,
+            stop_event=stop_ev,
+            rest_hard_timeout_sec=0.08,
+        )
+        assert kr_calls[0] == 3
+    finally:
+        release_kr.set()
+
+
+
 
 
 

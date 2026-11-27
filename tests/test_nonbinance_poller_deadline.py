@@ -1,10 +1,9 @@
 """
-Tests for the bounded wait used by non-Binance price polling.
+Tests for non-blocking venue price polling and REST slot tracking.
 
-NonBinanceTrendPoller once froze when get_current_price(HYPEUSD) blocked
-during DNS resolution. The fetch now runs in a separate worker, while
-future.result(timeout) prevents the poller itself from waiting indefinitely.
-The provider client remains responsible for ending the network call.
+VenuePricePoller once froze when get_current_price(HYPEUSD) blocked
+during DNS resolution. Fetches now run non-blockingly via NonBlockingRestSlotTracker
+with WS preemption and hard-timeout eviction/reset.
 """
 
 import cacheManager as cm
@@ -15,13 +14,14 @@ import json
 import os
 import time
 from binance_api.bapi_ws import BinancePriceStream, PublicPriceStreamBase
-from botcore import clamp_price_to_bbo_mid
+from botcore import NonBlockingRestSlotTracker, clamp_price_to_bbo_mid
 from intelligence.sentiment.collectors.portfolio_collector import _load_open_order_timestamps
 from intelligence.sentiment.evaluators.price_series_evaluator import recalculate_live_price_geometry
 from providers.execution_audit import find_duplicate_ai_open_limit_order
 from providers.hyperliquid_provider import HyperliquidProvider
 from providers.kraken_provider import KrakenProvider
 from providers.order_ohlc_utils import extract_order_fee, validate_ohlc_candle_bar
+from providers.price_poller import VenuePricePoller, start_venue_price_poller
 from trailing_core import TrailingAdapterBase
 from types import SimpleNamespace
 
@@ -117,7 +117,7 @@ class TestFetchDeadline(TempDirTestCase):
                 with self.assertRaisesRegex(
                     ValueError, "explicit provider bindings are required"
                 ):
-                    cm._start_nonbinance_trend_poller(
+                    start_venue_price_poller(
                         cpm,
                         ["HYPEUSD", "TAOUSD"],
                         provider_names=provider_names,
@@ -132,7 +132,7 @@ class TestFetchDeadline(TempDirTestCase):
         api = _FakeApi(hang=True)
         cpm = _StubCpm(api, pushed=pushed)
         # A small interval plus a short deadline, so we can observe the timeout and the recovery in the test.
-        poller = cm._start_nonbinance_trend_poller(
+        poller = start_venue_price_poller(
             cpm, ["HYPEUSD"], interval_sec=0.3, fetch_deadline_sec=0.5,
             provider_names={"HYPEUSD": "Kraken"})
         self.addCleanup(poller.stop)
@@ -159,7 +159,7 @@ class TestFetchDeadline(TempDirTestCase):
             read_only=True,
         )
         self.assertFalse(cpm._ws_is_healthy("HYPEUSD"))
-        poller = cm._start_nonbinance_trend_poller(
+        poller = start_venue_price_poller(
             cpm,
             ["HYPEUSD"],
             interval_sec=0.2,
@@ -241,8 +241,8 @@ class TestFetchDeadline(TempDirTestCase):
         # ADA last trade 0.80 was outside [0.74, 0.76] spread -> clamped to midpoint 0.75
         self.assertAlmostEqual(cpm.get_cached_price_observation("ADAUSD", 5.0)[1], 0.75)
 
-        # While real WS is healthy, _start_nonbinance_trend_poller must NOT make any REST calls
-        poller = cm._start_nonbinance_trend_poller(
+        # While real WS is healthy, start_venue_price_poller must NOT make any REST calls
+        poller = start_venue_price_poller(
             cpm,
             ["HYPEUSDC", "HYPEUSD", "TAOUSD", "ADAUSD"],
             interval_sec=0.15,
@@ -566,7 +566,7 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertAlmostEqual(ts_map.get("ai_krk-hype-buy-1700000123"), 1700000123.5)
 
     def test_poller_deduplicates_in_flight_hangs_and_backs_off_on_rate_limit_errors(self):
-        """NonBinanceTrendPoller must not pile duplicate hung requests into the pool and must back off on 429 errors."""
+        """VenuePricePoller must not pile duplicate hung requests into the pool and must back off on 429 errors."""
         import threading
 
         release_hang = threading.Event()
@@ -582,7 +582,7 @@ class TestFetchDeadline(TempDirTestCase):
                 return 129.5
 
         cpm = _StubCpm(_MixedApi(), pushed=pushed)
-        poller = cm._start_nonbinance_trend_poller(
+        poller = start_venue_price_poller(
             cpm,
             ["HYPEUSD", "SPCXxUSD"],
             interval_sec=0.05,
@@ -616,7 +616,7 @@ class TestFetchDeadline(TempDirTestCase):
                 raise RuntimeError("HTTP 429 rate limit exceeded")
 
         cpm_rl = _StubCpm(_RateLimitApi(), pushed=[])
-        poller_rl = cm._start_nonbinance_trend_poller(
+        poller_rl = start_venue_price_poller(
             cpm_rl,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -738,7 +738,7 @@ class TestFetchDeadline(TempDirTestCase):
             cpm._shutdown_fallback_pool()
 
     def test_poller_ws_preemption_and_hard_timeout_reset(self):
-        """NonBinanceTrendPoller must discard stale REST results preempted by WS and reset genuinely wedged REST slots on hard_timeout_sec."""
+        """VenuePricePoller must discard stale REST results preempted by WS and reset genuinely wedged REST slots on hard_timeout_sec."""
         import threading
 
         # 1. WS preemption: while REST is in flight, real WS updates HYPEUSD -> slow REST result must NOT overwrite WS.
@@ -754,7 +754,7 @@ class TestFetchDeadline(TempDirTestCase):
         cpm_ws = _StubCpm(_SlowRestApi(), pushed=pushed)
         cpm_ws.is_real_ws_healthy = lambda _s: ws_healthy[0]
         cpm_ws._ws_stream_event_ts_per_symbol = {}
-        poller_ws = cm._start_nonbinance_trend_poller(
+        poller_ws = start_venue_price_poller(
             cpm_ws,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -786,7 +786,7 @@ class TestFetchDeadline(TempDirTestCase):
                 return 77.5
 
         cpm_ht = _StubCpm(_WedgedOnceApi(), pushed=pushed_ht)
-        poller_ht = cm._start_nonbinance_trend_poller(
+        poller_ht = start_venue_price_poller(
             cpm_ht,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -816,7 +816,7 @@ class TestFetchDeadline(TempDirTestCase):
                 return 88.25
 
         cpm_ok = _StubCpm(_SlowOkApi(), pushed=pushed)
-        poller_ok = cm._start_nonbinance_trend_poller(
+        poller_ok = start_venue_price_poller(
             cpm_ok,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -841,7 +841,7 @@ class TestFetchDeadline(TempDirTestCase):
                 raise RuntimeError("HTTP 429 too many requests")
 
         cpm_rl = _StubCpm(_SlowRateLimitApi(), pushed=[])
-        poller_rl = cm._start_nonbinance_trend_poller(
+        poller_rl = start_venue_price_poller(
             cpm_rl,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -868,7 +868,7 @@ class TestFetchDeadline(TempDirTestCase):
 
         cpm_empty = _StubCpm(_SlowEmptyApi(), pushed=[])
         cpm_empty._enforce_rth_gate = True
-        poller_empty = cm._start_nonbinance_trend_poller(
+        poller_empty = start_venue_price_poller(
             cpm_empty,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -885,12 +885,10 @@ class TestFetchDeadline(TempDirTestCase):
 
     def test_pass34_future_ws_ts_does_not_preempt_rest_or_block_ws_and_shutdown_submit_safe(self):
         """Pass #34 pure invariants + dependent cross-checks:
-        1. Corrupt far-future _ws_stream_event_ts_per_symbol must NOT falsely preempt REST in CPM or NonBinanceTrendPoller.
+        1. Corrupt far-future _ws_stream_event_ts_per_symbol must NOT falsely preempt REST in CPM or VenuePricePoller.
         2. Corrupt far-future cached entry must NOT cause on_items_update to drop real incoming WS ticks.
         3. NonBlockingRestSlotTracker.submit returns None cleanly when executor is shut down; _next_sync_wait_sec honors hard-timeout remaining.
         """
-        from providers.price_poller import NonBlockingRestSlotTracker
-
         # 1. Pure invariant: NonBlockingRestSlotTracker.submit handles shut-down executor safely
         tracker = NonBlockingRestSlotTracker()
         dead_pool = futures.ThreadPoolExecutor(max_workers=1)
@@ -950,12 +948,12 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             cpm._shutdown_fallback_pool()
 
-        # 4. Dependent cross-check: NonBinanceTrendPoller ignores corrupt far-future _ws_stream_event_ts_per_symbol
+        # 4. Dependent cross-check: VenuePricePoller ignores corrupt far-future _ws_stream_event_ts_per_symbol
         pushed_p34 = []
         cpm_nb = _StubCpm(_FakeApi(hang=False, price=66.5), pushed=pushed_p34)
         cpm_nb.is_real_ws_healthy = lambda _s: False
         cpm_nb._ws_stream_event_ts_per_symbol = {"HYPEUSD": future_s}
-        poller_p34 = cm._start_nonbinance_trend_poller(
+        poller_p34 = start_venue_price_poller(
             cpm_nb,
             ["HYPEUSD"],
             interval_sec=0.04,
@@ -967,7 +965,68 @@ class TestFetchDeadline(TempDirTestCase):
             while time.time() < deadline and not pushed_p34:
                 time.sleep(0.03)
             self.assertTrue(any(s == "HYPEUSD" and p == 66.5 for s, p in pushed_p34))
+            self.assertIsInstance(poller_p34, VenuePricePoller)
+            self.assertEqual(poller_p34.thread.name, "VenuePricePoller")
         finally:
             poller_p34.stop(timeout=2.0)
+
+    def test_slot_tracker_submit_thread_dedup_hard_timeout_and_late_completion(self):
+        """NonBlockingRestSlotTracker.submit_thread deduplicates in-flight work, evicts wedged threads on hard timeout, and tolerates late completion."""
+        import threading
+
+        tracker = NonBlockingRestSlotTracker()
+        release_wedged = threading.Event()
+        started = threading.Event()
+        t0 = time.monotonic()
+
+        def _wedged():
+            started.set()
+            release_wedged.wait(timeout=5.0)
+            return "stale"
+
+        try:
+            slot1 = tracker.submit_thread(
+                "kraken",
+                _wedged,
+                thread_name="test-slot-thread",
+                now_mono=t0,
+                now_wall_ts=time.time(),
+            )
+            self.assertIsNotNone(slot1)
+            self.assertTrue(started.wait(timeout=2.0))
+            # While in-flight before hard_timeout, duplicate submit is rejected and inspect reports IN_FLIGHT
+            self.assertIsNone(
+                tracker.submit_thread(
+                    "kraken",
+                    lambda: "dup",
+                    thread_name="test-slot-thread",
+                    now_mono=t0 + 0.05,
+                    now_wall_ts=time.time(),
+                )
+            )
+            st, val, _ = tracker.inspect_and_harvest("kraken", now_mono=t0 + 0.05, hard_timeout_sec=0.2)
+            self.assertEqual(st, "IN_FLIGHT")
+            self.assertIsNone(val)
+
+            # Once hard_timeout elapses, wedged slot is evicted and a fresh retry succeeds
+            st_ht, _, _ = tracker.inspect_and_harvest("kraken", now_mono=t0 + 0.25, hard_timeout_sec=0.2)
+            self.assertEqual(st_ht, "HARD_TIMEOUT")
+            done_ev = threading.Event()
+            slot2 = tracker.submit_thread(
+                "kraken",
+                lambda: "fresh",
+                thread_name="test-slot-thread",
+                now_mono=t0 + 0.25,
+                now_wall_ts=time.time(),
+                on_done=lambda _f: done_ev.set(),
+            )
+            self.assertIsNotNone(slot2)
+            self.assertTrue(done_ev.wait(timeout=2.0))
+            st_ok, val_ok, _ = tracker.inspect_and_harvest("kraken", now_mono=t0 + 0.3, hard_timeout_sec=0.2)
+            self.assertEqual((st_ok, val_ok), ("DONE_OK", "fresh"))
+        finally:
+            release_wedged.set()
+            tracker.clear()
+
 
 

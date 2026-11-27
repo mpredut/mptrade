@@ -105,7 +105,7 @@ from providers.base import MarketDataProvider
 from providers.price_poller import (
     HyperliquidPriceStream,
     KrakenPriceStream,
-    start_nonbinance_trend_poller as _start_nonbinance_trend_poller,
+    start_venue_price_poller,
 )
 from state_io import (
     atomic_snapshot_file,
@@ -758,13 +758,13 @@ if __name__ == "__main__":
         sync_started_set=CacheFactory._sync_started,
     )
     threads = []
-    _nb_poller = None
+    _venue_price_poller = None
     _trend_mgr = None
 
     _trend_syms, _nb_syms, _nb_provider_names = tracked_price_instruments()
     if _nb_syms:
         builtins.print(
-            f"[cacheManager] tracking non-Binance instruments from instruments.conf: {_nb_syms}"
+            f"[cacheManager] tracking delegated venue instruments from instruments.conf: {_nb_syms}"
         )
 
     def _attach_producer_price_ws():
@@ -774,8 +774,8 @@ if __name__ == "__main__":
             data_sync_mode=CacheManagerInterface.MODE_PRODUCER,
         )
 
-    def _start_producer_nb_poller(cpm):
-        return _start_nonbinance_trend_poller(
+    def _start_producer_venue_price_poller(cpm):
+        return start_venue_price_poller(
             cpm,
             _nb_syms,
             interval_sec=CURRENT_PRICE_SYNC_INTERVAL_SEC,
@@ -800,7 +800,7 @@ if __name__ == "__main__":
         if _trend_cpm is not None:
             _trend_cpm.start_tick_fanout_server()
             if _nb_syms:
-                _nb_poller = _start_producer_nb_poller(_trend_cpm)
+                _venue_price_poller = _start_producer_venue_price_poller(_trend_cpm)
     except Exception as _ws_init_err:
         print(f"[cacheManager] Warning pre-attaching price WS: {_ws_init_err}")
 
@@ -878,8 +878,8 @@ if __name__ == "__main__":
                 _trend_cpm.subscribe_price(_c365)
         if _trend_mgr is None:
             _trend_mgr = _start_producer_short_trend(_trend_cpm)
-        if _nb_syms and _nb_poller is None:
-            _nb_poller = _start_producer_nb_poller(_trend_cpm)
+        if _nb_syms and _venue_price_poller is None:
+            _venue_price_poller = _start_producer_venue_price_poller(_trend_cpm)
     except Exception as e:
         print(f"[cacheManager] Cannot start the trend computation: {e}")
 
@@ -945,8 +945,8 @@ if __name__ == "__main__":
         shutdown_deadline = time.monotonic() + 2.5
         request_stop_account_ws_streams()
         request_stop_price_ws_streams()
-        if _nb_poller is not None and hasattr(_nb_poller, "request_stop"):
-            _nb_poller.request_stop()
+        if _venue_price_poller is not None and hasattr(_venue_price_poller, "request_stop"):
+            _venue_price_poller.request_stop()
         if _trend_mgr is not None and hasattr(_trend_mgr, "request_stop"):
             _trend_mgr.request_stop()
         _c365_Shutdown_managers = list(
@@ -958,8 +958,8 @@ if __name__ == "__main__":
             for _mgr in CacheFactory._iter_managers(_inst):
                 if hasattr(_mgr, "request_stop"):
                     _mgr.request_stop()
-        if _nb_poller is not None:
-            _nb_poller.stop(
+        if _venue_price_poller is not None:
+            _venue_price_poller.stop(
                 timeout=min(0.5, max(0.05, shutdown_deadline - time.monotonic()))
             )
         if _trend_mgr is not None:

@@ -2609,7 +2609,7 @@ def test_hot_path_caches_preserve_semantics_and_config_hot_reload(tmp_path, monk
 
 
 def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch):
-    """NonBinanceTrendPoller must poll PRE/POST equities via public extended feed and _seed_t212_positions must reject stale prior-RTH cp quotes."""
+    """VenuePricePoller must poll PRE/POST equities via public extended feed and _seed_t212_positions must reject stale prior-RTH cp quotes."""
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
     import providers.price_poller as pp
@@ -2640,7 +2640,7 @@ def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch)
     assert pt_map["ANT_US_EQ"].get("quote_source") == "t212_rth_close"
     assert pt_map["ANT_US_EQ"].get("market_state") is None
 
-    # 2. NonBinanceTrendPoller polls PRE equities with prefer_public_extended=True even when seeded with stale RTH close
+    # 2. VenuePricePoller polls PRE equities with prefer_public_extended=True even when seeded with stale RTH close
     calls = []
 
     class _FakeApi:
@@ -2674,7 +2674,7 @@ def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch)
 
     monkeypatch.setattr(pp.time, "time", lambda: ts_pre)
     cpm_pre = _FakeCpm(ts_prev_rth_close)
-    poller_pre = pp.start_nonbinance_trend_poller(
+    poller_pre = pp.start_venue_price_poller(
         cpm_pre, ["ANT_US_EQ"], interval_sec=0.05, fetch_deadline_sec=1.0, provider_names={"ANT_US_EQ": "t212"}, start_ws=False
     )
     try:
@@ -2690,7 +2690,7 @@ def test_faza3a_extended_hours_nonbinance_poller_and_stale_cp_guard(monkeypatch)
     calls.clear()
     monkeypatch.setattr(pp.time, "time", lambda: ts_night)
     cpm_night = _FakeCpm(ts_prev_rth_close)
-    poller_night = pp.start_nonbinance_trend_poller(
+    poller_night = pp.start_venue_price_poller(
         cpm_night, ["ANT_US_EQ"], interval_sec=0.05, fetch_deadline_sec=1.0, provider_names={"ANT_US_EQ": "t212"}, start_ws=False
     )
     try:

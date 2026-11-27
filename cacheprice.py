@@ -28,6 +28,7 @@ import time
 from typing import Any, Callable, Optional
 
 from botcore import (
+    NonBlockingRestSlotTracker,
     PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
     PRICE_FRESHNESS_MAX_AGE_MS,
     PRICE_FRESHNESS_MAX_AGE_SEC,
@@ -110,12 +111,8 @@ from providers.ohlc_utils import normalize_yahoo_5d_chart_bars
 from providers.price_poller import (  # noqa: F401
     HyperliquidPriceStream,
     KrakenPriceStream,
-    NonBinanceTrendPoller as _NonBinanceTrendPoller,
-    NonBlockingRestSlotTracker,
     VenuePriceStreamBase as _VenuePriceStreamBase,
-    _NB_FETCH_DEADLINE_SEC,
     fetch_price_with_deadline as _fetch_price_with_deadline,
-    start_nonbinance_trend_poller as _start_nonbinance_trend_poller,
 )
 from providers.ssot_bridge import live_price_fetch_context
 from state_io import (

@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures as _futures
+from dataclasses import dataclass
 import importlib
 import re
 import sys
+import threading
+from typing import Any, Callable, Optional
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,6 +19,173 @@ from core.math_coercion import _UNSET, require_pos_float
 import state_io as _state_io
 
 HTTP_TIMEOUT = 25
+ACCOUNT_REST_HARD_TIMEOUT_SEC: float = round(HTTP_TIMEOUT * 2.0, 3)
+
+
+@dataclass(slots=True)
+class InFlightRestSlot:
+    """Single per-key in-flight REST request tracked without blocking poll loops."""
+
+    future: _futures.Future
+    submit_mono: float
+    submit_wall_ts: float
+    meta: Any = None
+
+
+class NonBlockingRestSlotTracker:
+    """Thread-safe SSOT tracker for non-blocking per-key REST request slots.
+
+    Guarantees at most one active REST request per key (symbol or venue) without blocking
+    poll loops on a short deadline: loops revisit slots non-blockingly, harvest completed
+    results or real socket errors, and evict/reset genuinely wedged requests only after
+    ``hard_timeout_sec``.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots: dict[str, InFlightRestSlot] = {}
+
+    @property
+    def slots(self) -> dict[str, InFlightRestSlot]:
+        return self._slots
+
+    def active_symbols(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._slots.keys())
+
+    def has_active(self) -> bool:
+        with self._lock:
+            return bool(self._slots)
+
+    def has_done(self) -> bool:
+        with self._lock:
+            return any(slot.future.done() for slot in self._slots.values())
+
+    def next_hard_timeout_remaining(
+        self, *, now_mono: float, hard_timeout_sec: float
+    ) -> Optional[float]:
+        with self._lock:
+            if not self._slots:
+                return None
+            return min(
+                max(0.0, (slot.submit_mono + hard_timeout_sec) - now_mono)
+                for slot in self._slots.values()
+            )
+
+    def inspect_and_harvest(
+        self,
+        key: str,
+        *,
+        now_mono: float,
+        hard_timeout_sec: float,
+    ) -> tuple[str, Any, Optional[InFlightRestSlot]]:
+        """Inspect ``key``'s slot without blocking.
+
+        Returns ``(state, payload_or_exc, slot)`` where ``state`` is one of:
+        ``IDLE``, ``IN_FLIGHT``, ``HARD_TIMEOUT``, ``DONE_OK``, ``DONE_ERR``, ``DONE_CANCELLED``.
+        """
+        with self._lock:
+            slot = self._slots.get(key)
+            if slot is None:
+                return "IDLE", None, None
+            if not slot.future.done():
+                if (now_mono - slot.submit_mono) >= hard_timeout_sec:
+                    self._slots.pop(key, None)
+                    slot.future.cancel()
+                    return "HARD_TIMEOUT", None, slot
+                return "IN_FLIGHT", None, slot
+            self._slots.pop(key, None)
+        if slot.future.cancelled():
+            return "DONE_CANCELLED", None, slot
+        try:
+            return "DONE_OK", slot.future.result(), slot
+        except Exception as exc:  # noqa: BLE001
+            return "DONE_ERR", exc, slot
+
+    def submit(
+        self,
+        key: str,
+        pool: _futures.ThreadPoolExecutor,
+        fn: Callable[[], Any],
+        *,
+        now_mono: float,
+        now_wall_ts: float,
+        meta: Any = None,
+        on_done: Optional[Callable[[_futures.Future], None]] = None,
+    ) -> Optional[InFlightRestSlot]:
+        """Submit ``fn`` to ``pool`` for ``key`` if idle; returns the new slot or ``None`` if active."""
+        with self._lock:
+            existing = self._slots.get(key)
+            if existing is not None and not existing.future.done():
+                return None
+            try:
+                fut = pool.submit(fn)
+            except RuntimeError:
+                return None
+            slot = InFlightRestSlot(
+                future=fut,
+                submit_mono=now_mono,
+                submit_wall_ts=now_wall_ts,
+                meta=meta,
+            )
+            self._slots[key] = slot
+        if callable(on_done):
+            fut.add_done_callback(on_done)
+        return slot
+
+    def submit_thread(
+        self,
+        key: str,
+        fn: Callable[[], Any],
+        *,
+        thread_name: str,
+        now_mono: float,
+        now_wall_ts: float,
+        thread_cls: Any = threading.Thread,
+        meta: Any = None,
+        on_done: Optional[Callable[[_futures.Future], None]] = None,
+    ) -> Optional[InFlightRestSlot]:
+        """Run ``fn`` on a single daemon thread tracked as an ``InFlightRestSlot`` for ``key``."""
+        fut: _futures.Future = _futures.Future()
+        slot = InFlightRestSlot(
+            future=fut,
+            submit_mono=now_mono,
+            submit_wall_ts=now_wall_ts,
+            meta=meta,
+        )
+        with self._lock:
+            existing = self._slots.get(key)
+            if existing is not None and not existing.future.done():
+                return None
+            self._slots[key] = slot
+        if callable(on_done):
+            fut.add_done_callback(on_done)
+
+        def _run() -> None:
+            try:
+                res = fn()
+            except BaseException as exc:  # noqa: BLE001
+                if not fut.done():
+                    fut.set_exception(exc)
+            else:
+                if not fut.done():
+                    fut.set_result(res)
+
+        try:
+            thread_cls(target=_run, name=thread_name, daemon=True).start()
+        except RuntimeError:
+            with self._lock:
+                if self._slots.get(key) is slot:
+                    self._slots.pop(key, None)
+            fut.cancel()
+            return None
+        return slot
+
+    def clear(self) -> None:
+        with self._lock:
+            for slot in self._slots.values():
+                slot.future.cancel()
+            self._slots.clear()
 
 
 def _eff_log(msg: str) -> None:

@@ -6,13 +6,13 @@ from abc import ABC, abstractmethod
 import asyncio
 import builtins
 import concurrent.futures as _futures
-from dataclasses import dataclass
 import threading
 import time
 from typing import Any, Callable, Optional
 import websockets as _websockets
 
 from botcore import (
+    NonBlockingRestSlotTracker,
     PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC,
     PRICE_STREAM_POLL_INTERVAL_SEC,
@@ -47,22 +47,15 @@ from .ws_stream import (
     WS_RECV_TIMEOUT,
 )
 
-_NB_FETCH_DEADLINE_SEC = PRICE_FALLBACK_HTTP_DEADLINE_SEC
-
 __all__ = [
     "HyperliquidPriceStream",
-    "InFlightRestSlot",
     "KrakenPriceStream",
-    "NonBinanceTrendPoller",
-    "NonBlockingRestSlotTracker",
+    "VenuePricePoller",
     "VenuePriceStreamBase",
-    "_NB_FETCH_DEADLINE_SEC",
-    "_NonBinanceTrendPoller",
     "_VenuePriceStreamBase",
     "_fetch_price_with_deadline",
-    "_start_nonbinance_trend_poller",
     "fetch_price_with_deadline",
-    "start_nonbinance_trend_poller",
+    "start_venue_price_poller",
 ]
 
 
@@ -429,7 +422,7 @@ def fetch_price_with_deadline(
     market_api,
     symbol,
     pool,
-    deadline_sec=_NB_FETCH_DEADLINE_SEC,
+    deadline_sec=PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     provider_name=None,
     prefer_public_extended=False,
 ):
@@ -453,7 +446,10 @@ def fetch_price_with_deadline(
             return market_api.get_current_price(**kwargs)
 
     fut = pool.submit(_poll)
-    eff_deadline = safe_pos_float(deadline_sec, default=_NB_FETCH_DEADLINE_SEC) or _NB_FETCH_DEADLINE_SEC
+    eff_deadline = (
+        safe_pos_float(deadline_sec, default=PRICE_FALLBACK_HTTP_DEADLINE_SEC)
+        or PRICE_FALLBACK_HTTP_DEADLINE_SEC
+    )
     try:
         return fut.result(timeout=eff_deadline)
     except _futures.TimeoutError:
@@ -464,125 +460,8 @@ def fetch_price_with_deadline(
 _fetch_price_with_deadline = fetch_price_with_deadline
 
 
-@dataclass(slots=True)
-class InFlightRestSlot:
-    """Single per-symbol in-flight REST fallback request tracked without blocking poll loops."""
-
-    future: _futures.Future
-    submit_mono: float
-    submit_wall_ts: float
-    meta: Any = None
-
-
-class NonBlockingRestSlotTracker:
-    """Thread-safe SSOT tracker for non-blocking per-symbol REST fallback slots.
-
-    Guarantees at most one active REST request per symbol without blocking poll loops on a
-    short deadline: loops revisit slots non-blockingly, harvest completed results or real
-    socket errors, and evict/reset genuinely wedged requests only after ``hard_timeout_sec``.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._slots: dict[str, InFlightRestSlot] = {}
-
-    @property
-    def slots(self) -> dict[str, InFlightRestSlot]:
-        return self._slots
-
-    def active_symbols(self) -> tuple[str, ...]:
-        with self._lock:
-            return tuple(self._slots.keys())
-
-    def has_active(self) -> bool:
-        with self._lock:
-            return bool(self._slots)
-
-    def has_done(self) -> bool:
-        with self._lock:
-            return any(slot.future.done() for slot in self._slots.values())
-
-    def next_hard_timeout_remaining(
-        self, *, now_mono: float, hard_timeout_sec: float
-    ) -> Optional[float]:
-        with self._lock:
-            if not self._slots:
-                return None
-            return min(
-                max(0.0, (slot.submit_mono + hard_timeout_sec) - now_mono)
-                for slot in self._slots.values()
-            )
-
-    def inspect_and_harvest(
-        self,
-        symbol: str,
-        *,
-        now_mono: float,
-        hard_timeout_sec: float,
-    ) -> tuple[str, Any, Optional[InFlightRestSlot]]:
-        """Inspect ``symbol``'s slot without blocking.
-
-        Returns ``(state, payload_or_exc, slot)`` where ``state`` is one of:
-        ``IDLE``, ``IN_FLIGHT``, ``HARD_TIMEOUT``, ``DONE_OK``, ``DONE_ERR``, ``DONE_CANCELLED``.
-        """
-        with self._lock:
-            slot = self._slots.get(symbol)
-            if slot is None:
-                return "IDLE", None, None
-            if not slot.future.done():
-                if (now_mono - slot.submit_mono) >= hard_timeout_sec:
-                    self._slots.pop(symbol, None)
-                    slot.future.cancel()
-                    return "HARD_TIMEOUT", None, slot
-                return "IN_FLIGHT", None, slot
-            self._slots.pop(symbol, None)
-        if slot.future.cancelled():
-            return "DONE_CANCELLED", None, slot
-        try:
-            return "DONE_OK", slot.future.result(), slot
-        except Exception as exc:  # noqa: BLE001
-            return "DONE_ERR", exc, slot
-
-    def submit(
-        self,
-        symbol: str,
-        pool: _futures.ThreadPoolExecutor,
-        fn: Callable[[], Any],
-        *,
-        now_mono: float,
-        now_wall_ts: float,
-        meta: Any = None,
-        on_done: Optional[Callable[[_futures.Future], None]] = None,
-    ) -> Optional[InFlightRestSlot]:
-        """Submit ``fn`` for ``symbol`` if idle; returns the new slot or ``None`` if already active."""
-        with self._lock:
-            existing = self._slots.get(symbol)
-            if existing is not None and not existing.future.done():
-                return None
-            try:
-                fut = pool.submit(fn)
-            except RuntimeError:
-                return None
-            slot = InFlightRestSlot(
-                future=fut,
-                submit_mono=now_mono,
-                submit_wall_ts=now_wall_ts,
-                meta=meta,
-            )
-            self._slots[symbol] = slot
-        if callable(on_done):
-            fut.add_done_callback(on_done)
-        return slot
-
-    def clear(self) -> None:
-        with self._lock:
-            for slot in self._slots.values():
-                slot.future.cancel()
-            self._slots.clear()
-
-
-class NonBinanceTrendPoller:
-    """Own the non-Binance WebSocket streams, fallback poller thread, and executor lifecycle."""
+class VenuePricePoller:
+    """Own venue WebSocket price streams, non-blocking REST fallback poller thread, and executor lifecycle."""
 
     def __init__(
         self,
@@ -651,27 +530,24 @@ class NonBinanceTrendPoller:
         return not self.thread.is_alive()
 
 
-_NonBinanceTrendPoller = NonBinanceTrendPoller
-
-
-def start_nonbinance_trend_poller(
+def start_venue_price_poller(
     cpm,
     symbols,
     interval_sec=PRICE_STREAM_POLL_INTERVAL_SEC,
-    fetch_deadline_sec=_NB_FETCH_DEADLINE_SEC,
+    fetch_deadline_sec=PRICE_FALLBACK_HTTP_DEADLINE_SEC,
     provider_names=None,
     *,
     start_ws=None,
     hard_timeout_sec=None,
 ):
-    """Feed short trends for non-Binance symbols using WebSocket-first + non-blocking REST fallback."""
+    """Feed live prices for delegated venue symbols using WebSocket-first + non-blocking REST fallback."""
     if isinstance(symbols, (str, bytes, bool, dict)) or not hasattr(symbols, "__iter__"):
         raise ValueError("symbols must be an iterable of symbol strings")
     if provider_names is not None and not hasattr(provider_names, "items"):
         raise ValueError("provider_names must be a mapping")
     symbols = tuple(clean_scalar_str(symbol) or "" for symbol in symbols)
     eff_interval = safe_pos_float(interval_sec, default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
-    _ = safe_pos_float(fetch_deadline_sec, default=_NB_FETCH_DEADLINE_SEC)
+    _ = safe_pos_float(fetch_deadline_sec, default=PRICE_FALLBACK_HTTP_DEADLINE_SEC)
     eff_hard_timeout = (
         safe_pos_float(hard_timeout_sec, default=PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC)
         or PRICE_FALLBACK_REST_HARD_TIMEOUT_SEC
@@ -692,7 +568,7 @@ def start_nonbinance_trend_poller(
     ]
     if missing:
         raise ValueError(
-            "explicit provider bindings are required for non-Binance symbols: "
+            "explicit provider bindings are required for delegated venue symbols: "
             + ", ".join(missing)
         )
     cpm.bind_providers(bindings)
@@ -730,7 +606,7 @@ def start_nonbinance_trend_poller(
                 ws_streams.append(ws_inst)
 
     pool = _futures.ThreadPoolExecutor(
-        max_workers=max(3, len(symbols) + 2), thread_name_prefix="NBTrendFetch"
+        max_workers=max(3, len(symbols) + 2), thread_name_prefix="VenuePriceFetch"
     )
     stop_event = threading.Event()
     wake_event = threading.Event()
@@ -845,11 +721,11 @@ def start_nonbinance_trend_poller(
                     continue
                 if state == "HARD_TIMEOUT":
                     builtins.print(
-                        f"[NB-trend] {s}: REST hard-timeout >{eff_hard_timeout:.1f}s -- resetting slot"
+                        f"[venue-price] {s}: REST hard-timeout >{eff_hard_timeout:.1f}s -- resetting slot"
                     )
                 elif state == "DONE_ERR":
                     delay_s = _record_poll_error_backoff(s, res_val, now_mono_val=now_mono)
-                    builtins.print(f"[NB-trend] {s}: {res_val} (backoff {delay_s:.1f}s)")
+                    builtins.print(f"[venue-price] {s}: {res_val} (backoff {delay_s:.1f}s)")
                     continue
                 elif state == "DONE_OK" and slot is not None:
                     if _was_ws_fresh_or_preempted(s, slot.submit_wall_ts, now_ts):
@@ -946,9 +822,9 @@ def start_nonbinance_trend_poller(
                     wait_s = min(wait_s, max(0.005, due_at - now_after))
             wake_event.wait(timeout=wait_s)
 
-    t = threading.Thread(target=run, name="NonBinanceTrendPoller", daemon=True)
+    t = threading.Thread(target=run, name="VenuePricePoller", daemon=True)
     t.start()
-    return NonBinanceTrendPoller(
+    return VenuePricePoller(
         t,
         pool,
         stop_event,
@@ -958,6 +834,3 @@ def start_nonbinance_trend_poller(
         wake_event=wake_event,
         slot_tracker=slot_tracker,
     )
-
-
-_start_nonbinance_trend_poller = start_nonbinance_trend_poller

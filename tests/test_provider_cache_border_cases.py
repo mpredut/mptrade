@@ -260,9 +260,9 @@ from providers.order_ohlc_utils import (
 )
 from providers.price_poller import (
     KrakenPriceStream,
-    NonBinanceTrendPoller,
+    VenuePricePoller,
     fetch_price_with_deadline,
-    start_nonbinance_trend_poller,
+    start_venue_price_poller,
 )
 from providers.quantity import (
     BinanceFilterError,
@@ -4571,7 +4571,7 @@ def test_wave26_post_only_ssot_tick_fanout_and_border_cases(monkeypatch, tmp_pat
 
 def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_path, monkeypatch):
     """Verify Wave 27 border cases across providers/price_poller, parse_nonneg_order_field, price_series_evaluator, T212 strategy/listing_watcher, notify_engine.server, tradeall, bapi_trades, and TrendSignificanceGuard."""
-    # 1. start_nonbinance_trend_poller rejects bare string / bool symbols and sanitizes string/NaN deadlines + string-false ws_health_fn
+    # 1. start_venue_price_poller rejects bare string / bool symbols and sanitizes string/NaN deadlines + string-false ws_health_fn
     pushed_prices = []
     stub_cpm = SimpleNamespace(
         market_api=SimpleNamespace(get_current_price=lambda symbol=None, provider_name=None: 44.25),
@@ -4582,11 +4582,11 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     )
     for bad_syms in ("XBTUSD", b"XBTUSD", True, 123):
         with pytest.raises(ValueError, match="iterable"):
-            start_nonbinance_trend_poller(stub_cpm, bad_syms, provider_names={"XBTUSD": "kraken"}, start_ws=False)
+            start_venue_price_poller(stub_cpm, bad_syms, provider_names={"XBTUSD": "kraken"}, start_ws=False)
     with pytest.raises(ValueError, match="explicit provider bindings"):
-        start_nonbinance_trend_poller(stub_cpm, [True], provider_names={"TRUE": "kraken"}, start_ws=False)
+        start_venue_price_poller(stub_cpm, [True], provider_names={"TRUE": "kraken"}, start_ws=False)
 
-    poller = start_nonbinance_trend_poller(
+    poller = start_venue_price_poller(
         stub_cpm,
         ["XBTUSD"],
         interval_sec="0.05",
@@ -4602,7 +4602,7 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     finally:
         poller.stop(timeout=0.5)
 
-    # 2. NonBinanceTrendPoller.stop(timeout=0.0) passes 0.0 to attached WS streams instead of forcing 0.05s
+    # 2. VenuePricePoller.stop(timeout=0.0) passes 0.0 to attached WS streams instead of forcing 0.05s
     ws_stop_timeouts = []
     dummy_ws = SimpleNamespace(
         request_stop=lambda: None,
@@ -4610,7 +4610,7 @@ def test_wave27_price_poller_deadlines_canonical_imports_and_border_cases(tmp_pa
     )
     dummy_pool = SimpleNamespace(shutdown=lambda **kw: None, _threads=())
     dummy_thread = SimpleNamespace(join=lambda timeout=None: None, is_alive=lambda: False)
-    nb_poller = NonBinanceTrendPoller(dummy_thread, dummy_pool, threading.Event(), ws_streams=[dummy_ws])
+    nb_poller = VenuePricePoller(dummy_thread, dummy_pool, threading.Event(), ws_streams=[dummy_ws])
     assert nb_poller.stop(timeout=0.0) is True
     assert ws_stop_timeouts == [0.0]
 
@@ -7294,9 +7294,9 @@ def test_wave41_broker_replay_ws_poller_exec_and_mt_accounting_border_cases(tmp_
 
     stub_cpm = SimpleNamespace(bind_providers=lambda _b: None)
     with pytest.raises(ValueError, match="iterable of symbol strings"):
-        start_nonbinance_trend_poller(stub_cpm, {"HYPEUSD": "kraken"}, provider_names={"HYPEUSD": "kraken"}, start_ws=False)
+        start_venue_price_poller(stub_cpm, {"HYPEUSD": "kraken"}, provider_names={"HYPEUSD": "kraken"}, start_ws=False)
     with pytest.raises(ValueError, match="explicit provider bindings"):
-        start_nonbinance_trend_poller(stub_cpm, ["null"], provider_names={"NULL": "kraken"}, start_ws=False)
+        start_venue_price_poller(stub_cpm, ["null"], provider_names={"NULL": "kraken"}, start_ws=False)
 
     assert vwp_mod.VenueWsProtocolInterface._iter_symbol_items(["BTCUSDC", "null", True, "BTCUSDC"]) == ("BTCUSDC",)
     assert vwp_mod.KrakenWsLedgerMixin.match_configured_pair("null") is None
@@ -7851,14 +7851,14 @@ def test_wave44_providers_base_bridge_replay_poller_metadata_ws_and_market_api_b
     assert rp.place_order("BTCUSDC", "BUY", 50.0, 1.0, kind="null") is not None
     assert "kind" not in rp.get_orders("BTCUSDC", "BUY", 3600.0)[0]
 
-    # 4. providers/price_poller: start_nonbinance_trend_poller rejects non-mapping provider_names and "null"/boolean bindings.
+    # 4. providers/price_poller: start_venue_price_poller rejects non-mapping provider_names and "null"/boolean bindings.
     fake_cpm = SimpleNamespace(bind_providers=lambda _b: None)
     with pytest.raises(ValueError, match="provider_names must be a mapping"):
-        start_nonbinance_trend_poller(fake_cpm, ["HYPEUSD"], provider_names=["kraken"])  # type: ignore[arg-type]
+        start_venue_price_poller(fake_cpm, ["HYPEUSD"], provider_names=["kraken"])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="explicit provider bindings are required"):
-        start_nonbinance_trend_poller(fake_cpm, ["HYPEUSD"], provider_names={"HYPEUSD": "null"})
+        start_venue_price_poller(fake_cpm, ["HYPEUSD"], provider_names={"HYPEUSD": "null"})
     with pytest.raises(ValueError, match="explicit provider bindings are required"):
-        start_nonbinance_trend_poller(fake_cpm, [123], provider_names={"123": "kraken"})  # type: ignore[list-item]
+        start_venue_price_poller(fake_cpm, [123], provider_names={"123": "kraken"})  # type: ignore[list-item]
 
     k_stream = KrakenPriceStream(["HYPEUSD"], ws_url="null")
     assert k_stream.ws_url == KrakenProvider.PUBLIC_WS_URL
