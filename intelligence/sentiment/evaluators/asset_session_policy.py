@@ -80,11 +80,7 @@ class AssetTelemetryCapabilities:
         """Return whether ``d_whale_long`` in ``cycle_delta`` represents real positioning movement."""
         if self.has_crypto_perpetuals:
             return True
-        if self.uses_cboe_options_oi:
-            if "oi_usd" in minfo:
-                return (safe_float(minfo.get("oi_usd"), 0.0) or 0.0) > 0.0
-            return bool(has_flow)
-        return False
+        return bool(has_flow and self.has_live_options_oi(minfo))
 
     def resolve_deriv_display_mode(self, minfo: Dict[str, Any]) -> str:
         """Return canonical Section 3B derivatives display mode: ``crypto_perp``, ``cboe_options``, or ``none``."""

@@ -17911,7 +17911,8 @@ def test_stages_1_to_3_ssot_capabilities_windows_and_prompt_view_normalization()
     assert not eq_caps.allow_whale_long_display({"oi_usd": 0.0})
     assert eq_caps.allow_whale_long_display({"oi_usd": 500_000.0})
     assert not eq_caps.allow_whale_long_delta_display({"oi_usd": 0.0}, has_flow=True)
-    assert eq_caps.allow_whale_long_delta_display({}, has_flow=True)
+    assert not eq_caps.allow_whale_long_delta_display({}, has_flow=True)
+    assert eq_caps.allow_whale_long_delta_display({"oi_usd": 500_000.0}, has_flow=True)
     assert not eq_caps.allow_whale_long_delta_display({}, has_flow=False)
     assert eq_caps.resolve_deriv_display_mode({"oi_usd": 0.0}) == "none"
     assert eq_caps.resolve_deriv_display_mode({"oi_usd": 1_000_000.0}) == "cboe_options"
@@ -19451,6 +19452,140 @@ def test_cycle33_equity_ob_5d_gap_fallback_stale_pretrade_slopes_and_advice_news
     assert is_excluded_reference_news_item(
         "President Trump Says 'Huang Is Happy to Return as Nvidia CEO'"
     ) is False
+
+
+def test_cycle34_peak_px_24h_tail_persistence_and_equity_d_whale_long_gate(tmp_path):
+    """Cycle 34 live US RTH PROD audit fixes:
+    1. scan_cached_price_archive_high_since scans past 256 KB (>300 KB) of cache_24_price_<SYM>.jsonl
+       so >4h-old intraday peaks (e.g. ARBUSDC 0.1189 at 11:13:35) never roll out and regress peak_px.
+    2. _resolve_effective_trailing_raw_peak preserves a higher persisted trailing_peak on an unchanged
+       open position even outside daemon warmup, while resetting when flat or position qty changed.
+    3. harvest_recent_orders_and_enrich_positions(..., persist=True) persists healed trailing_peak into
+       portfolio_positions_state.json so peaks survive >24h cache rolloff.
+    4. AssetTelemetryCapabilities.allow_whale_long_delta_display suppresses d_whale_long on RTH equities
+       when Cboe options OI is absent/zero (matching allow_whale_long_display).
+    """
+    from cacheprice import Cache24PriceManager
+    from intelligence.macro_sentiment_ssot import scan_cached_price_archive_high_since
+    from intelligence.sentiment.collectors.portfolio_collector import (
+        _resolve_effective_trailing_raw_peak,
+        harvest_recent_orders_and_enrich_positions,
+    )
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+    from providers.portfolio_state_store import resolve_portfolio_positions_state_path
+    from state_io import read_json_dict, save_json_state
+
+    # 1. >300 KB cache_24_price_ARBUSDC.jsonl retains earlier 0.1189 peak beyond the old 256 KB tail cap
+    cdir = tmp_path / "cachedb_c34"
+    (cdir / "prices").mkdir(parents=True, exist_ok=True)
+    now_ms = int(time.time() * 1000)
+    entry_ts_ms = now_ms - 5 * 3600_000
+    peak_ts_ms = entry_ts_ms + 45 * 60_000
+    j_path = cdir / "prices" / Cache24PriceManager.disk_filename_for_symbol("ARBUSDC")
+    rows = [json.dumps({"s": "ARBUSDC", "i": [peak_ts_ms, 0.1189]})]
+    # Append >300 KB of subsequent lower 0.1185 ticks (~40 bytes each -> 8500 lines ~340 KB)
+    rows.extend(
+        json.dumps({"s": "ARBUSDC", "i": [peak_ts_ms + (k + 1) * 1000, 0.1185]})
+        for k in range(8500)
+    )
+    j_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    assert j_path.stat().st_size > 300 * 1024
+    hi = scan_cached_price_archive_high_since(str(cdir), ("ARBUSDC",), entry_ts_ms)
+    assert hi == pytest.approx(0.1189)
+
+    # 2. _resolve_effective_trailing_raw_peak monotonic on unchanged open qty even when not warming up
+    t_running = {"peak": 0.1188, "is_flat": False}
+    prev_pos = {"free_base": 10163.245, "locked_base_qty": 0.0, "trailing_peak": 0.1189}
+    assert _resolve_effective_trailing_raw_peak(
+        t_running, prev_pos, px_f=0.1181, min_notional=5.0, cur_held=10163.245
+    ) == pytest.approx(0.1189)
+    # New position with different qty resets cleanly to daemon peak
+    assert _resolve_effective_trailing_raw_peak(
+        t_running, prev_pos, px_f=0.1181, min_notional=5.0, cur_held=5000.0
+    ) == pytest.approx(0.1188)
+    # Flat daemon state resets cleanly to daemon peak
+    assert _resolve_effective_trailing_raw_peak(
+        {"peak": 0.1180, "is_flat": True}, prev_pos, px_f=0.1181, min_notional=5.0, cur_held=10163.245
+    ) == pytest.approx(0.1180)
+
+    # 3. harvest_recent_orders_and_enrich_positions(..., persist=True) persists healed trailing_peak
+    pos_state_path = resolve_portfolio_positions_state_path(str(cdir))
+    save_json_state(
+        pos_state_path,
+        {
+            "pos:binance:ARBUSDC": {
+                "venue": "binance",
+                "symbol": "ARBUSDC",
+                "free_base": 10163.245,
+                "price": 0.1181,
+                "trailing_peak": 0.1188,
+            },
+            "pos:binance:BTCUSDC": {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "free_base": 0.02,
+                "price": 60000.0,
+                "trailing_peak": 62000.0,
+            },
+        },
+    )
+    (cdir / "orders").mkdir(parents=True, exist_ok=True)
+    save_json_state(
+        str(cdir / "orders" / "cache_order_filled_binance.json"),
+        {
+            "items": {
+                "ARBUSDC": [
+                    {
+                        "orderId": "arb-buy-1",
+                        "symbol": "ARBUSDC",
+                        "side": "BUY",
+                        "status": "FILLED",
+                        "executedQty": "10163.245",
+                        "price": "0.1181",
+                        "updateTime": entry_ts_ms,
+                    }
+                ]
+            }
+        },
+    )
+    tpos = [
+        {
+            "venue": "binance",
+            "symbol": "ARBUSDC",
+            "base": "ARB",
+            "quote": "USDC",
+            "price": 0.1181,
+            "free_base": 10163.245,
+            "trailing_peak": 0.1188,
+            "dd_from_peak_pct": -0.59,
+        }
+    ]
+    harvest_recent_orders_and_enrich_positions(
+        str(cdir),
+        {},
+        tpos,
+        {"ARBUSDC": {"price": 0.1181}},
+        {},
+        {},
+        {},
+        allow_network=False,
+        persist=True,
+        now_ts=now_ms / 1000.0,
+    )
+    assert tpos[0]["trailing_peak"] == pytest.approx(0.1189)
+    persisted = read_json_dict(pos_state_path)
+    assert persisted["pos:binance:ARBUSDC"]["trailing_peak"] == pytest.approx(0.1189)
+    assert persisted["pos:binance:BTCUSDC"]["trailing_peak"] == pytest.approx(62000.0)
+
+    # 4. Equity d_whale_long suppressed whenever Cboe options OI is absent/zero; enabled when oi_usd > 0 or crypto
+    eq_caps = resolve_asset_session_policy("NVDA_US_EQ").telemetry_capabilities
+    cr_caps = resolve_asset_session_policy("BTCUSDC").telemetry_capabilities
+    assert not eq_caps.allow_whale_long_delta_display({}, has_flow=True)
+    assert not eq_caps.allow_whale_long_delta_display({"oi_usd": 0.0}, has_flow=True)
+    assert eq_caps.allow_whale_long_delta_display({"oi_usd": 1_000_000.0}, has_flow=True)
+    assert not eq_caps.allow_whale_long_delta_display({"oi_usd": 1_000_000.0}, has_flow=False)
+    assert cr_caps.allow_whale_long_delta_display({}, has_flow=True)
+
 
 
 

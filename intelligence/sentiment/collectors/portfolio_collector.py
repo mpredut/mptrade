@@ -685,15 +685,14 @@ def _resolve_effective_trailing_raw_peak(
     *,
     px_f: float = 0.0,
     min_notional: float = 1.0,
+    cur_held: Optional[float] = None,
 ) -> Optional[float]:
-    """Resolve raw trailing peak without allowing a warmup-frozen daemon peak to regress a persisted position peak."""
+    """Resolve raw trailing peak without allowing warmup or lagging daemon peaks to regress a persisted open-position peak."""
     t_dict = t_state if isinstance(t_state, dict) else {}
     t_peak = safe_pos_float(t_dict.get("peak"), default=None)
-    is_warming_up = (
-        safe_pos_float(t_dict.get("warmup_at"), default=None) is not None
-        and not _parse_bool_flag(t_dict.get("is_flat"), default=False)
-    )
-    if is_warming_up and isinstance(prev_cached_pos, dict):
+    t_is_flat = _parse_bool_flag(t_dict.get("is_flat"), default=False)
+    is_warming_up = safe_pos_float(t_dict.get("warmup_at"), default=None) is not None and not t_is_flat
+    if not t_is_flat and isinstance(prev_cached_pos, dict):
         prev_pk = safe_pos_float(prev_cached_pos.get("trailing_peak"), default=None)
         if prev_pk is not None:
             prev_fb = safe_nonneg_float(
@@ -704,7 +703,16 @@ def _resolve_effective_trailing_raw_peak(
             ) or 0.0
             prev_lb = safe_nonneg_float(prev_cached_pos.get("locked_base_qty"), default=0.0) or 0.0
             prev_held = prev_fb + prev_lb
-            if prev_held > 1e-8 and (px_f <= 0.0 or prev_held * px_f >= max(1.0, min_notional)):
+            cur_held_f = safe_nonneg_float(cur_held, default=None)
+            same_open_qty = bool(
+                cur_held_f is not None
+                and prev_held > 1e-8
+                and (
+                    abs(cur_held_f - prev_held) <= max(1e-6, prev_held * 1e-3)
+                    or (prev_fb > 1e-8 and abs(cur_held_f - prev_fb) <= max(1e-6, prev_fb * 1e-3))
+                )
+            )
+            if (is_warming_up or same_open_qty) and prev_held > 1e-8 and (px_f <= 0.0 or prev_held * px_f >= max(1.0, min_notional)):
                 return max(t_peak or 0.0, prev_pk)
     return t_peak
 
@@ -2061,8 +2069,10 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                             1.0,
                             first_pos_float(rec_pos.get("exchange_min_notional_usd"), rec_pos.get("min_notional_usd"), default=1.0) or 1.0,
                         )
+                        rec_lb = safe_nonneg_float(rec_pos.get("locked_base_qty"), default=0.0) or 0.0
+                        rec_held_pk = ((fb_val or 0.0) + rec_lb) if fb_val is not None else None
                         rec_peak = _resolve_effective_trailing_raw_peak(
-                            t_dict, rec_pos, px_f=px_rec, min_notional=rec_min_not_pk
+                            t_dict, rec_pos, px_f=px_rec, min_notional=rec_min_not_pk, cur_held=rec_held_pk
                         )
                 _attach_trailing_peak_to_position(
                     rec_pos, v_rec_norm, p_sym, px_rec, fb_val, rec_peak, pending_peaks_by_vs,
@@ -2392,7 +2402,7 @@ class TradablePositionsAndOrdersCollector(PortfolioCacheCollectorBase):
                 first_pos_float(pos_entry.get("exchange_min_notional_usd"), pos_entry.get("min_notional_usd"), default=1.0) or 1.0,
             )
             eff_raw_peak = _resolve_effective_trailing_raw_peak(
-                t_state, prev_cached_pos, px_f=px_f, min_notional=pos_min_not_pk
+                t_state, prev_cached_pos, px_f=px_f, min_notional=pos_min_not_pk, cur_held=base_free
             )
             _attach_trailing_peak_to_position(
                 pos_entry, v_norm, sym, px_f, base_free, eff_raw_peak, pending_peaks_by_vs
@@ -2919,6 +2929,7 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
         gateway_min_usd: float = 0.0,
         ai_intents: Optional[List[Dict[str, Any]]] = None,
         allow_network: bool = True,
+        persist: bool = False,
         now_ts: Optional[float] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
@@ -3160,6 +3171,35 @@ class RecentOrdersAndPositionEnricherCollector(PortfolioCacheCollectorBase):
             archive_high_resolver=_archive_high_fn,
             fee_spec_resolver=_fee_spec_fn,
         )
+        if persist and cache_dir:
+            peak_updates: Dict[str, Any] = {}
+            for pos_it, pv_u, ps_u in _iter_valid_tradable_positions(tradable_positions):
+                healed_pk = safe_pos_float(pos_it.get("trailing_peak"), default=None)
+                if healed_pk is None:
+                    continue
+                p_raw = str(pos_it.get("symbol") or "").strip()
+                pk_key = f"pos:{pv_u}:{p_raw}" if f"pos:{pv_u}:{p_raw}" in cached_bals_ro else f"pos:{pv_u}:{ps_u}"
+                prev_ent = cached_bals_ro.get(pk_key) if isinstance(cached_bals_ro, dict) else None
+                if not isinstance(prev_ent, dict):
+                    continue
+                prev_pk_ro = safe_pos_float(prev_ent.get("trailing_peak"), default=0.0) or 0.0
+                if healed_pk > prev_pk_ro + 1e-9:
+                    upd_ent = dict(prev_ent)
+                    upd_ent["trailing_peak"] = round(healed_pk, 6)
+                    if pos_it.get("dd_from_peak_pct") is not None:
+                        upd_ent["dd_from_peak_pct"] = pos_it["dd_from_peak_pct"]
+                    peak_updates[pk_key] = upd_ent
+            if peak_updates:
+                try:
+                    upsert_portfolio_positions_snapshot(
+                        resolve_portfolio_positions_state_path(cache_dir),
+                        peak_updates,
+                        fallback_state=cached_bals_ro,
+                        read_disk=True,
+                        save_fn=resolve_save_json_state(local_fn=save_json_state),
+                    )
+                except Exception:
+                    pass
         for ro_val in recent_orders.values():
             if isinstance(ro_val, dict):
                 ro_val.pop("_lifo_sell_matches", None)
@@ -3421,6 +3461,7 @@ def harvest_recent_orders_and_enrich_positions(
     gateway_min_usd: float = 0.0,
     ai_intents: Optional[List[Dict[str, Any]]] = None,
     allow_network: bool = True,
+    persist: bool = False,
     now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Load recent fills across Binance, Kraken, Hyperliquid, and T212 and enrich tradable_positions with cost-basis anchors."""
@@ -3439,6 +3480,7 @@ def harvest_recent_orders_and_enrich_positions(
         gateway_min_usd=gateway_min_usd,
         ai_intents=ai_intents,
         allow_network=allow_network,
+        persist=persist,
         now_ts=now_ts,
     )
 

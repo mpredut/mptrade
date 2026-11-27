@@ -1725,9 +1725,9 @@ def scan_cached_price_archive_high_since(
             except Exception:
                 pass
         for mgr_cls, max_b in (
-            (Cache24PriceManager, 256 * 1024),
-            (Cache365PriceManager, 512 * 1024),
-            (CacheSparsePriceManager, 512 * 1024),
+            (Cache24PriceManager, 4 * 1024 * 1024),
+            (Cache365PriceManager, 1024 * 1024),
+            (CacheSparsePriceManager, 2 * 1024 * 1024),
         ):
             arch_path = str(resolve_cachedb_filepath(os.path.join(cache_dir, mgr_cls.disk_filename_for_symbol(cand))))
             if not os.path.exists(arch_path):
