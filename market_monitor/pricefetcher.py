@@ -207,13 +207,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             raw_items = data.get("items")
             items_map = raw_items if isinstance(raw_items, dict) else {}
             ret_days = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
+            now_meta_s = time.time()
             recovered_symbols = [
                 symbol
                 for symbol, added_time in self.symbol_added_time.items()
                 if (
                     casefold_get(items_map, symbol) is not None
                     and (at_val := safe_pos_float(added_time, default=None)) is not None
-                    and time.time() - at_val <= ret_days * 24 * 3600
+                    and -60.0 <= (now_meta_s - at_val) <= ret_days * 24 * 3600
                 )
             ]
             for symbol in list(dict.fromkeys(recovered_symbols)):
@@ -414,7 +415,9 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             ret_f = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
         elif not isinstance(retention_days, (int, float)) or isinstance(retention_days, bool) or (ret_f := safe_pos_float(retention_days, default=None)) is None:
             return
-        cutoff_timestamp = (time.time() - ret_f * 24 * 3600) * 1000
+        now_s = time.time()
+        cutoff_timestamp = (now_s - ret_f * 24 * 3600) * 1000.0
+        max_valid_timestamp = (now_s + 60.0) * 1000.0
         with self.lock:
             removed_count = 0
             trimmed_count = 0
@@ -429,7 +432,7 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
                     for entry in raw_bucket
                     if isinstance(entry, (list, tuple))
                     and len(entry) >= 2
-                    and self._entry_timestamp_ms(entry) >= cutoff_timestamp
+                    and cutoff_timestamp <= self._entry_timestamp_ms(entry) <= max_valid_timestamp
                 ]
                 removed = original_count - len(self.cache[symbol])
                 if removed > 0:
@@ -462,12 +465,14 @@ class CacheAllPriceFetcherManager(CachePriceManagerBase):
             age_f = safe_pos_float(getattr(self, "retention_days", None), default=PRICE_HISTORY_RETENTION_DAYS)
         elif not isinstance(max_age_days, (int, float)) or isinstance(max_age_days, bool) or (age_f := safe_pos_float(max_age_days, default=None)) is None:
             return []
-        cutoff_time = time.time() - age_f * 24 * 3600
+        now_s = time.time()
+        cutoff_time = now_s - age_f * 24 * 3600
+        max_valid_time = now_s + 60.0
         removed_symbols = []
         with self.lock:
             for symbol, added_time in list(self.symbol_added_time.items()):
                 at_val = safe_pos_float(added_time, default=None) if isinstance(added_time, (int, float)) else None
-                if at_val is None or at_val < cutoff_time:
+                if at_val is None or at_val < cutoff_time or at_val > max_valid_time:
                     removed_symbols.append(symbol)
         for symbol in removed_symbols:
             self.remove_symbol(symbol, reason=f"(older than {age_f:g} days)")

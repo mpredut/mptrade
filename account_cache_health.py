@@ -243,6 +243,19 @@ def _ensure_venue_entry_locked(venue: str) -> dict:
     return v_entry
 
 
+def _advance_sync_timestamp_ms(
+    prev_ms: int,
+    timestamp_ms: int,
+    pub_now_ms: int,
+    *,
+    rollback_tolerance_ms: int = 5_000,
+) -> int:
+    """Advance sync/publication timestamp monotonically while healing wall-clock rollbacks."""
+    if prev_ms > pub_now_ms + rollback_tolerance_ms and abs(timestamp_ms - pub_now_ms) <= rollback_tolerance_ms:
+        return timestamp_ms
+    return max(prev_ms, timestamp_ms)
+
+
 def _record_cache_version(
     cache_name: str,
     data_version: str,
@@ -262,23 +275,24 @@ def _record_cache_version(
     with _writer_lock:
         if not _writer_enabled:
             return False
+        pub_now_ms = resolve_now_ms()
         prev_pub = exact_pos_int(_writer_state.get("published_at_ms"), default=0) or 0
         if do_sync:
             prev_sync = exact_pos_int(_writer_state.get(sync_field), default=0) or 0
-            eff_sync_ms = max(prev_sync, timestamp)
+            eff_sync_ms = _advance_sync_timestamp_ms(prev_sync, timestamp, pub_now_ms)
             _writer_state[sync_field] = eff_sync_ms
             # Publication time describes this atomic write, while the conservative
-            # synchronization timestamp remains the monotonic high-water mark.
-            _writer_state["published_at_ms"] = max(prev_pub, resolve_now_ms())
+            # synchronization timestamp remains monotonic unless the wall clock rolled back.
+            _writer_state["published_at_ms"] = _advance_sync_timestamp_ms(prev_pub, pub_now_ms, pub_now_ms)
         else:
-            _writer_state["published_at_ms"] = max(prev_pub, timestamp)
+            _writer_state["published_at_ms"] = _advance_sync_timestamp_ms(prev_pub, timestamp, pub_now_ms)
         _writer_state[version_field] = version
         if binance_stream:
             v_entry = _ensure_venue_entry_locked("binance")
             if do_sync:
                 v_sync_key = f"{binance_stream}_sync_at_ms"
                 prev_v_sync = exact_pos_int(v_entry.get(v_sync_key), default=0) or 0
-                v_entry[v_sync_key] = max(prev_v_sync, timestamp)
+                v_entry[v_sync_key] = _advance_sync_timestamp_ms(prev_v_sync, timestamp, pub_now_ms)
             v_entry[f"{binance_stream}_version"] = version
         return _publish_locked()
 
@@ -316,12 +330,13 @@ def record_venue_sync(
     with _writer_lock:
         if not _writer_enabled:
             return False
+        pub_now_ms = resolve_now_ms()
         v_entry = _ensure_venue_entry_locked(v_norm)
         prev_ms = exact_pos_int(v_entry.get(sync_key), default=0) or 0
-        v_entry[sync_key] = max(prev_ms, timestamp)
+        v_entry[sync_key] = _advance_sync_timestamp_ms(prev_ms, timestamp, pub_now_ms)
         if version:
             v_entry[ver_key] = version
-        _writer_state["published_at_ms"] = resolve_now_ms()
+        _writer_state["published_at_ms"] = pub_now_ms
         return _publish_locked()
 
 

@@ -1248,7 +1248,8 @@ def _upsert_capped_event(events: List[str], sig_to_idx: Dict[str, int], sig: str
 
 def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float) -> LogEventSummary:
     """Parse recent log files across ``logs_dirs`` for errors, persistent unresolved exceptions, and guard vetoes."""
-    cutoff_ts = time.time() - (lookback_hours * 3600.0)
+    now_harvest = time.time()
+    cutoff_ts = now_harvest - (lookback_hours * 3600.0)
     critical_events: List[str] = []
     guard_interventions: List[str] = []
     persistent_errors: List[Dict[str, Any]] = []
@@ -1272,10 +1273,11 @@ def harvest_log_anomalies_from_dirs(logs_dirs: List[str], lookback_hours: float)
                     mtime = os.path.getmtime(fpath)
                     if mtime < cutoff_ts:
                         continue
+                    eff_mtime = now_harvest if mtime > now_harvest + 60.0 else mtime
                     scanned_count += 1
                     lines = recent_log_lines(
                         read_text_lines(fpath, keepends=True, errors="replace")[-1000:],
-                        mtime,
+                        eff_mtime,
                         cutoff_ts,
                     )
                     total_lines = len(lines)

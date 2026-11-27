@@ -1024,6 +1024,85 @@ def test_pass22_balance_snapshot_heals_future_verified_and_asset_ts_crosscheck_c
     assert not any(v.rule == "balance_verified_ts_future" for v in viols_after)
 
 
+def test_pass27_account_cache_health_heals_ntp_clock_rollback_and_preserves_out_of_order_monotonicity(
+    tmp_path, monkeypatch
+):
+    """Pass 27 invariant + cross-check: NTP backward clock jump heals on next live sync while out-of-order threads stay monotonic."""
+    marker = str(tmp_path / "cache_account_health_rollback.json")
+    t_initial = 1_800_000_200_000
+    t_rollback = t_initial - 120_000
+    started_ms = t_rollback - 10_000
+    clock_ms = [t_initial]
+
+    # 1. Pure invariants on _advance_sync_timestamp_ms
+    assert health._advance_sync_timestamp_ms(t_initial, t_initial - 30_000, t_initial) == t_initial
+    assert health._advance_sync_timestamp_ms(t_initial, t_rollback, t_rollback) == t_rollback
+
+    # 2. Dependent cross-check through writer + inspect_health / inspect_venue_health
+    monkeypatch.setattr(health, "resolve_now_ms", lambda v=None: clock_ms[0] if v is None else int(v))
+    health.disable_writer()
+    with patch.object(health, "_pid_started_at_ms", return_value=started_ms):
+        health.enable_writer(path=marker, pid=5555, now_ms=t_initial)
+    try:
+        assert health.record_successful_sync("BinanceOrderFilled", "ord-v1")
+        assert health.record_venue_sync("kraken", "balances")
+
+        # Simulate 120s NTP backward step: before a fresh sync, readers fail closed on future timestamp.
+        clock_ms[0] = t_rollback
+        bn_before = health.inspect_health(
+            path=marker,
+            max_age_sec=60,
+            pid_is_alive=lambda _p: True,
+            pid_started_at_ms=lambda _p: started_ms,
+        )
+        kr_before = health.inspect_venue_health(
+            "kraken",
+            path=marker,
+            max_age_sec=60,
+            required_streams=("balances",),
+            pid_is_alive=lambda _p: True,
+            pid_started_at_ms=lambda _p: started_ms,
+        )
+        assert bn_before.ready is False and bn_before.reason == "account_cache_timestamp_in_future"
+        assert kr_before.ready is False and kr_before.reason == "account_cache_timestamp_in_future"
+
+        # Fresh live sync after NTP rollback heals sync timestamps immediately instead of staying stuck for 120s.
+        assert health.record_successful_sync("BinanceOrderFilled", "ord-v2")
+        assert health.record_venue_sync("kraken", "balances")
+
+        bn_after = health.inspect_health(
+            path=marker,
+            max_age_sec=60,
+            pid_is_alive=lambda _p: True,
+            pid_started_at_ms=lambda _p: started_ms,
+        )
+        kr_after = health.inspect_venue_health(
+            "kraken",
+            path=marker,
+            max_age_sec=60,
+            required_streams=("balances",),
+            pid_is_alive=lambda _p: True,
+            pid_started_at_ms=lambda _p: started_ms,
+        )
+        assert bn_after.ready is True and bn_after.order_age_sec == pytest.approx(0.0)
+        assert kr_after.ready is True and kr_after.balances_age_sec == pytest.approx(0.0)
+
+        # Out-of-order older sync arriving at current clock still preserves monotonic high-water mark.
+        assert health.record_venue_sync("kraken", "balances", now_ms=t_rollback - 45_000)
+        kr_mono = health.inspect_venue_health(
+            "kraken",
+            path=marker,
+            max_age_sec=60,
+            required_streams=("balances",),
+            pid_is_alive=lambda _p: True,
+            pid_started_at_ms=lambda _p: started_ms,
+        )
+        assert kr_mono.ready is True and kr_mono.balances_age_sec == pytest.approx(0.0)
+    finally:
+        health.disable_writer()
+
+
+
 
 
 

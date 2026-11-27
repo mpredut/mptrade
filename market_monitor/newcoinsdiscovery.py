@@ -92,12 +92,14 @@ def _filter_recent_coins(items: list, days_back: object, *, utc: bool = False) -
     if not items:
         return []
     eff_days = _safe_days_back(days_back)
-    cutoff_date = (datetime.now(timezone.utc) if utc else datetime.now()) - timedelta(days=eff_days)
+    now_dt = datetime.now(timezone.utc) if utc else datetime.now()
+    cutoff_date = now_dt - timedelta(days=eff_days)
+    max_valid_dt = now_dt + timedelta(minutes=1)
     return [
         item for item in items
         if isinstance(item, dict)
         and (added_at := _parse_coin_added_at(item.get("added_at"), utc=utc)) is not None
-        and added_at >= cutoff_date
+        and cutoff_date <= added_at <= max_valid_dt
     ]
 
 
@@ -763,8 +765,8 @@ class NewCoinsMonitor:
         ts_val = normalize_epoch_sec(added_time, default=None)
         if ts_val is None or ts_val <= 0.0:
             return True
-        age_days = (time.time() - ts_val) / (24 * 3600)
-        return age_days <= NEW_COIN_CLEANUP_MAX_AGE_DAYS
+        elapsed_s = time.time() - ts_val
+        return -60.0 <= elapsed_s <= NEW_COIN_CLEANUP_MAX_AGE_DAYS * 86400.0
 
     def cleanup_old_new_coins(self):
         if not self.price_monitor:

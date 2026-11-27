@@ -1884,6 +1884,93 @@ def test_pass20_os_notify_pia_common_and_wait_for_vpn_future_ts_and_monotonic_in
     assert curl_hits.read_text(encoding="utf-8").splitlines() == ["HIT"]
 
 
+def test_pass27_shell_rollback_gap_clamp_and_log_harvest_future_mtime_crosscheck(tmp_path):
+    """Pass 27 invariant + cross-check: deadman_switch/vpn_watchdog never emit negative rollback gaps and log harvester bounds far-future file mtimes."""
+    import shutil
+    from datetime import datetime, timedelta
+    from pathlib import Path
+    from orchestratorOS.lib.technical_repair_ssot import harvest_log_anomalies_from_dirs
+
+    # 1. Shell syntax + deadman_switch.sh negative-gap protection when .deadman_last_beat is in the future
+    deadman_src = os.path.join(ROOT, "orchestratorOS", "livecheck", "deadman_switch.sh")
+    vpn_wd_src = os.path.join(ROOT, "orchestratorOS", "livecheck", "vpn_watchdog.sh")
+    for sc in (deadman_src, vpn_wd_src):
+        r = subprocess.run(["bash", "-n", sc], capture_output=True, text=True, check=False)
+        assert r.returncode == 0, r.stderr
+
+    fake_root = tmp_path / "dm_repo"
+    (fake_root / "orchestratorOS" / "livecheck").mkdir(parents=True)
+    (fake_root / "orchestratorOS" / "lib").mkdir(parents=True)
+    (fake_root / "logs").mkdir(parents=True)
+    (fake_root / "config.env").write_text("NTFY_TOPIC_SERVER=ntfy-srv-p27\nNTFY_TOPIC_ERROR=ntfy-err-p27\n", encoding="utf-8")
+    (fake_root / "procs.conf").write_text("", encoding="utf-8")
+    shutil.copy2(deadman_src, fake_root / "orchestratorOS" / "livecheck" / "deadman_switch.sh")
+    shutil.copy2(os.path.join(ROOT, "orchestratorOS", "lib", "os_notify.sh"), fake_root / "orchestratorOS" / "lib" / "os_notify.sh")
+    shutil.copy2(os.path.join(ROOT, "orchestratorOS", "lib", "env_common.sh"), fake_root / "orchestratorOS" / "lib" / "env_common.sh")
+
+    fake_bin = tmp_path / "dm_bin"
+    fake_bin.mkdir()
+    curl_log = tmp_path / "dm_curl.log"
+    _write_bash_stub(
+        fake_bin,
+        "curl",
+        f'printf "%s\\n" "$*" >> "{curl_log}"\nprintf "200"\nexit 0',
+    )
+    boot_id_file = tmp_path / "boot_id"
+    boot_id_file.write_text("boot-new-p27\n", encoding="utf-8")
+    (fake_root / "logs" / ".deadman_last_boot_id").write_text("boot-old-p27\n", encoding="utf-8")
+    (fake_root / "logs" / ".deadman_last_beat").write_text(f"{int(time.time()) + 3600}\n", encoding="utf-8")
+
+    r_dm = subprocess.run(
+        ["bash", str(fake_root / "orchestratorOS" / "livecheck" / "deadman_switch.sh")],
+        env={
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "REPO_ROOT": str(fake_root),
+            "ROOT": str(fake_root),
+            "DEADMAN_BOOT_ID_PATH": str(boot_id_file),
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+    assert "reboot detected" in r_dm.stdout
+    curl_lines = curl_log.read_text(encoding="utf-8").splitlines()
+    assert len(curl_lines) == 2
+    assert "gap -" not in curl_lines[1]
+
+    # Also verify vpn_watchdog.sh clamps negative outage durations on backward clock steps.
+    vpn_wd_text = Path(vpn_wd_src).read_text(encoding="utf-8")
+    assert vpn_wd_text.count('[ "$mins" -lt 0 ] && mins=0') >= 2
+
+    # 2. Pure invariant + cross-check on harvest_log_anomalies_from_dirs with corrupt far-future file mtime
+    logs_dir = tmp_path / "logs_future_mtime"
+    logs_dir.mkdir()
+    now_dt = datetime.now()
+    old_dt = now_dt - timedelta(hours=12)
+    old_full_line = f"{old_dt.strftime('%Y-%m-%d %H:%M:%S')} ERROR old_stale_failure_should_not_harvest\n"
+    old_clock_line = f"{old_dt.strftime('%H:%M:%S')} ERROR old_clock_failure_shifted_by_mtime\n"
+    fresh_line = f"{(now_dt - timedelta(minutes=2)).strftime('%Y-%m-%d %H:%M:%S')} ERROR fresh_real_failure\n"
+
+    # File A: only old clock-only error, poisoned with mtime 10 days in the future -> anchored to now_harvest, NOT 10d ahead
+    f_old = logs_dir / "bot_old_future_mtime.log"
+    f_old.write_text(old_full_line + old_clock_line, encoding="utf-8")
+    future_mtime = time.time() + 10 * 86400.0
+    os.utime(f_old, (future_mtime, future_mtime))
+
+    # File B: recent real error with poisoned future mtime -> still harvested accurately
+    f_fresh = logs_dir / "bot_fresh_future_mtime.log"
+    f_fresh.write_text(old_full_line + fresh_line, encoding="utf-8")
+    os.utime(f_fresh, (future_mtime, future_mtime))
+
+    summary = harvest_log_anomalies_from_dirs([str(logs_dir)], lookback_hours=1.0)
+    joined_events = "\n".join(summary.critical_events)
+    assert "fresh_real_failure" in joined_events
+    assert "old_stale_failure_should_not_harvest" not in joined_events
+    assert "old_clock_failure_shifted_by_mtime" not in joined_events
+
+
+
 
 
 

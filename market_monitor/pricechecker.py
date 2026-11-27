@@ -243,7 +243,9 @@ class PriceChecker:
         sample_sec = self._effective_sample_interval_sec()
         history_limit = max(1000, min(100_000, math.ceil((eff_hours * 3600.0) / sample_sec) + 120))
         history = self.cachePriceAll.get_price_history(symbol, limit=history_limit)
-        cutoff_time = (time.time() - eff_hours * 3600) * 1000
+        now_ms = time.time() * 1000.0
+        cutoff_time = now_ms - eff_hours * 3600.0 * 1000.0
+        max_valid_ms = now_ms + 60_000.0
 
         recent_history = []
         for entry in history or ():
@@ -255,7 +257,7 @@ class PriceChecker:
                 continue
             if timestamp < 10_000_000_000:
                 timestamp *= 1000
-            if timestamp >= cutoff_time:
+            if cutoff_time <= timestamp <= max_valid_ms:
                 recent_history.append((timestamp, price, entry.get("timestamp_readable")))
         if (
             recent_history

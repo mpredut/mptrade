@@ -1073,3 +1073,111 @@ def test_pricewatcher_heartbeat_liveness_and_pricefetcher_nonpos_fetchtime_sanit
     assert saved["rest_sync_cursor"] == {"BTC": save_ms}
     assert meta["rest_sync_cursor"] == {"BTC": save_ms}
 
+
+def test_pass27_market_monitor_rejects_far_future_prices_and_dynamic_coin_timestamps(tmp_path, monkeypatch):
+    """Pass 27 invariant + cross-check: market_monitor rejects far-future ticks/added_time across PriceChecker, PriceFetcher, and NewCoinsMonitor."""
+    import json
+    import pytest
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    from market_monitor import newcoinsdiscovery as ncd
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    # 1. Pure invariant + cross-check on PriceChecker: far-future outlier tick cannot poison 24h max/min or fire false drop alert.
+    fake_cache = SimpleNamespace(
+        original_symbols=["BTC"],
+        sync_interval_sec=60,
+        symbol_added_time={},
+        get_latest_price=lambda _sym: 100.0,
+        get_price_history=lambda _sym, limit=1000: [
+            {"timestamp": now_ms - 120_000, "price": 99.0},
+            {"timestamp": now_ms - 60_000, "price": 100.0},
+            {"timestamp": now_ms + 3_600_000, "price": 500.0},  # corrupt far-future spike
+        ],
+    )
+    pc = PriceChecker(fake_cache)
+    hist = pc._get_price_history_last_hours("BTC", 24.0)
+    assert len(hist) == 2
+    stats, breaches = pc.evaluate_symbol("BTC")
+    assert stats["has_data"] is True
+    assert stats["max_price"] == pytest.approx(100.0)
+    assert breaches == []
+
+    # 2. Pure invariant + cross-check on CacheAllPriceFetcherManager: cleanup_old_prices, cleanup_old_symbols, and _load_symbol_metadata reject far-future timestamps.
+    monkeypatch.setattr(
+        "market_monitor.pricefetcher.PricePlatformFactory.check_symbol_support",
+        lambda self, sym: {"Binance": True},
+    )
+    cache_file = tmp_path / "cache_watcher_future.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "items": {
+                    "BTC": [[now_ms - 60_000, 100.0], [now_ms + 7_200_000, 999.0]],
+                    "FUTCOIN": [[now_ms - 60_000, 1.0]],
+                    "GOODCOIN": [[now_ms - 60_000, 2.0]],
+                },
+                "fetchtime": {"BTC": now_ms - 60_000},
+                "rest_sync_cursor": {},
+                "symbol_metadata": {
+                    "added_time": {"FUTCOIN": now_s + 7200.0, "GOODCOIN": now_s - 300.0},
+                    "active_symbols": ["BTC", "FUTCOIN", "GOODCOIN"],
+                    "preferred_source": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    mgr = CacheAllPriceFetcherManager(
+        60,
+        ["BTC"],
+        filename=str(cache_file),
+        read_only=False,
+        data_sync_mode="producer",
+    )
+    # _load_symbol_metadata recovers GOODCOIN but skips FUTCOIN with far-future added_time.
+    assert "GOODCOIN" in mgr.active_symbols
+    assert "FUTCOIN" not in mgr.active_symbols
+
+    # cleanup_old_prices prunes far-future tick and cleanup_old_symbols removes far-future added_time.
+    mgr.cache["BTC"] = [[now_ms - 60_000, 100.0], [now_ms + 7_200_000, 999.0]]
+    mgr.symbol_added_time["BADFUT"] = now_s + 3600.0
+    mgr.active_symbols.add("BADFUT")
+    mgr.cleanup_old_prices(verbose=False)
+    assert len(mgr.cache["BTC"]) == 1
+    assert mgr.cache["BTC"][0][1] == pytest.approx(100.0)
+    removed_syms = mgr.cleanup_old_symbols()
+    assert "BADFUT" in removed_syms
+    assert "GOODCOIN" not in removed_syms
+
+    # 3. Pure invariant + cross-check on newcoinsdiscovery: far-future added_at is filtered out and far-future added_time is evicted by cleanup.
+    now_utc = datetime.now(timezone.utc)
+    filtered = ncd._filter_recent_coins(
+        [
+            {"symbol": "VALIDNEW", "added_at": now_utc - timedelta(hours=2)},
+            {"symbol": "FUTNEW", "added_at": now_utc + timedelta(hours=5)},
+        ],
+        days_back=3,
+        utc=True,
+    )
+    assert [c["symbol"] for c in filtered] == ["VALIDNEW"]
+
+    removed_by_mon: list[str] = []
+    pm_stub = SimpleNamespace(
+        symbol_added_time={"VALIDNEW": now_s - 3600.0, "FUTNEW": now_s + 7200.0},
+        remove_symbol=lambda s, reason="": removed_by_mon.append(s) or True,
+    )
+    fac_stub = SimpleNamespace(
+        get_all_new_coins=lambda _d: {"coinmarketcap": [{"symbol": "VALIDNEW"}, {"symbol": "FUTNEW"}]},
+        get_available_sources=lambda: ["coinmarketcap"],
+        refresh_all=lambda: None,
+    )
+    ncm = ncd.NewCoinsMonitor(price_monitor=pm_stub, factory=fac_stub)
+    assert ncm.should_keep_monitoring("VALIDNEW") is True
+    assert ncm.should_keep_monitoring("FUTNEW") is False
+    ncm.cleanup_old_new_coins()
+    assert removed_by_mon == ["FUTNEW"]
+
+

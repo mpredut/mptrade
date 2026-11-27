@@ -344,6 +344,7 @@ if vpn_healthy && [ "$FORCE" = 0 ] && check_resolved_cpu; then
         outage_ts=$(cat "$OUTAGE_MARK" 2>/dev/null || true)
         [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
         mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
+        [ "$mins" -lt 0 ] && mins=0
         rm -f "$OUTAGE_MARK"
         cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
         alert "PIA restored ($(hostname))" \
@@ -431,6 +432,7 @@ for rung in $LADDER; do
         outage_ts=$(cat "$OUTAGE_MARK" 2>/dev/null || true)
         [[ "${outage_ts:-}" =~ ^[0-9]+$ ]] || outage_ts=$(date +%s)
         mins=$(( ( $(date +%s) - outage_ts ) / 60 ))
+        [ "$mins" -lt 0 ] && mins=0
         rm -f "$OUTAGE_MARK" "$BACKOFF_FILE"
         cur_reg=$(pia get region 2>/dev/null | tr -d '\r')
         log "RECOVERED at $rung (vpnip=$(pia get vpnip) region=${cur_reg})"

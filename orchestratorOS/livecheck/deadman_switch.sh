@@ -52,7 +52,7 @@ if [ -n "$BOOT_ID" ]; then
     elif [ "$BOOT_ID" != "$PREV_BOOT_ID" ]; then
         UP_SINCE="$(uptime -s 2>/dev/null || date '+%F %H:%M')"
         GAP_INFO=""
-        if [[ "$LAST" =~ ^[0-9]+$ ]]; then
+        if [[ "$LAST" =~ ^[0-9]+$ ]] && (( NOW >= LAST )); then
             GAP_INFO=" (last heartbeat $(date -d "@$LAST" '+%F %H:%M'), gap $(( (NOW - LAST) / 60 )) min)"
         fi
         REBOOT_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -m 10 --retry 2 --retry-delay 5 --retry-connrefused \
