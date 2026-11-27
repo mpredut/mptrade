@@ -4791,6 +4791,7 @@ def disable_account_cache_daemon_writer() -> None:
 
 def request_stop_account_ws_streams() -> None:
     """Signal the account user-data bridges (Binance, Kraken, T212, open orders, and balances) to stop."""
+    _venue_refresh_tracker.clear()
     for bridge in (
         _bapi_ws_bridge._ws_bridge,
         _kraken_ws_bridge,
@@ -4848,33 +4849,107 @@ def _run_account_trade_poll_loop(
     default_backoff_max: float,
     heartbeat_fn=None,
     stop_event: Optional[threading.Event] = None,
+    hard_timeout_sec: Optional[float] = None,
 ) -> None:
-    """Shared exponential-backoff REST trade-cache polling loop across venue bridges."""
+    """Shared non-blocking exponential-backoff REST trade-cache polling loop with hard-timeout slot reset."""
     init_bo = safe_pos_float(backoff_init, default=default_backoff_init) or default_backoff_init
     max_bo = safe_pos_float(backoff_max, default=default_backoff_max) or default_backoff_max
     poll_s = safe_nonneg_float(poll_interval, default=default_poll_sec) or 0.0
+    eff_ht = (
+        safe_pos_float(hard_timeout_sec, default=ACCOUNT_REST_HARD_TIMEOUT_SEC)
+        or ACCOUNT_REST_HARD_TIMEOUT_SEC
+    )
+    tracker = NonBlockingRestSlotTracker()
+    wake_ev = threading.Event()
+    slot_key = log_tag or "account_poll"
     backoff = init_bo
     if callable(heartbeat_fn):
         heartbeat_fn(force=True)
-    while not (stop_event is not None and stop_event.is_set()):
-        try:
-            cache = sync_once_fn()
-            log(
-                f"[{log_tag}][poll] {sum(len(v) for v in cache['items'].values())} fills "
-                f"for {list(cache['items'].keys())}"
-            )
-            backoff = init_bo
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if _wait_or_sleep(stop_event, poll_s):
-                break
-        except Exception as exc:
-            log(f"[{log_tag}][poll] error (backoff {backoff:.0f}s): {exc}")
-            if callable(heartbeat_fn):
-                heartbeat_fn()
-            if _wait_or_sleep(stop_event, backoff):
-                break
-            backoff = min(backoff * 2.0, max_bo)
+    try:
+        while not (stop_event is not None and stop_event.is_set()):
+            wake_ev.clear()
+            now_mono = _monotonic_time()
+            if (
+                tracker.submit_thread(
+                    slot_key,
+                    sync_once_fn,
+                    thread_name=f"{slot_key}-poll",
+                    now_mono=now_mono,
+                    now_wall_ts=resolve_now_ts(),
+                    on_done=lambda _f: wake_ev.set(),
+                )
+                is None
+            ):
+                if _wait_or_sleep(stop_event, min(0.15, poll_s or 0.05)):
+                    break
+                continue
+
+            state, res_val, _slot = "IN_FLIGHT", None, None
+            stop_seen_mono: Optional[float] = None
+            while True:
+                now_poll = _monotonic_time()
+                state, res_val, _slot = tracker.inspect_and_harvest(
+                    slot_key, now_mono=now_poll, hard_timeout_sec=eff_ht
+                )
+                if state != "IN_FLIGHT":
+                    break
+                rem_ht = tracker.next_hard_timeout_remaining(
+                    now_mono=now_poll, hard_timeout_sec=eff_ht
+                )
+                if rem_ht is None:
+                    break
+                if stop_event is not None and stop_event.is_set():
+                    if stop_seen_mono is None:
+                        stop_seen_mono = now_poll
+                    stop_rem = min(0.4, eff_ht) - (now_poll - stop_seen_mono)
+                    if stop_rem <= 0.0:
+                        return
+                    wake_ev.wait(timeout=max(0.005, min(stop_rem, rem_ht)))
+                    wake_ev.clear()
+                    continue
+                slice_s = min(0.15, max(0.005, rem_ht)) if stop_event is not None else max(0.005, rem_ht)
+                wake_ev.wait(timeout=slice_s)
+                wake_ev.clear()
+
+            if state == "DONE_OK":
+                cache = res_val if isinstance(res_val, dict) else {"items": {}}
+                items_map = cache.get("items") if isinstance(cache.get("items"), dict) else {}
+                log(
+                    f"[{log_tag}][poll] {sum(len(v) for v in items_map.values() if isinstance(v, list))} fills "
+                    f"for {list(items_map.keys())}"
+                )
+                backoff = init_bo
+                if callable(heartbeat_fn):
+                    heartbeat_fn()
+                if _wait_or_sleep(stop_event, poll_s):
+                    break
+            elif state == "HARD_TIMEOUT":
+                log(
+                    f"[{log_tag}][poll] REST sync hard-timeout >{eff_ht:.1f}s -- resetting slot"
+                )
+                if callable(heartbeat_fn):
+                    heartbeat_fn()
+                wait_bo = min(backoff, max_bo)
+                backoff = min(backoff * 2.0, max_bo)
+                if _wait_or_sleep(stop_event, min(wait_bo, eff_ht)):
+                    break
+            elif state == "DONE_ERR":
+                eff_wait = (
+                    min(max_bo, max(backoff, min(max_bo, 30.0)))
+                    if is_rate_limit_error(res_val)
+                    else backoff
+                )
+                log(f"[{log_tag}][poll] error (backoff {eff_wait:.0f}s): {res_val}")
+                if callable(heartbeat_fn):
+                    heartbeat_fn()
+                if _wait_or_sleep(stop_event, eff_wait):
+                    break
+                backoff = min(eff_wait * 2.0, max_bo)
+            else:
+                if _wait_or_sleep(stop_event, backoff):
+                    break
+    finally:
+        tracker.clear()
 
 
 class _AccountTradeBridgeBase(ABC):
@@ -5406,6 +5481,7 @@ def run_kraken_trade_poll_loop(
     lookback_sec: float,
     heartbeat_fn=None,
     stop_event: Optional[threading.Event] = None,
+    hard_timeout_sec: Optional[float] = None,
 ) -> None:
     """Run the REST Ledgers polling loop for Kraken trade cache persistence."""
     if (kr_prov_cls := MarketDataProvider.resolve_venue_provider_class("kraken")) is None:
@@ -5446,6 +5522,7 @@ def run_kraken_trade_poll_loop(
         default_backoff_max=60.0,
         heartbeat_fn=heartbeat_fn,
         stop_event=stop_event,
+        hard_timeout_sec=hard_timeout_sec,
     )
 
 
@@ -5804,6 +5881,7 @@ def run_t212_trade_poll_loop(
     backoff_max: float,
     heartbeat_fn=None,
     stop_event: Optional[threading.Event] = None,
+    hard_timeout_sec: Optional[float] = None,
 ) -> None:
     """Run the periodic REST order-history polling loop for Trading 212 trade cache persistence."""
     if (t212_prov_cls := MarketDataProvider.resolve_venue_provider_class("t212")) is None:
@@ -5842,6 +5920,7 @@ def run_t212_trade_poll_loop(
         default_backoff_max=120.0,
         heartbeat_fn=heartbeat_fn,
         stop_event=stop_event,
+        hard_timeout_sec=hard_timeout_sec,
     )
 
 
@@ -6226,6 +6305,7 @@ _venue_balances_bridge: Optional[_VenueBalancesBridge] = None
 _venue_balances_bridge_lock = threading.Lock()
 _venue_refresh_lock = threading.Lock()
 _venue_refresh_last_ts: dict[str, float] = {}
+_venue_refresh_tracker = NonBlockingRestSlotTracker()
 _VENUE_EVENT_REFRESH_MIN_GAP_SEC = 1.0
 
 
@@ -6234,6 +6314,7 @@ def request_venue_account_refresh(
     *,
     include_open_orders: bool = False,
     blocking: bool = False,
+    hard_timeout_sec: Optional[float] = None,
 ) -> bool:
     """Trigger a debounced off-thread producer refresh of venue balances (and optional open orders) right after a live fill/transfer."""
     v_norm = normalize_venue_name(venue_key)
@@ -6249,9 +6330,51 @@ def request_venue_account_refresh(
     want_oo = bool(include_open_orders and not is_primary_stream_venue(v_norm) and oo_bridge is not None)
     if bal_bridge is None and not want_oo:
         return False
+    def _run_bal() -> None:
+        if bal_bridge is not None:
+            try:
+                bal_bridge.sync_venue_once(v_norm)
+            except Exception as exc:
+                log(f"[balances_cache] event-driven {v_norm} refresh failed: {exc}")
+
+    def _run_oo() -> None:
+        if oo_bridge is not None:
+            try:
+                oo_bridge.sync_venue_once(v_norm)
+            except Exception as exc:
+                log(f"[open_orders_cache] event-driven {v_norm} refresh failed: {exc}")
+
     now_mono = _monotonic_time()
+    eff_ht = (
+        safe_pos_float(hard_timeout_sec, default=ACCOUNT_REST_HARD_TIMEOUT_SEC)
+        or ACCOUNT_REST_HARD_TIMEOUT_SEC
+    )
     bal_key = v_norm
     oo_key = f"{v_norm}:open_orders"
+    if blocking:
+        with _venue_refresh_lock:
+            last_bal = _venue_refresh_last_ts.get(bal_key, 0.0)
+            last_oo = _venue_refresh_last_ts.get(oo_key, 0.0)
+            do_bal = bal_bridge is not None and (
+                last_bal <= 0.0 or (now_mono - last_bal) >= _VENUE_EVENT_REFRESH_MIN_GAP_SEC
+            )
+            do_oo = want_oo and (
+                last_oo <= 0.0 or (now_mono - last_oo) >= _VENUE_EVENT_REFRESH_MIN_GAP_SEC
+            )
+            if not do_bal and not do_oo:
+                return False
+            if do_bal:
+                _venue_refresh_last_ts[bal_key] = now_mono
+            if do_oo:
+                _venue_refresh_last_ts[oo_key] = now_mono
+        if do_bal:
+            _run_bal()
+        if do_oo:
+            _run_oo()
+        return True
+
+    now_wall = resolve_now_ts()
+    started = False
     with _venue_refresh_lock:
         last_bal = _venue_refresh_last_ts.get(bal_key, 0.0)
         last_oo = _venue_refresh_last_ts.get(oo_key, 0.0)
@@ -6261,30 +6384,53 @@ def request_venue_account_refresh(
         do_oo = want_oo and (
             last_oo <= 0.0 or (now_mono - last_oo) >= _VENUE_EVENT_REFRESH_MIN_GAP_SEC
         )
-        if not do_bal and not do_oo:
-            return False
         if do_bal:
-            _venue_refresh_last_ts[bal_key] = now_mono
+            st_b, _, _ = _venue_refresh_tracker.inspect_and_harvest(
+                bal_key, now_mono=now_mono, hard_timeout_sec=eff_ht
+            )
+            if st_b == "HARD_TIMEOUT":
+                log(
+                    f"[balances_cache] event-driven {v_norm} refresh hard-timeout >{eff_ht:.1f}s -- resetting slot"
+                )
+            elif st_b == "IN_FLIGHT":
+                do_bal = False
         if do_oo:
-            _venue_refresh_last_ts[oo_key] = now_mono
-
-    def _run_refresh() -> None:
-        if do_bal and bal_bridge is not None:
-            try:
-                bal_bridge.sync_venue_once(v_norm)
-            except Exception as exc:
-                log(f"[balances_cache] event-driven {v_norm} refresh failed: {exc}")
-        if do_oo and oo_bridge is not None:
-            try:
-                oo_bridge.sync_venue_once(v_norm)
-            except Exception as exc:
-                log(f"[open_orders_cache] event-driven {v_norm} refresh failed: {exc}")
-
-    if blocking:
-        _run_refresh()
-        return True
-    threading.Thread(target=_run_refresh, name=f"venue-acct-refresh-{v_norm}", daemon=True).start()
-    return True
+            st_o, _, _ = _venue_refresh_tracker.inspect_and_harvest(
+                oo_key, now_mono=now_mono, hard_timeout_sec=eff_ht
+            )
+            if st_o == "HARD_TIMEOUT":
+                log(
+                    f"[open_orders_cache] event-driven {v_norm} refresh hard-timeout >{eff_ht:.1f}s -- resetting slot"
+                )
+            elif st_o == "IN_FLIGHT":
+                do_oo = False
+        if do_bal:
+            if (
+                _venue_refresh_tracker.submit_thread(
+                    bal_key,
+                    _run_bal,
+                    thread_name=f"venue-bal-refresh-{v_norm}",
+                    now_mono=now_mono,
+                    now_wall_ts=now_wall,
+                )
+                is not None
+            ):
+                _venue_refresh_last_ts[bal_key] = now_mono
+                started = True
+        if do_oo:
+            if (
+                _venue_refresh_tracker.submit_thread(
+                    oo_key,
+                    _run_oo,
+                    thread_name=f"venue-oo-refresh-{v_norm}",
+                    now_mono=now_mono,
+                    now_wall_ts=now_wall,
+                )
+                is not None
+            ):
+                _venue_refresh_last_ts[oo_key] = now_mono
+                started = True
+    return started
 
 
 def start_kraken_account_ws_bridge() -> Optional[_KrakenAccountTradeBridge]:

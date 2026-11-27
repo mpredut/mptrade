@@ -2722,7 +2722,7 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
 
     def _equity_rth_min_gap_sec(self, symbol: str) -> float:
         sync_s = safe_pos_float(getattr(self, "sync_ts", None), default=PRICE_STREAM_POLL_INTERVAL_SEC) or PRICE_STREAM_POLL_INTERVAL_SEC
-        return max(sync_s, round(self.ws_timeout_sec_for(symbol) * 0.6, 3))
+        return max(sync_s, round(self.ws_timeout_sec_for(symbol) * 0.4, 3))
 
     def _should_skip_equity_poll_for_session(
         self,
@@ -2752,14 +2752,27 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             and self.extract_price_and_ts(existing_entries)[0] is not None
         )
 
+        def _rth_poll_throttled() -> bool:
+            if not (is_live_daemon_poll and has_cached):
+                return False
+            rth_gap = self._equity_rth_min_gap_sec(symbol)
+            if last_eq_mono is not None and (eff_mono - last_eq_mono) < rth_gap:
+                return True
+            last_poll = self._last_http_poll_ts_per_symbol.get(symbol, 0.0)
+            if last_poll > 0.0 and 0.0 <= (now_s - last_poll) < rth_gap:
+                cur_ts_ms = self._cached_entry_ts_ms(symbol)
+                eff_fresh_ms = round(self.ws_timeout_sec_for(symbol) * 800.0, 1)
+                if cur_ts_ms is not None and -5_000.0 <= (now_s * 1000.0 - cur_ts_ms) < eff_fresh_ms:
+                    return True
+            return False
+
         if not is_rth_gate_enabled(
             getattr(self, "_enforce_rth_gate", None), rth_fn=is_us_rth_open
         ):
-            if is_live_daemon_poll and has_cached and last_eq_mono is not None:
-                if (eff_mono - last_eq_mono) < self._equity_rth_min_gap_sec(symbol):
-                    if mark_idle:
-                        self.mark_symbol_ws_event(symbol, now_s)
-                    return True
+            if _rth_poll_throttled():
+                if mark_idle:
+                    self.mark_symbol_ws_event(symbol, now_s)
+                return True
             return False
 
         rth_open = is_us_rth_open(now_s)
@@ -2770,11 +2783,10 @@ class CacheCurrentPriceManager(NonBlockingRestSyncMixin, CachePriceManagerBase):
             if (last_eb := self._rth_empty_backoff_ts.get(symbol, 0.0)) > 0.0 and 0.0 <= (now_s - last_eb) < 60.0:
                 return True
         if rth_open:
-            if is_live_daemon_poll and has_cached and last_eq_mono is not None:
-                if (eff_mono - last_eq_mono) < self._equity_rth_min_gap_sec(symbol):
-                    if mark_idle:
-                        self.mark_symbol_ws_event(symbol, now_s)
-                    return True
+            if _rth_poll_throttled():
+                if mark_idle:
+                    self.mark_symbol_ws_event(symbol, now_s)
+                return True
             return False
         if ext_open:
             ext_gap_sec = max(60.0, round(self.ws_timeout_sec_for(symbol) * 2.0, 1))

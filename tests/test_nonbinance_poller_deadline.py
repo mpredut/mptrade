@@ -333,10 +333,16 @@ class TestFetchDeadline(TempDirTestCase):
         self.assertEqual([o["side"] for o in orders], ["BUY", "SELL"])
 
         # Invalidating SSOT fills cache must not be resurrected by an allMids tick before a new fill arrives
+        from unittest.mock import patch
         prov.invalidate_ssot_fills_cache("HYPEUSDC", cache_file)
         self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
         hl_ws._last_fills_cache_touch_ms = 0
-        hl_ws._touch_fills_cache_if_needed(now_ms + 70_000)
+        with patch.object(
+            cacheaccount._HyperliquidAccountTradeBridge,
+            "_schedule_invalidated_fills_resync",
+            return_value=False,
+        ):
+            hl_ws._touch_fills_cache_if_needed(now_ms + 70_000)
         self.assertIsNone(prov.read_ssot_fills_cache("HYPEUSDC", cache_file, max_stale_sec=90.0))
 
         # Reconnect resets _fills_ws_seeded until a new isSnapshot=True message arrives
@@ -1384,6 +1390,147 @@ class TestFetchDeadline(TempDirTestCase):
         finally:
             cpm_iso.shutdown(timeout=1.0)
         self.assertEqual([getattr(w, "label", None) for w in cpm_iso._ws_managers], ["ext_binance"])
+
+    def test_account_trade_poll_loop_and_event_refresh_hard_timeout_and_dedup(self):
+        """_run_account_trade_poll_loop evicts wedged polls on hard_timeout and stops promptly on shutdown;
+        request_venue_account_refresh deduplicates in-flight async refreshes and resets wedged slots on hard_timeout."""
+        import threading
+        from unittest.mock import patch
+
+        # 1. _run_account_trade_poll_loop: wedged call #1 evicted at hard_timeout_sec, call #2 recovers
+        wedged_ev = threading.Event()
+        stop_ev = threading.Event()
+        calls = [0]
+        hb_calls = [0]
+
+        def _sync_once():
+            calls[0] += 1
+            if calls[0] == 1:
+                wedged_ev.wait(timeout=5.0)
+                return {"items": {"NVDA_US_EQ": []}}
+            stop_ev.set()
+            return {"items": {"NVDA_US_EQ": [{"id": "t1"}]}}
+
+        try:
+            t0 = time.monotonic()
+            cacheaccount._run_account_trade_poll_loop(
+                sync_once_fn=_sync_once,
+                log_tag="t212_test",
+                poll_interval=0.01,
+                default_poll_sec=0.01,
+                backoff_init=0.02,
+                default_backoff_init=0.02,
+                backoff_max=0.05,
+                default_backoff_max=0.05,
+                heartbeat_fn=lambda **_kw: hb_calls.__setitem__(0, hb_calls[0] + 1),
+                stop_event=stop_ev,
+                hard_timeout_sec=0.10,
+            )
+            self.assertGreaterEqual(calls[0], 2)
+            self.assertGreaterEqual(hb_calls[0], 3)
+            self.assertLess(time.monotonic() - t0, 2.0)
+        finally:
+            wedged_ev.set()
+
+        # 2. _run_account_trade_poll_loop: stop_event interrupts a wedged poll quickly without waiting out 30s hard_timeout
+        wedged_ev2 = threading.Event()
+        entered2 = threading.Event()
+        stop_ev2 = threading.Event()
+
+        def _wedged_forever():
+            entered2.set()
+            wedged_ev2.wait(timeout=5.0)
+            return {"items": {}}
+
+        loop_th = threading.Thread(
+            target=cacheaccount._run_account_trade_poll_loop,
+            kwargs={
+                "sync_once_fn": _wedged_forever,
+                "log_tag": "t212_stop_test",
+                "poll_interval": 1.0,
+                "default_poll_sec": 1.0,
+                "backoff_init": 0.1,
+                "default_backoff_init": 0.1,
+                "backoff_max": 1.0,
+                "default_backoff_max": 1.0,
+                "stop_event": stop_ev2,
+                "hard_timeout_sec": 30.0,
+            },
+            daemon=True,
+        )
+        try:
+            loop_th.start()
+            self.assertTrue(entered2.wait(timeout=1.0))
+            t_stop = time.monotonic()
+            stop_ev2.set()
+            loop_th.join(timeout=1.5)
+            self.assertFalse(loop_th.is_alive())
+            self.assertLess(time.monotonic() - t_stop, 1.0)
+        finally:
+            stop_ev2.set()
+            wedged_ev2.set()
+            loop_th.join(timeout=1.0)
+
+        # 3. request_venue_account_refresh (async): dedup in-flight balance while allowing open_orders escalation,
+        #    then reset wedged balance slot on hard_timeout_sec
+        bal_entered = threading.Event()
+        bal_release = threading.Event()
+        bal_done2 = threading.Event()
+        oo_done = threading.Event()
+        bal_calls = [0]
+        oo_calls = [0]
+
+        def _bal_sync(_v):
+            bal_calls[0] += 1
+            if bal_calls[0] == 1:
+                bal_entered.set()
+                bal_release.wait(timeout=5.0)
+                return True
+            bal_done2.set()
+            return True
+
+        def _oo_sync(_v):
+            oo_calls[0] += 1
+            oo_done.set()
+            return True
+
+        mono_now = [100.0]
+        try:
+            with (
+                patch.object(cacheaccount.account_cache_health, "is_writer_enabled", return_value=True),
+                patch.object(cacheaccount, "_monotonic_time", side_effect=lambda: mono_now[0]),
+                patch.object(cacheaccount, "_venue_refresh_last_ts", {}),
+                patch.object(cacheaccount, "_venue_balances_bridge", SimpleNamespace(sync_venue_once=_bal_sync)),
+                patch.object(cacheaccount, "_venue_open_orders_bridge", SimpleNamespace(sync_venue_once=_oo_sync)),
+            ):
+                cacheaccount._venue_refresh_tracker.clear()
+                self.assertTrue(
+                    cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=False, hard_timeout_sec=5.0)
+                )
+                self.assertTrue(bal_entered.wait(timeout=1.0))
+
+                # Past 1.0s debounce, but balance slot is still IN_FLIGHT (<5.0s) -> balance deduped, open_orders still launches
+                mono_now[0] = 102.0
+                self.assertFalse(
+                    cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=False, hard_timeout_sec=5.0)
+                )
+                self.assertEqual(bal_calls[0], 1)
+                self.assertTrue(
+                    cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=True, hard_timeout_sec=5.0)
+                )
+                self.assertTrue(oo_done.wait(timeout=1.0))
+                self.assertEqual((bal_calls[0], oo_calls[0]), (1, 1))
+
+                # Past hard_timeout_sec (5.0s), wedged balance slot is evicted and call #2 succeeds
+                mono_now[0] = 106.0
+                self.assertTrue(
+                    cacheaccount.request_venue_account_refresh("hyperliquid", include_open_orders=False, hard_timeout_sec=5.0)
+                )
+                self.assertTrue(bal_done2.wait(timeout=1.0))
+                self.assertEqual(bal_calls[0], 2)
+        finally:
+            bal_release.set()
+            cacheaccount._venue_refresh_tracker.clear()
 
 
 
