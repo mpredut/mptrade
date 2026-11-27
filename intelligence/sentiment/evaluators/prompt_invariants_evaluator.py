@@ -2315,7 +2315,7 @@ def audit_rendered_prompt_text(
                             )
                 rep_vp = safe_float(m_vp.group(7), default=None) if m_vp.group(7) is not None else None
                 if rep_vp is not None and vah > val:
-                    exp_vp = ((px - val) / (vah - val)) * 100.0
+                    exp_vp = clamp_float(((px - val) / (vah - val)) * 100.0, -100.0, 200.0)
                     if abs(exp_vp - rep_vp) > 1.0:
                         violations.append(
                             InvariantViolation(
