@@ -1724,6 +1724,80 @@ def test_offline_and_manual_ohlc_scripts_normalize_via_market_api_and_shared_hel
     assert not (tmp_path / "should_not_exist.csv").exists()
 
 
+def test_pass5_midyear_listing_ytd_suppression_and_closed_extended_macro_benchmarks() -> None:
+    """Pass 5 live weekend prompt audit regressions:
+    1. Mid-year listings (e.g. SPCXxUSD launched June 2026) must emit ytd_pct=None ('-') instead of misreporting
+       a partial-year since-listing return as full-year YTD, both at evaluate time and live recalculation.
+    2. Extended-hours US benchmarks stuck in market_state='POST'/'PRE' with bar_age_min > 30m (e.g. NYSE early-close
+       post-market ended at 17:00 ET) coerce cleanly to 'closed, bar_age=...' without stale 1h deltas.
+    """
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import format_macro_benchmarks_summary_line
+
+    # 1a. Mid-year listing (June 2026 -> Nov 2026): ytd_ref/ytd_pct must be None, while 30d/90d/MA50 still compute
+    jun_start = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    jun_prices = [149.3 - (i * 0.1) for i in range(165)]
+    jun_bars = _make_daily_bars(jun_start, jun_prices)
+    now_nov = (jun_start + timedelta(days=164)).timestamp()
+    ev_mid = evaluate_symbol_long_horizon("SPCXxUSD", jun_bars, months=36, now_ts=now_nov, source="kraken:SPCXxUSD")
+    assert ev_mid is not None
+    assert ev_mid["ytd_ref"] is None
+    assert ev_mid["ytd_pct"] is None
+    assert ev_mid["chg_30d_pct"] is not None
+    assert ev_mid["chg_90d_pct"] is not None
+    assert ev_mid["vs_ma50_pct"] is not None
+
+    # 1b. Early-January listing (Jan 2 after New Year holiday) still produces valid YTD
+    jan_start = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    jan_bars = _make_daily_bars(jan_start, [100.0 + i * 0.1 for i in range(120)])
+    ev_jan = evaluate_symbol_long_horizon("NEWUSD", jan_bars, months=36, now_ts=(jan_start + timedelta(days=119)).timestamp())
+    assert ev_jan is not None
+    assert ev_jan["ytd_ref"] == round(jan_bars[0][1], 6)
+    assert ev_jan["ytd_pct"] is not None and ev_jan["ytd_pct"] > 0.0
+
+    # 1c. Live recalculation clears stale cached ytd_ref/ytd_pct on persisted mid-year listing snapshots
+    stale_cached_midyear = {
+        **ev_mid,
+        "first_date": "2026-06-15",
+        "last_date": "2026-11-27",
+        "ytd_ref": 149.3,
+        "ytd_pct": -11.8,
+    }
+    recalc_mid = recalculate_long_horizon_with_live_price(stale_cached_midyear, 132.35)
+    assert recalc_mid["ytd_ref"] is None
+    assert recalc_mid["ytd_pct"] is None
+
+    # 2. Stale POST benchmark (bar_age_min=41m after Black Friday 17:00 ET post-close) renders as closed, not post/delayed
+    mb_payload = {
+        "ts": 1795818880.0,
+        "items": {
+            "SPY": {
+                "symbol": "SPY",
+                "unit": "usd",
+                "price": 731.3,
+                "chg_24h_pct": 2.04,
+                "chg_1h_pct": 0.04,
+                "chg_15m_pct": 0.11,
+                "bar_age_min": 41.0,
+                "market_state": "POST",
+            },
+            "QQQ": {
+                "symbol": "QQQ",
+                "unit": "usd",
+                "price": 650.62,
+                "chg_24h_pct": 2.63,
+                "chg_1h_pct": 0.0,
+                "bar_age_min": 12.0,
+                "market_state": "POST",
+            },
+        },
+    }
+    line = format_macro_benchmarks_summary_line(mb_payload)
+    assert "SPY=$731.30 (+2.04% 24h, closed, bar_age=41m)" in line
+    assert "SPY=$731.30 (+2.04% 24h, +0.04% 1h" not in line
+    assert "QQQ=$650.62 (+2.63% 24h, +0.00% 1h, post, delayed=12m)" in line
+
+
+
 
 
 

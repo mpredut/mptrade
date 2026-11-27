@@ -310,11 +310,12 @@ def evaluate_symbol_long_horizon(
     ref_year = datetime.fromtimestamp(ref_end_ms / 1000.0, tz=timezone.utc).year
     jan1_ms = datetime(ref_year, 1, 1, tzinfo=timezone.utc).timestamp() * 1000.0
 
-    # YTD reference: last close before Jan 1 of current year if available, else first bar open in current year
+    # YTD reference: last close before Jan 1 of current year if available, else first bar open within early January (<= 10d grace for New Year holidays)
     ytd_ref = _find_close_at_or_before(all_bars, jan1_ms - 1.0)
     if ytd_ref is None:
+        jan_grace_ms = jan1_ms + 10.0 * _MS_PER_DAY
         for b in all_bars:
-            if b[0] >= jan1_ms:
+            if jan1_ms <= b[0] <= jan_grace_ms:
                 ytd_ref = b[1]
                 break
 
@@ -398,7 +399,18 @@ def recalculate_long_horizon_with_live_price(
     hi_f = safe_pos_float(live_high, default=None)
     lo_bound = min(px, lo_f) if lo_f is not None else px
     hi_bound = max(px, hi_f) if hi_f is not None else px
-    if (ytd_r := safe_pos_float(item.get("ytd_ref"), default=None)) is not None:
+    first_dt_s = str(item.get("first_date") or "").strip()
+    last_dt_s = str(item.get("last_date") or "").strip()
+    midyear_listing = (
+        len(first_dt_s) >= 10
+        and len(last_dt_s) >= 4
+        and first_dt_s[:4] == last_dt_s[:4]
+        and first_dt_s[:10] > f"{last_dt_s[:4]}-01-11"
+    )
+    if midyear_listing:
+        out["ytd_ref"] = None
+        out["ytd_pct"] = None
+    elif (ytd_r := safe_pos_float(item.get("ytd_ref"), default=None)) is not None:
         out["ytd_pct"] = _pct_chg(px, ytd_r)
     if (r30 := safe_pos_float(item.get("ref_30d"), default=None)) is not None:
         out["chg_30d_pct"] = _pct_chg(px, r30)

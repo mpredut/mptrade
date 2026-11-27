@@ -1196,7 +1196,10 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
         ):
             bar_age_min = round(max(0.0, data_ts - b_ts) / 60.0, 1)
         m_state = str(entry.get("market_state") or "").strip().upper()
-        if not m_state and bar_age_min is not None and bar_age_min > 45.0:
+        if bar_age_min is not None and (
+            (not m_state and bar_age_min > 45.0)
+            or (m_state in ("PRE", "PREPRE", "POST", "POSTPOST") and bar_age_min > 30.0)
+        ):
             m_state = "CLOSED"
         is_delayed_feed = is_macro_benchmark_feed_delayed(m_state, bar_age_min)
         horizons = (
