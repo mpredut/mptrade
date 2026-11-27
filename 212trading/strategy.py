@@ -426,7 +426,7 @@ class Strategy(T212BrokerLifecycleMixin):
             self.s["tp_fail_until"] = {}
         fails = self.s["tp_fail_until"]
         for lvl, (q, lim) in desired.items():
-            if lvl in open_sells or now < safe_nonneg_float(fails.get(str(lvl)), 0.0):
+            if lvl in open_sells or self._is_backoff_active("tp_fail_until", 1800.0, subkey=str(lvl)):
                 continue
             if self.s.get("pending_submit"):
                 break
@@ -437,6 +437,25 @@ class Strategy(T212BrokerLifecycleMixin):
                     if old_o:
                         self._restore_cancelled_orders([old_o], reason=f"TP ladder +{lvl:g}% replace failed")
                 break
+
+    def _is_backoff_active(self, key: str, max_window_sec: float, *, subkey: str | None = None) -> bool:
+        """Return True if a persisted backoff timestamp is active, auto-clearing corrupt far-future deadlines."""
+        now = self._now()
+        max_until = now + max_window_sec + 60.0
+        if subkey is not None:
+            container = self.s.get(key)
+            if not isinstance(container, dict):
+                return False
+            until = safe_nonneg_float(container.get(subkey), 0.0) or 0.0
+            if until > max_until:
+                container.pop(subkey, None)
+                return False
+            return now < until
+        until = safe_nonneg_float(self.s.get(key), 0.0) or 0.0
+        if until > max_until:
+            self.s.pop(key, None)
+            return False
+        return now < until
 
     def _buy_is_stale(self, order: dict, price: float) -> bool:
         """Return whether a resting limit BUY should be cancelled and placed again."""
@@ -513,7 +532,7 @@ class Strategy(T212BrokerLifecycleMixin):
             )
 
         drop_pct = (peak - price) / peak * 100 if peak > 0 else 0.0
-        if drop_pct < self.p.trail_pct or self._now() < safe_nonneg_float(self.s.get("tr_fail_until"), 0.0):
+        if drop_pct < self.p.trail_pct or self._is_backoff_active("tr_fail_until", 1800.0):
             return False
         if self._execute_protective_exit("TR", price, "TRAILING", "tr_fail_until"):
             if not self.s.get("pending_submit") and not self._state_flag("tr_alerted"):
@@ -572,7 +591,7 @@ class Strategy(T212BrokerLifecycleMixin):
                 exit_reason = decision.reason if should_exit_sl else ""
 
             if should_exit_sl:
-                if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
+                if self._is_backoff_active("sl_fail_until", 1800.0):
                     return False
                 if pending_sl is None:
                     self.s["sl_pending_exit"] = {"reason": exit_reason, "time": self._now()}
@@ -587,7 +606,7 @@ class Strategy(T212BrokerLifecycleMixin):
                 self._handle_mhdsl_hold_decision(decision)
             return False
 
-        if self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0):
+        if self._is_backoff_active("sl_fail_until", 1800.0):
             return False
         if self._execute_protective_exit("SL", price, "STOP", "sl_fail_until"):
             if not self.s.get("pending_submit"):
@@ -624,7 +643,7 @@ class Strategy(T212BrokerLifecycleMixin):
                 self._cancel_all_orders()
             return None
         disc = 1 - self.p.entry_discount_pct / 100
-        in_backoff = self._now() < safe_nonneg_float(self.s.get("buy_backoff_until"), 0.0)
+        in_backoff = self._is_backoff_active("buy_backoff_until", 1800.0)
         return price, held, disc, in_backoff
 
     def _step_evaluate_exits(self, price: float) -> bool:
@@ -783,7 +802,7 @@ class Strategy(T212BrokerLifecycleMixin):
         dca_threshold = self.s["last_buy_price"] * (1 - self.p.dca_drop_pct / 100) if self.s["last_buy_price"] else None
         in_sl_state = bool(
             self._state_flag("sl_pending")
-            or (self._now() < safe_nonneg_float(self.s.get("sl_fail_until"), 0.0))
+            or self._is_backoff_active("sl_fail_until", 1800.0)
             or (self.ticker in self.exit_manager.sl_bounce_state if self.exit_manager else False)
         )
         if not (
@@ -797,7 +816,12 @@ class Strategy(T212BrokerLifecycleMixin):
         ):
             return
         if self.p.dca_trend_gate_pct > 0:
-            if self._now() < safe_nonneg_float(getattr(self, "_dca_gate_until", 0.0), default=0.0):
+            now_dca = self._now()
+            dca_gate_until = safe_nonneg_float(getattr(self, "_dca_gate_until", 0.0), default=0.0) or 0.0
+            if dca_gate_until > now_dca + 360.0:
+                self._dca_gate_until = 0.0
+                dca_gate_until = 0.0
+            if now_dca < dca_gate_until:
                 return
             slope_f = safe_float(self._trend_slope_provider(self.yahoo_sym), default=None)
             if slope_f is not None and slope_f < -self.p.dca_trend_gate_pct:

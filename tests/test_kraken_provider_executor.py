@@ -1771,3 +1771,75 @@ def test_kraken_post_only_preserves_fetchtime_ambiguous_write_invalidates_cache_
     assert kc._cache_get("OpenOrders", {}, client_id=scope)[0] is False
     assert kc._cache_get("ClosedOrders", {}, client_id=scope)[0] is False
     kc._CACHE.clear()
+
+
+def test_pass23_kraken_cache_rollback_xstock_archive_future_and_hl_meta_atomic_invariants_crosscheck(tmp_path, monkeypatch):
+    """Pass 23 pure invariants & cross-checks: Kraken _cache_get evicts on NTP rollback, xstock sync_trade_archive rejects future poison, and HLClient._meta swaps atomically."""
+    from botcore import load_local_module
+    from kraken import kraken_xstock_watch as xsw
+
+    hl_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hyperliquid")
+    hl_client = load_local_module(hl_dir, "hl_client", module_key="hl_client_pass23")
+
+    # 1. Pure invariant & cross-check: Kraken _cache_get evicts entries when wall clock rolls backward past TTL
+    t_now = 1_795_000_000.0
+    kc._CACHE.clear()
+    monkeypatch.setattr(kc.time, "time", lambda: t_now)
+    kc._cache_put("Balance", {}, 15.0, {"ZUSD": "100.0"}, client_id="scope1")
+    assert kc._cache_get("Balance", {}, client_id="scope1") == (True, {"ZUSD": "100.0"})
+
+    # Backward NTP jump of 120s makes (expiry - now) = 135s > ttl + 1s -> evicted immediately instead of serving stale Balance!
+    monkeypatch.setattr(kc.time, "time", lambda: t_now - 120.0)
+    assert kc._cache_get("Balance", {}, client_id="scope1") == (False, None)
+    assert kc._cache_key("Balance", {}, client_id="scope1") not in kc._CACHE
+
+    # 2. Pure invariant & cross-check: xstock sync_trade_archive heals corrupt far-future .meta max_ts/since and skips future rows
+    cdb_prices = tmp_path / "prices"
+    cdb_prices.mkdir(parents=True)
+    arch_file = cdb_prices / "cache_365_price_SPCXxUSD.jsonl"
+    arch_file.write_text("", encoding="utf-8")
+    meta_file = tmp_path / "prices" / "cache_365_price_SPCXxUSD.jsonl.meta"
+    t_ms = int(t_now * 1000)
+    meta_file.write_text(
+        json.dumps(
+            {
+                "max_ts": t_ms + 86_400_000,
+                "kraken_trades_since_ns": str((t_ms + 86_400_000) * 1_000_000),
+                "counts": {"SPCXxUSD": 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(xsw, "cache_path", lambda fn: str(cdb_prices / fn))
+    monkeypatch.setattr(xsw, "resolve_now_ms", lambda: t_ms)
+    seen_since = []
+
+    def _fake_trades_page(_pair, since):
+        seen_since.append(since)
+        return (
+            [
+                ["132.5", "1.0", (t_ms - 5_000) / 1000.0],
+                ["999.0", "1.0", (t_ms + 86_400_000) / 1000.0],  # corrupt far-future row -> must be skipped
+            ],
+            str(t_ms * 1_000_000),
+        )
+
+    added = xsw.sync_trade_archive(SimpleNamespace(trades_page=_fake_trades_page), "SPCXxUSD", max_pages=1)
+    assert seen_since == ["0"]  # corrupt far-future cursor/max_ts reset instead of querying future forever
+    assert added == 1
+    written_meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    assert written_meta["max_ts"] == t_ms - 5_000
+
+    # 3. Pure invariant: HLClient._meta swaps dict atomically and skips empty payloads
+    hl = hl_client.HLClient.__new__(hl_client.HLClient)
+    hl._meta_cache = {}
+    hl.info = SimpleNamespace(meta=lambda: {"universe": [{"name": "BTC", "szDecimals": 5}, {"name": "HYPE", "szDecimals": 2}]})
+    m1 = hl._meta()
+    assert set(m1.keys()) == {"BTC", "HYPE"}
+    assert hl._meta_cache is m1
+    # Empty response does not overwrite an already-populated cache, and initial empty leaves cache empty for retry
+    hl_empty = hl_client.HLClient.__new__(hl_client.HLClient)
+    hl_empty._meta_cache = {}
+    hl_empty.info = SimpleNamespace(meta=lambda: {"universe": []})
+    assert hl_empty._meta() == {}
+    assert hl_empty._meta_cache == {}

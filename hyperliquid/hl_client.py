@@ -200,6 +200,12 @@ def _force_timeout(api_obj, seconds: float = 30.0) -> None:
                 status_code = getattr(resp, "status_code", None)
                 if not is_info_query or status_code not in (429, 500, 502, 503, 504) or attempt >= 2:
                     return resp
+                close_fn = getattr(resp, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
                 time.sleep(0.25 * (attempt + 1))
             return resp
 
@@ -253,15 +259,22 @@ class HLClient:
 
     # ----- metadata / prices --------------------------------------------------
     def _meta(self) -> dict:
-        if not isinstance(getattr(self, "_meta_cache", None), dict):
-            self._meta_cache = {}
-        if not self._meta_cache:
+        cached = getattr(self, "_meta_cache", None)
+        if not isinstance(cached, dict):
+            cached = {}
+            self._meta_cache = cached
+        if not cached:
             raw_meta = self.info.meta()
             universe = raw_meta.get("universe") if isinstance(raw_meta, dict) else None
-            for a in (universe if isinstance(universe, list) else ()):
-                if isinstance(a, dict) and a.get("name"):
-                    self._meta_cache[a["name"]] = a
-        return self._meta_cache
+            loaded = {
+                a["name"]: a
+                for a in (universe if isinstance(universe, list) else ())
+                if isinstance(a, dict) and a.get("name")
+            }
+            if loaded:
+                self._meta_cache = loaded
+                return loaded
+        return cached
 
     @classmethod
     def _coin_candidates(cls, coin: object) -> tuple[str, ...]:

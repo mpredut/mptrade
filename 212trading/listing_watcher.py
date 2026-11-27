@@ -18,7 +18,7 @@ _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from botcore import ET, ensure_local_module_priority, log, safe_float, safe_nonneg_float
+from botcore import ET, ensure_local_module_priority, is_us_market_holiday, log, safe_float, safe_nonneg_float
 ensure_local_module_priority(_HERE, "ipo_common", "market_data")
 from cachepaths import same_canonical_base_asset as _t212_tickers_match  # noqa: E402
 from market_data import check_market  # noqa: E402
@@ -98,10 +98,19 @@ def wait_for_launch(yahoo_symbol: str, label: str, interval: int = 60, *,
     while not (stop is not None and stop.is_set()):
         if market_hours_only:
             n = datetime.now(ET)
-            if n.weekday() >= 5 or not (9 * 60 <= n.hour * 60 + n.minute <= 16 * 60 + 30):
+            if (
+                n.weekday() >= 5
+                or is_us_market_holiday(n)
+                or not (9 * 60 <= n.hour * 60 + n.minute <= 16 * 60 + 30)
+            ):
                 _wait(stop, min(eff_interval * 5, 600))
                 continue
-        m = check_market(yahoo_symbol)
+        try:
+            m = check_market(yahoo_symbol)
+        except Exception as e:  # noqa: BLE001 -- transient feed/network errors must not abort launch watch
+            log(f"    ! [{label}] check_market failed ({e.__class__.__name__}: {e}) - retrying in {eff_interval:g}s")
+            _wait(stop, eff_interval)
+            continue
         # 'launched' means prior real-volume trading, even if the market is closed now.
         if m and m.get("launched"):
             now_open = "trading NOW" if m.get("trading") else f"the market is {m.get('state')}"

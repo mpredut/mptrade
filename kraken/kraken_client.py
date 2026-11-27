@@ -102,11 +102,12 @@ def _cache_key(method: str, params: dict, client_id: str = "") -> tuple:
 
 
 def _cache_get(method: str, params: dict, client_id: str = ""):
+    ttl = _read_ttl(method, params)
     with _CACHE_LOCK:
         now = time.time()
         key = _cache_key(method, params, client_id=client_id)
         hit = _CACHE.get(key)
-        if hit and hit[0] > now:
+        if hit and hit[0] > now and (ttl is None or (hit[0] - now) <= ttl + 1.0):
             return True, hit[1]
         _CACHE.pop(key, None)
     return False, None

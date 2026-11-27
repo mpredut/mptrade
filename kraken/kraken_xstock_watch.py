@@ -169,12 +169,22 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
     meta = read_json_dict(meta_file_path(target_path), default={}) if os.path.exists(target_path) else {}
     if not isinstance(meta, dict):
         meta = {}
-    raw_since = clean_scalar_str(meta.get("kraken_trades_since_ns"))
+    now_ms = resolve_now_ms()
+    max_valid_ms = now_ms + 60_000
+    raw_since_str = clean_scalar_str(meta.get("kraken_trades_since_ns"))
+    raw_since_ns = safe_nonneg_int(raw_since_str, default=None) if raw_since_str else None
+    raw_since = (
+        raw_since_str
+        if (raw_since_str is not None and (raw_since_ns is None or raw_since_ns <= max_valid_ms * 1_000_000))
+        else None
+    )
     prev_counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
     prev_rest_cursor = meta.get("rest_sync_cursor") if isinstance(meta.get("rest_sync_cursor"), dict) else {}
     prev_count = safe_nonneg_int(prev_counts.get(sym_key), default=0) or 0
-    prev_max_ts = safe_nonneg_int(meta.get("max_ts"), default=0) or 0
-    prev_min_ts = safe_nonneg_int(prev_rest_cursor.get(sym_key), default=0) or 0
+    raw_prev_max = safe_nonneg_int(meta.get("max_ts"), default=0) or 0
+    prev_max_ts = raw_prev_max if raw_prev_max <= max_valid_ms else 0
+    raw_prev_min = safe_nonneg_int(prev_rest_cursor.get(sym_key), default=0) or 0
+    prev_min_ts = raw_prev_min if raw_prev_min <= max_valid_ms else 0
     since = raw_since or (str(prev_max_ts * 1_000_000) if prev_max_ts > 0 else "0")
 
     new_items: list[list] = []
@@ -194,7 +204,7 @@ def sync_trade_archive(client: KrakenClient, pair: str, *, max_pages: int = 3) -
             px = safe_pos_float(tr[0], default=None)
             vol = safe_nonneg_float(tr[1], default=0.0) or 0.0
             ts_ms = normalize_timestamp_ms(tr[2], default=None)
-            if px is None or ts_ms is None:
+            if px is None or ts_ms is None or ts_ms > max_valid_ms:
                 continue
             if raw_since is None and prev_max_ts > 0 and ts_ms <= prev_max_ts:
                 continue

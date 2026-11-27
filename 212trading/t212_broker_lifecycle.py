@@ -704,10 +704,7 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
                         latest_any = hist_fn(self.ticker, side=None, refresh=False)
                         if isinstance(latest_any, dict):
                             any_side = str(latest_any.get("side") or "").strip().upper()
-                            any_ts_s = (
-                                normalize_epoch_sec(latest_any.get("timestamp"), None)
-                                or normalize_epoch_sec(latest_any.get("time"), None)
-                            )
+                            any_ts_s = safe_pos_float(extract_timestamp_s(latest_any, default=None), None)
                             if any_side and any_side != side.upper() and any_ts_s is not None and any_ts_s >= fill_ts_s:
                                 stale_hist = True
                     fill_qty = first_pos_float(latest.get("executedQty"), latest.get("qty"))
@@ -733,7 +730,8 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         real = self._portfolio_position()
         if real is None:
             now = self._now()
-            if now - getattr(self, "_pf_unavail_logged", 0) > 600:
+            last_pf_log = getattr(self, "_pf_unavail_logged", 0.0)
+            if now < last_pf_log or (now - last_pf_log) > 600:
                 self._log_msg("  [STRAT] portfolio unavailable - skipping reconciliation (suppressing repeats for 10 min)")
                 self._pf_unavail_logged = now
             return False
@@ -756,7 +754,12 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
         prev_avg = self._avg() or real_avg
         status_cache: dict[str, object] = {}
 
-        if real_qty > prev_qty + 1e-6 and self._now() < safe_nonneg_float(self.s.get("locked_zero_until"), 0.0):
+        now_rec = self._now()
+        locked_until = safe_nonneg_float(self.s.get("locked_zero_until"), 0.0) or 0.0
+        if locked_until > now_rec + 360.0:
+            self.s.pop("locked_zero_until", None)
+            locked_until = 0.0
+        if real_qty > prev_qty + 1e-6 and now_rec < locked_until:
             self._log_msg("  [STRAT] adoption ignored \u2014 stale portfolio (recent not-owned, lock active)")
             return False
         if real_qty > prev_qty + 1e-6:
@@ -777,7 +780,8 @@ class T212BrokerLifecycleMixin(BaseSpotMixin):
             is_adoption = source_order is None and prev_qty < 1e-9
             if is_adoption and self._is_dust(real_qty, eff_real_avg):
                 now = self._now()
-                if now - getattr(self, "_dust_logged", 0) > 600:
+                last_dust_log = getattr(self, "_dust_logged", 0.0)
+                if now < last_dust_log or (now - last_dust_log) > 600:
                     self._log_msg(
                         f"  [STRAT] portfolio dust ({real_qty:.4f} shares, ~{real_qty*eff_real_avg:.2f} USD) "
                         "ignored \u2014 staying flat for new cycle"

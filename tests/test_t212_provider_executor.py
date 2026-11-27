@@ -1804,4 +1804,100 @@ def test_pass20_t212_shared_endpoint_pacing_truthy_zero_http_ts_invariant_and_cr
     assert sleeps == []
 
 
+def test_pass23_t212_launch_watcher_lifecycle_and_strategy_backoff_invariants_crosscheck(monkeypatch):
+    """Pass 23 pure invariants & cross-checks: listing_watcher survives check_market errors, T212 lifecycle detects ISO opposite-side fills & heals future locked_zero_until, and Strategy clears corrupt far-future SL/TR/BUY/TP backoffs."""
+    import importlib
+    import threading
+    from types import SimpleNamespace
+
+    lw = importlib.import_module("212trading.listing_watcher")
+    tbl = importlib.import_module("212trading.t212_broker_lifecycle")
+    strat_mod = importlib.import_module("212trading.strategy")
+
+    # 1. Pure invariant: wait_for_launch retries cleanly when check_market raises transiently instead of crashing
+    stop_ev = threading.Event()
+    calls = {"n": 0}
+
+    def _flaky_check(_sym):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient yahoo SSL blip")
+        return {"launched": True, "trading": True, "exchange": "NMS", "price": 180.0, "currency": "USD"}
+
+    monkeypatch.setattr(lw, "check_market", _flaky_check)
+    monkeypatch.setattr(lw, "_wait", lambda _s, _sec: None)
+    assert lw.wait_for_launch("NVDA", "NVIDIA", interval=1, stop=stop_ev) is True
+    assert calls["n"] == 2
+
+    # 2. Pure invariant & cross-check: _exact_execution_price detects newer opposite-side fill with ISO filledAt (no timestamp/time keys)
+    t_now = 1_795_000_000.0
+    iso_old = "2026-11-26T10:00:00Z"
+    iso_new = "2026-11-26T11:00:00Z"
+
+    def _fake_hist(_ticker, side=None, refresh=False):
+        if side == "BUY":
+            return {"orderId": "101", "side": "BUY", "filledAt": iso_old, "executedQty": 2.0, "price": 150.0}
+        return {"orderId": "102", "side": "SELL", "filledAt": iso_new, "executedQty": 2.0, "price": 155.0}
+
+    class _DummyStrat(strat_mod.Strategy):
+        def __init__(self):
+            self.ticker = "NVDA_US_EQ"
+            self.yahoo_sym = "NVDA"
+            self.ccy = "USD"
+            self.fx_to_usd = 1.0
+            self.dry_run = False
+            self.observe_only = False
+            self.desktop = False
+            self.exit_manager = None
+            self.client = SimpleNamespace(
+                latest_filled_order_for_ticker=_fake_hist,
+                get_portfolio=lambda: [{"ticker": "NVDA_US_EQ", "quantity": 2.0, "averagePrice": 150.0}],
+                list_active_orders=lambda: [],
+            )
+            self.p = SimpleNamespace(
+                ladder_min_free=0.0,
+                entry_amount=100.0,
+                max_dca_buys=3,
+                tp_ladder=[],
+                fx_fee_pct=0.0,
+            )
+            self.s = tbl._new_state()
+            self._now_val = t_now
+
+        def _now(self):
+            return self._now_val
+
+        def _log_msg(self, _msg):
+            pass
+
+        def _notify_trade(self, *_a, **_kw):
+            pass
+
+        def _save(self):
+            pass
+
+    ds = _DummyStrat()
+    # Opposite-side SELL with ISO filledAt newer than BUY filledAt MUST mark BUY history stale -> None
+    assert ds._exact_execution_price("BUY", 2.0, {}) is None
+
+    # 3. Dependent cross-check: corrupt far-future locked_zero_until (> now + 360s) is auto-cleared so real BUY fills are NOT ignored forever
+    ds.s["locked_zero_until"] = t_now + 86400.0
+    assert ds._reconcile_real(150.0) is True
+    assert ds.s["qty"] == pytest.approx(2.0)
+    assert "locked_zero_until" not in ds.s
+
+    # 4. Pure invariant & cross-check: Strategy._is_backoff_active respects valid 30m backoff and auto-clears corrupt far-future SL/TR/BUY/TP deadlines
+    ds.s["sl_fail_until"] = t_now + 600.0
+    assert ds._is_backoff_active("sl_fail_until", 1800.0) is True
+    ds.s["sl_fail_until"] = t_now + 86400.0
+    assert ds._is_backoff_active("sl_fail_until", 1800.0) is False
+    assert "sl_fail_until" not in ds.s
+
+    ds.s["tp_fail_until"] = {"5.0": t_now + 600.0, "10.0": t_now + 86400.0}
+    assert ds._is_backoff_active("tp_fail_until", 1800.0, subkey="5.0") is True
+    assert ds._is_backoff_active("tp_fail_until", 1800.0, subkey="10.0") is False
+    assert "10.0" not in ds.s["tp_fail_until"]
+    assert "5.0" in ds.s["tp_fail_until"]
+
+
 
