@@ -543,10 +543,7 @@ class Strategy(BaseSpotMixin):
                 save_fn()
             return _PLACEMENT_BACKOFF_CAP_SEC
         rem = until_f - now_f
-        if rem <= 0.0:
-            records.pop(key, None)
-            return 0.0
-        return rem
+        return rem if rem > 0.0 else 0.0
 
     def _record_placement_backoff(self, side: str, kind: str, error) -> None:
         key = self._placement_backoff_key(side, kind)

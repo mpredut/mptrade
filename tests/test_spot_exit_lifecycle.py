@@ -1787,6 +1787,9 @@ def test_pass24_placement_backoff_heals_far_future_and_reload_detects_backward_m
     clock[0] += _PLACEMENT_BACKOFF_CAP_SEC + 1.0
     rem_after = Strategy._placement_backoff_remaining(strat, "BUY", "DCA")
     assert rem_after == 0.0
+    # Attempt counter persists after expiry so consecutive refusals escalate exponentially until cleared on success
+    assert strat.s["placement_backoffs"]["buy:DCA"]["attempts"] == 2
+    Strategy._clear_placement_backoff(strat, "BUY", "DCA")
     assert "buy:DCA" not in strat.s["placement_backoffs"]
 
     # 2. Dependent cross-check: _run_strategy_loop(reload_external=True) reloads when mtime moves backward

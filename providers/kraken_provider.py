@@ -1,11 +1,11 @@
 # kraken_provider.py
 """Kraken spot adapter backed by ``kraken/kraken_client.py``.
 
-Symbols are native Kraken pairs such as ``HYPEUSD``. ``supports_symbol`` deliberately
-returns false, so instruments must select this adapter explicitly and cannot collide
-with Hyperliquid's HYPE routing. Public prices work without credentials; account and
-execution methods require Kraken keys loaded lazily from the environment or Kraken
-configuration.
+Symbols are native Kraken pairs such as ``HYPEUSD`` and ``SPCXxUSD``. ``supports_symbol``
+delegates to ``instrument_registry.venue_for_symbol`` so routing stays symmetric across
+providers without colliding with Hyperliquid's HYPE spot pair. Public prices work without
+credentials; account and execution methods require Kraken keys loaded lazily from the
+environment or Kraken configuration.
 
 The legacy ``place_order`` path submits validation-only requests unless
 ``KRAKEN_LIVE_ORDERS=true``. The StrategyExecutor ``submit_order`` path is intentionally

@@ -1765,7 +1765,7 @@ def test_iter51_hl_client_strict_empty_str_portfolio_ssot_forwarding_and_daemon_
     monkeypatch.setattr(
         ssot_mod,
         "read_json_dict_recovering",
-        lambda p: {"pid": os.getpid(), "ts": 9999999999.0, "intervals": {"fast": 10}},
+        lambda p: {"pid": os.getpid(), "ts": time.time(), "intervals": {"fast": 10}},
     )
     hb = daemon_ssot.inspect_daemon_heartbeat(str(tmp_path), ("hb.json",))
     assert hb["running"] is True

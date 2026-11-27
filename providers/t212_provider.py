@@ -4,7 +4,7 @@
 The portfolio API exposes a current position rather than Binance-style fill history.
 For the shared monitoring interface, ``get_orders`` represents a held position as one
 synthetic buy at its average price; this is not historical order data. Symbols are
-Trading 212 tickers and this explicit-only adapter must be selected by the instrument.
+Trading 212 tickers routed symmetrically via ``instrument_registry.venue_for_symbol``.
 
 Client construction and credential loading are lazy. The legacy ``place_order`` path
 is gated by ``T212_LIVE_ORDERS`` unless a launcher injects an explicit live flag, and

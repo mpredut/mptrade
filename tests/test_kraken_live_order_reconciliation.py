@@ -293,7 +293,9 @@ class KrakenStatePersistenceTest(TempDirTestCase):
         state2["sl_low"] = 35.0
         state2["ledger_reconcile_required"] = True
         engine2 = _strategy(state=state2)
+        engine2.client._executor = engine2.client
         engine2.client.free_balance.return_value = 0.0
+        engine2.client.open_orders.return_value = []
         engine2.step(93.30, timestamp=1793289000.0)
         self.assertEqual(engine2.s["qty"], 0.0)
         self.assertEqual(engine2.s["cycle_fees"], 0.0)

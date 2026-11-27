@@ -2433,25 +2433,26 @@ def _format_recent_order_line(sym: str, oinfo: Dict[str, Any], now_ms: int) -> s
         sym = ro_ident.display_symbol
     open_lots_ro = oinfo.get("open_lots") if isinstance(oinfo.get("open_lots"), list) else []
 
+    def _entry_ts_ms(entry_obj: Dict[str, Any]) -> int:
+        raw_ms = safe_pos_float(entry_obj.get("ts_ms"), default=None)
+        if raw_ms is None:
+            ts_s = first_epoch_sec(entry_obj.get("ts_ms"), entry_obj.get("ts"), default=None, allow_iso=True)
+            raw_ms = (ts_s * 1000.0) if ts_s is not None else None
+        return round(raw_ms) if (raw_ms is not None and raw_ms <= now_ms + 60_000.0) else 0
+
     def _side_summary(key: str) -> str:
         entry = oinfo.get(key) if isinstance(oinfo.get(key), dict) else {}
         px = round_opt_px(entry.get("price"), 6)
         if px is None:
             return "none"
-        ts_s = first_epoch_sec(entry.get("ts_ms"), entry.get("ts"), default=None, allow_iso=True)
-        ts = round(ts_s * 1000.0) if (ts_s is not None and ts_s * 1000.0 <= now_ms + 60_000.0) else 0
+        ts = _entry_ts_ms(entry)
         age_h = max(0.0, round((now_ms - ts) / 3_600_000.0, 1)) if ts > 0 else None
         tag = entry.get("actor_tag") or format_actor_tag(entry.get("actor"), entry.get("module"), entry.get("rule"))
         qty_v = entry.get("qty")
         qty_pfx = f"{_fmt_plain_float(qty_v)} @ " if qty_v is not None else ""
         meta_parts = ([f"age={age_h}h"] if age_h is not None else []) + ([f"by={tag}"] if tag else [])
         other_entry = oinfo.get("last_sell") if isinstance(oinfo.get("last_sell"), dict) else {}
-        other_ts_s = first_epoch_sec(other_entry.get("ts_ms"), other_entry.get("ts"), default=None, allow_iso=True)
-        other_ts = (
-            round(other_ts_s * 1000.0)
-            if (other_ts_s is not None and other_ts_s * 1000.0 <= now_ms + 60_000.0)
-            else 0
-        )
+        other_ts = _entry_ts_ms(other_entry)
         if key == "last_buy" and is_last_buy_lot_harvested(
             px,
             open_lots_ro,
