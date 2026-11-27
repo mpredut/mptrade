@@ -698,11 +698,16 @@ def filter_and_normalize_open_orders(
             if not inferred or str(inferred).strip().lower() not in allowed_set:
                 continue
         original_qty = safe_nonneg_float(extract_orig_qty(order, default=0.0), default=0.0) or 0.0
-        executed_qty = _first_mapped(order, _EXEC_QTY_KEYS, _nonneg_abs_float, 0.0)
+        executed_qty = _first_mapped(order, _EXEC_QTY_KEYS, _nonneg_abs_float, None)
+        if executed_qty is None:
+            if ("origSz" in order and "sz" in order) or isinstance(order.get("filled"), dict):
+                executed_qty = safe_nonneg_float(extract_executed_qty(order, default=0.0), default=0.0) or 0.0
+            else:
+                executed_qty = safe_nonneg_float(order.get("cumQty"), default=0.0) or 0.0
         remaining_qty = extract_remaining_qty(order, default=max(0.0, original_qty - executed_qty))
         ts_ms = extract_timestamp_ms(order, default=0) or 0
         ts_sec = safe_nonneg_ts(ts_ms, default=0.0)
-        raw_time = safe_nonneg_float(order.get("time"), default=None)
+        raw_time = safe_pos_float(order.get("time"), default=None)
         if raw_time is not None:
             ts_sec = (
                 raw_time / 1000.0

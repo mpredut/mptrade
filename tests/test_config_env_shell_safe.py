@@ -2110,6 +2110,144 @@ def test_pass28_manage_backups_and_gitautodeploy_fail_closed_on_errors(tmp_path)
     assert "restarted the fleet" in curl_log.read_text(encoding="utf-8")
 
 
+def test_pass31_run_dev_regression_fail_closed_and_future_ts_age(tmp_path):
+    """Pass 31 pure invariant + cross-check: run_dev_regression.sh rejects far-future status ts and fails closed when status is FAILED despite rc=0."""
+    import sys
+
+    reg_script = os.path.join(ROOT, "offline", "runners", "run_dev_regression.sh")
+    chk = subprocess.run(["bash", "-n", reg_script], capture_output=True, text=True, check=False)
+    assert chk.returncode == 0, chk.stderr
+
+    fake_root = tmp_path / "reg_root"
+    fake_home = tmp_path / "reg_home"
+    fake_bin = tmp_path / "reg_bin"
+    (fake_root / "cachedb" / "system").mkdir(parents=True)
+    (fake_root / "logs").mkdir(parents=True)
+    fake_home.mkdir()
+    fake_bin.mkdir()
+    (fake_root / "config.env").write_text(
+        "NTFY_TOPIC_SERVER=ntfy-srv-p31\nNTFY_TOPIC_ERROR=ntfy-err-p31\n",
+        encoding="utf-8",
+    )
+    curl_log = tmp_path / "reg_curl.log"
+    _write_bash_stub(fake_bin, "ssh", "exit 1")
+    _write_bash_stub(fake_bin, "curl", f'printf "%s\\n" "$*" >> "{curl_log}"\nexit 0')
+
+    fake_python = tmp_path / "fake_python.sh"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-m" ] && [ "${2:-}" = "pytest" ]; then\n'
+        '  printf "%s\\n" "${FAKE_PYTEST_OUT:-}"\n'
+        '  exit "${FAKE_PYTEST_RC:-0}"\n'
+        "fi\n"
+        f'exec "{sys.executable}" "$@"\n',
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    base_env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(fake_home),
+        "ROOT": str(fake_root),
+        "REPO_ROOT": str(fake_root),
+        "PYTHONPATH": ROOT,
+        "PYTHON_BIN": str(fake_python),
+        "SKIP_GIT_SYNC": "1",
+        "DEV_REGRESSION_LOCK": str(tmp_path / "reg.lock"),
+        "DEV_REGRESSION_QUEUE_LOCK": str(tmp_path / "reg_q.lock"),
+        "DEV_CI_WATCHER_LOCK": str(tmp_path / "reg_w.lock"),
+        "OVERNIGHT_SUITE_LOCK": str(tmp_path / "reg_o.lock"),
+        "OS_NOTIFY_DEDUP_SECONDS": "0",
+        "OS_NOTIFY_GATE_SECONDS": "0",
+        "OS_NOTIFY_TOPIC_BULK_SECONDS": "0",
+    }
+    status_path = fake_root / "cachedb" / "system" / "dev_regression_status.json"
+
+    # 1. Pure invariant (do_check): corrupt far-future ts must print 'unknown age' instead of fake '0m ago'
+    status_path.write_text(
+        json.dumps({
+            "status": "PASSED",
+            "commit_short": "abc1234",
+            "commit_msg": "future ts check",
+            "passed": 10,
+            "failed": 0,
+            "duration_sec": 5,
+            "ts": int(time.time()) + 7200,
+        }),
+        encoding="utf-8",
+    )
+    res_chk_future = subprocess.run(
+        ["bash", reg_script, "check"],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_chk_future.returncode == 0, res_chk_future.stderr
+    assert "unknown age" in res_chk_future.stdout
+    assert "0m ago" not in res_chk_future.stdout
+
+    # Control: valid past ts prints accurate minute age
+    status_path.write_text(
+        json.dumps({
+            "status": "PASSED",
+            "commit_short": "abc1234",
+            "commit_msg": "valid ts check",
+            "passed": 10,
+            "failed": 0,
+            "duration_sec": 5,
+            "ts": int(time.time()) - 180,
+        }),
+        encoding="utf-8",
+    )
+    res_chk_past = subprocess.run(
+        ["bash", reg_script, "check"],
+        env=base_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_chk_past.returncode == 0, res_chk_past.stderr
+    assert "m ago" in res_chk_past.stdout
+    assert "unknown age" not in res_chk_past.stdout
+
+    # 2. Dependent cross-check (do_run): pytest rc=0 with 0 passed MUST fail closed (exit 1, status=FAILED, exit_code=1, no RECOVERED alert)
+    status_path.write_text(json.dumps({"status": "FAILED", "ts": int(time.time()) - 60}), encoding="utf-8")
+    res_zero = subprocess.run(
+        ["bash", reg_script, "run"],
+        env={**base_env, "FAKE_PYTEST_OUT": "0 passed in 0.01s", "FAKE_PYTEST_RC": "0"},
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_zero.returncode == 1
+    st_zero = json.loads(status_path.read_text(encoding="utf-8"))
+    assert st_zero["status"] == "FAILED"
+    assert st_zero["exit_code"] == 1
+    assert "PASSED on commit" not in res_zero.stdout
+    curl_zero = curl_log.read_text(encoding="utf-8")
+    assert "DEV CI Regression FAILED" in curl_zero
+    assert "DEV CI Regression RECOVERED" not in curl_zero
+
+    # 3. Control cross-check (do_run): valid passing pytest transitions FAILED -> PASSED cleanly with exit 0 and RECOVERED alert
+    curl_log.unlink()
+    res_pass = subprocess.run(
+        ["bash", reg_script, "run"],
+        env={**base_env, "FAKE_PYTEST_OUT": "5 passed in 0.02s", "FAKE_PYTEST_RC": "0"},
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_pass.returncode == 0, res_pass.stderr
+    st_pass = json.loads(status_path.read_text(encoding="utf-8"))
+    assert st_pass["status"] == "PASSED"
+    assert st_pass["exit_code"] == 0
+    assert st_pass["passed"] == 5
+    assert "PASSED on commit" in res_pass.stdout
+    assert "DEV CI Regression RECOVERED" in curl_log.read_text(encoding="utf-8")
+
+
+
 
 
 

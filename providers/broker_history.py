@@ -148,23 +148,24 @@ def normalize_broker_history_items(items: Any) -> dict[str, list[dict]]:
         ticker = extract_broker_order_ticker(enriched).upper()
         if not ticker:
             continue
-        raw_qty = safe_float(
-            enriched.get("orderedQuantity")
-            if enriched.get("orderedQuantity") is not None
-            else enriched.get("quantity"),
-            default=0.0,
-        ) or 0.0
+        raw_qty = 0.0
+        for q_key in ("orderedQuantity", "quantity"):
+            q_cand = safe_float(enriched.get(q_key), default=None)
+            if q_cand is not None and q_cand != 0.0:
+                raw_qty = q_cand
+                break
         sign_qty = raw_qty
         if sign_qty == 0.0:
             for orig_ord, orig_fill in matches:
-                cand_q = safe_float(
-                    orig_ord.get("filledQuantity")
-                    if orig_ord.get("filledQuantity") is not None
-                    else (orig_fill.get("quantity") if isinstance(orig_fill, dict) else None),
-                    default=0.0,
-                ) or 0.0
-                if cand_q != 0.0:
-                    sign_qty = cand_q
+                for cand_raw in (
+                    orig_ord.get("filledQuantity") if isinstance(orig_ord, dict) else None,
+                    orig_fill.get("quantity") if isinstance(orig_fill, dict) else None,
+                ):
+                    cand_q = safe_float(cand_raw, default=None)
+                    if cand_q is not None and cand_q != 0.0:
+                        sign_qty = cand_q
+                        break
+                if sign_qty != 0.0:
                     break
         side = extract_order_side(enriched) or ("SELL" if sign_qty < 0 else "BUY")
         exec_qty = first_pos_float(

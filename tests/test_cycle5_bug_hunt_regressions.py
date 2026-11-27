@@ -464,7 +464,8 @@ def test_cycle5_inspect_prod_fleet_distinct_ssh_paths_and_flat_breadth(monkeypat
 
 
 def test_cycle5_monitor_night_no_deleted_healthcheck_sh():
-    src = Path("/home/predut/mptrade/verify_tools/monitor_night.py").read_text(encoding="utf-8")
+    repo_root = Path(__file__).resolve().parent.parent
+    src = (repo_root / "verify_tools" / "monitor_night.py").read_text(encoding="utf-8")
     assert "healthcheck.sh" not in src
     assert "trading-orchestrator.service" in src
     assert "__RESTART_OK__" in src
@@ -483,7 +484,8 @@ def test_cycle5_rtrade_pair_store_skips_unpersisted_terminal_checkpoint(tmp_path
 
 
 def test_cycle5_rtrade_loop_isolates_per_coordinator_step_error():
-    src = Path("/home/predut/mptrade/rtrade.py").read_text(encoding="utf-8")
+    repo_root = Path(__file__).resolve().parent.parent
+    src = (repo_root / "rtrade.py").read_text(encoding="utf-8")
     loop_block = src.split("survivors, checkpoints = [], []", 1)[1].split("pair_store.checkpoint_many(checkpoints)", 1)[0]
     assert "except Exception as step_exc:" in loop_block
     assert "survivors.append(coordinator)" in loop_block

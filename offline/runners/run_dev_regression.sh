@@ -90,12 +90,15 @@ try:
     cm = d.get("commit_short", "unknown")
     msg = d.get("commit_msg", "")
     ts_val = safe_int(d.get("ts"), default=0)
-    age = max(0, safe_int(time.time() - ts_val, default=0)) // 60 if ts_val else 0
+    now_s = time.time()
+    age_valid = ts_val > 0 and ts_val <= now_s + 60.0
+    age = max(0, safe_int(now_s - ts_val, default=0)) // 60 if age_valid else -1
+    age_txt = f"{age}m ago" if age >= 0 else "unknown age"
     if os.environ.get("IS_RUNNING") == "true":
-        print(f"[DEV CI] RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age}m ago).")
+        print(f"[DEV CI] RUNNING: A new regression is currently in progress on DEV (last finished: {st} on {cm} {age_txt}).")
     else:
         icon = "[PASS]" if st == "PASSED" else "[FAIL]"
-        print(f"[DEV CI] {icon} {st} on [{cm}] (\"{msg}\") | Passed: {d.get('passed', 0)} | Failed: {d.get('failed', 0)} | Time: {d.get('duration_sec', 0)}s | Completed {age}m ago")
+        print(f"[DEV CI] {icon} {st} on [{cm}] (\"{msg}\") | Passed: {d.get('passed', 0)} | Failed: {d.get('failed', 0)} | Time: {d.get('duration_sec', 0)}s | Completed {age_txt}")
 except Exception as e:
     print(f"[DEV CI] Error reading status: {e}")
 EOF
@@ -158,6 +161,7 @@ do_run() {
 
     ( exec 8>&-; timeout --kill-after=30 "$REGRESSION_TIMEOUT_SEC" "$PYTHON_BIN" -m pytest tests/ -q ) > "$LOG_FILE.run" 2>&1 || rc=$?
     duration=$(($(date +%s) - start_ts))
+    [ "$duration" -lt 0 ] && duration=0
     cat "$LOG_FILE.run" >> "$LOG_FILE"
     prev_status="$("$PYTHON_BIN" -c 'import sys; from state_io import read_json_dict; print(read_json_dict(sys.argv[1], default={}).get("status",""))' "$STATUS_JSON" 2>/dev/null || true)"
 
@@ -169,7 +173,7 @@ import os, re, sys, time
 from botcore import safe_int
 from state_io import atomic_write_json, read_text_file
 rc = safe_int(os.environ.get("REG_RC"), default=0)
-duration = safe_int(os.environ.get("REG_DURATION"), default=0)
+duration = max(0, safe_int(os.environ.get("REG_DURATION"), default=0))
 status_json_path = os.environ["REG_STATUS_JSON"]
 counts = {"passed": 0, "failed": 0, "errors": 0, "warnings": 0}
 try:
@@ -194,14 +198,21 @@ try:
 except Exception as e:
     print(f"Warning parsing test output: {e}", file=sys.stderr)
 status = "PASSED" if rc == 0 and counts["passed"] > 0 and counts["failed"] == 0 and counts["errors"] == 0 else "FAILED"
+eff_rc = 0 if status == "PASSED" else (rc if rc != 0 else 1)
 status_data = {
-    "status": status, "exit_code": rc,
+    "status": status, "exit_code": eff_rc,
     "commit": os.environ.get("REG_COMMIT_HASH", ""), "commit_short": os.environ.get("REG_COMMIT_SHORT", ""), "commit_msg": os.environ.get("REG_COMMIT_MSG", ""),
     **counts, "duration_sec": duration, "started_at": os.environ.get("REG_START_ISO", ""), "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "ts": safe_int(time.time(), default=0),
 }
 atomic_write_json(status_json_path, status_data, indent=2)
 print(f"[dev_regression] Status: {status} | Passed: {counts['passed']} | Failed: {counts['failed']} | Duration: {duration}s")
 EOF
+
+    local computed_status=""
+    computed_status="$("$PYTHON_BIN" -c 'import sys; from state_io import read_json_dict; print(read_json_dict(sys.argv[1], default={}).get("status","FAILED"))' "$STATUS_JSON" 2>/dev/null || echo "FAILED")"
+    if [ "$rc" -eq 0 ] && [ "$computed_status" != "PASSED" ]; then
+        rc=1
+    fi
 
     local failed_tests=""
     if [ "$rc" -ne 0 ] && [ -f "$LOG_FILE.run" ]; then

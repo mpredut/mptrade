@@ -738,6 +738,18 @@ def resolve_yahoo_chart_market_state_and_price(
     eff_now = resolve_now_ts(now_ts) if now_ts is not None else 0.0
     mkt_state = str(meta_d.get("marketState") or "").strip().upper()
     reg_time_s = normalize_epoch_sec(meta_d.get("regularMarketTime"), default=None)
+    latest_pt: Optional[tuple[float, float]] = None
+    if pts:
+        if eff_now > 0.0:
+            max_pt_ts = eff_now + 60.0
+            for cand_pt in reversed(pts):
+                if isinstance(cand_pt, (list, tuple)) and len(cand_pt) >= 2:
+                    pt_t = normalize_epoch_sec(cand_pt[0], default=None)
+                    if pt_t is not None and pt_t <= max_pt_ts:
+                        latest_pt = (pt_t, cand_pt[1])
+                        break
+        else:
+            latest_pt = pts[-1]
     if (
         not mkt_state
         and _parse_bool_flag(meta_d.get("hasPrePostMarketData"), False)
@@ -750,7 +762,7 @@ def resolve_yahoo_chart_market_state_and_price(
         r_end = normalize_epoch_sec(reg_d.get("end"), default=None)
         pre_start = normalize_epoch_sec(pre_d.get("start"), default=None)
         post_end = normalize_epoch_sec(post_d.get("end"), default=None)
-        bar_ts = pts[-1][0] if pts else None
+        bar_ts = latest_pt[0] if latest_pt is not None else None
         probe_ts = (
             eff_now
             if (eff_now > 0.0 and bar_ts is not None and eff_now > bar_ts + 900.0)
@@ -772,13 +784,13 @@ def resolve_yahoo_chart_market_state_and_price(
             if mkt_state in ("PRE", "PREPRE")
             else first_pos_float(meta_d.get("postMarketPrice"), meta_d.get("preMarketPrice"))
         )
-        if ext_px is None and reg_time_s is not None and pts and pts[-1][0] > reg_time_s + 60.0:
-            ext_px = safe_pos_float(pts[-1][1], default=None)
+        if ext_px is None and reg_time_s is not None and latest_pt is not None and latest_pt[0] > reg_time_s + 60.0:
+            ext_px = safe_pos_float(latest_pt[1], default=None)
     px = first_pos_float(
         meta_d.get("fulldayPrice"),
         ext_px,
         meta_d.get("regularMarketPrice"),
-        pts[-1][1] if pts else None,
+        latest_pt[1] if latest_pt is not None else None,
     )
     return mkt_state, px, ext_px
 
@@ -1017,11 +1029,13 @@ def normalize_yahoo_5d_chart_bars(
             ),
             key=lambda pt: pt[0],
         )
+    now_ms_i = math.trunc(resolve_now_ts(now_ts) * 1000.0)
+    max_bar_ms = now_ms_i + 300_000
+    pts_5d = [pt for pt in pts_5d if pt[0] <= max_bar_ms]
     if not pts_5d:
         return [], [], [], False, False, 0.0, 0
     rth_open = bool(_parse_bool_flag(eq_rth_open, False))
     chart_px = safe_pos_float(pts_5d[-1][1], default=0.0) or 0.0
-    now_ms_i = math.trunc(resolve_now_ts(now_ts) * 1000.0)
     raw_last_5d_ts = math.trunc(pts_5d[-1][0])
     if len(pts_5d) >= 10:
         for split_idx in range(len(pts_5d) - 1, max(4, len(pts_5d) - 4), -1):

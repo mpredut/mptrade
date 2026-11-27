@@ -1584,4 +1584,163 @@ def test_pass24_tracked_lifecycle_heals_far_future_created_at_for_max_age_cancel
     assert res2.outcome == "terminal"
 
 
+def test_pass31_open_order_partial_fill_time_zero_broker_history_and_yahoo_future_bars():
+    """Pass 31 pure invariants + cross-checks for order_ohlc_utils, broker_history, and ohlc_utils."""
+    now_s = 1_760_000_000.0
+    stale_ts_s = now_s - 3600.0
+
+    # 1. Pure invariant + dependent cross-check: filter_and_normalize_open_orders + iter_expired_open_order_ids
+    # Hyperliquid partial fill (origSz/sz) preserves executedQty=6.0, remainingQty=4.0,
+    # and explicit time=0 must NOT erase a valid fallback timestamp (which would prevent expiry).
+    hl_partial = {
+        "orderId": "HL-991",
+        "side": "SELL",
+        "price": "42.5",
+        "origSz": "10.0",
+        "sz": "4.0",
+        "time": 0,
+        "timestamp": int(stale_ts_s * 1000),
+    }
+    fresh_ord = {
+        "orderId": "HL-992",
+        "side": "SELL",
+        "price": "43.0",
+        "origSz": "5.0",
+        "sz": "5.0",
+        "timestamp": int((now_s - 30.0) * 1000),
+    }
+    norm_open = order_ohlc_utils.filter_and_normalize_open_orders([hl_partial, fresh_ord], "SELL")
+    assert set(norm_open.keys()) == {"HL-991", "HL-992"}
+    assert norm_open["HL-991"]["origQty"] == pytest.approx(10.0)
+    assert norm_open["HL-991"]["executedQty"] == pytest.approx(6.0)
+    assert norm_open["HL-991"]["remainingQty"] == pytest.approx(4.0)
+    assert norm_open["HL-991"]["timestamp"] == pytest.approx(stale_ts_s)
+    expired_ids = order_ohlc_utils.iter_expired_open_order_ids(
+        norm_open, 1800.0, current_time_sec=now_s
+    )
+    assert expired_ids == ["HL-991"]
+
+    # 2. Pure invariant + cross-check: normalize_broker_history_items must not let orderedQuantity=0
+    # or parent filledQuantity=0 shadow negative quantity on T212 SELL fills (which previously flipped side to BUY or dropped qty).
+    t212_items = [
+        {
+            "order": {
+                "id": "T212-SELL-1",
+                "ticker": "NVDA_US_EQ",
+                "status": "FILLED",
+                "orderedQuantity": 0,
+                "quantity": -2.5,
+                "filledQuantity": 0,
+                "filledValue": 375.0,
+                "dateModified": "2026-10-20T15:00:00Z",
+            },
+            "fill": {
+                "quantity": -2.5,
+                "price": 150.0,
+                "filledAt": "2026-10-20T15:00:00Z",
+            },
+        },
+        {
+            "order": {
+                "id": "T212-SELL-2",
+                "ticker": "NVDA_US_EQ",
+                "status": "FILLED",
+                "orderedQuantity": 0,
+                "quantity": 0,
+                "filledQuantity": 0,
+                "filledValue": 150.0,
+                "dateModified": "2026-10-20T15:05:00Z",
+            },
+            "fill": {
+                "quantity": -1.0,
+                "price": 150.0,
+                "filledAt": "2026-10-20T15:05:00Z",
+            },
+        },
+        {
+            "order": {
+                "id": "T212-BUY-1",
+                "ticker": "NVDA_US_EQ",
+                "status": "FILLED",
+                "orderedQuantity": 3.0,
+                "filledQuantity": 3.0,
+                "fillPrice": 148.0,
+                "dateModified": "2026-10-20T14:00:00Z",
+            },
+            "fill": {
+                "quantity": 3.0,
+                "price": 148.0,
+                "filledAt": "2026-10-20T14:00:00Z",
+            },
+        },
+    ]
+    by_sym = normalize_broker_history_items(t212_items)
+    rows = {r["orderId"]: r for r in by_sym["NVDA_US_EQ"]}
+    assert rows["T212-SELL-1"]["side"] == "SELL"
+    assert rows["T212-SELL-1"]["qty"] == pytest.approx(2.5)
+    assert rows["T212-SELL-2"]["side"] == "SELL"
+    assert rows["T212-SELL-2"]["qty"] == pytest.approx(1.0)
+    assert rows["T212-BUY-1"]["side"] == "BUY"
+    assert rows["T212-BUY-1"]["qty"] == pytest.approx(3.0)
+
+    # 3. Pure invariant + cross-check: Yahoo chart state/price & 5d bar normalization reject corrupt far-future trailing bars
+    rth_start = now_s - 3600.0
+    rth_end = now_s + 3600.0
+    meta = {
+        "hasPrePostMarketData": True,
+        "regularMarketTime": now_s - 60.0,
+        "regularMarketPrice": 200.0,
+        "currentTradingPeriod": {
+            "pre": {"start": rth_start - 7200.0, "end": rth_start},
+            "regular": {"start": rth_start, "end": rth_end},
+            "post": {"start": rth_end, "end": rth_end + 7200.0},
+        },
+    }
+    pts_with_future = [
+        (now_s - 120.0, 199.5),
+        (now_s - 60.0, 200.0),
+        (now_s + 30 * 86400.0, 9999.0),
+    ]
+    mkt_state, px, ext_px = ohlc_utils.resolve_yahoo_chart_market_state_and_price(
+        meta, pts_with_future, now_ts=now_s
+    )
+    assert mkt_state == "REGULAR"
+    assert ext_px is None
+    assert px == pytest.approx(200.0)
+
+    bars_5d = [
+        (now_s - 600.0, 198.0, 100.0),
+        (now_s - 300.0, 199.0, 120.0),
+        (now_s - 60.0, 200.5, 150.0),
+        (now_s + 30 * 86400.0, 9999.0, 500.0),
+    ]
+    pts_5d, _, _, rth_fresh, tick_fresh, chart_px, raw_last_ts = ohlc_utils.normalize_yahoo_5d_chart_bars(
+        (meta, bars_5d), [], now_s, eq_rth_open=True
+    )
+    assert len(pts_5d) == 3
+    assert chart_px == pytest.approx(200.5)
+    assert raw_last_ts == int((now_s - 60.0) * 1000)
+    assert rth_fresh is True
+    assert tick_fresh is True
+    # Dependent cross-check on dict-shaped Yahoo payload with corrupt far-future trailing bar
+    yahoo_dict_res = {
+        "timestamp": [int(now_s - 600), int(now_s - 300), int(now_s - 60), int(now_s + 30 * 86400)],
+        "indicators": {
+            "quote": [{
+                "close": [198.0, 199.0, 200.5, 9999.0],
+                "volume": [100.0, 120.0, 150.0, 500.0],
+            }]
+        },
+    }
+    pts_5d_d, _, _, rth_fresh_d, tick_fresh_d, chart_px_d, raw_last_ts_d = ohlc_utils.normalize_yahoo_5d_chart_bars(
+        yahoo_dict_res, [], now_s, eq_rth_open=True
+    )
+    assert len(pts_5d_d) == 3
+    assert chart_px_d == pytest.approx(200.5)
+    assert raw_last_ts_d == int((now_s - 60.0) * 1000)
+    assert rth_fresh_d is True
+    assert tick_fresh_d is True
+
+
+
 
