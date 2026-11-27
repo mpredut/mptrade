@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures as _futures
+import contextlib
 from dataclasses import dataclass
 import importlib
 import re
@@ -548,6 +549,16 @@ def fetch_requests_json_get(
             url, headers=headers, params=params, timeout=timeout, requests_mod=requests_mod, **kwargs
         )
     )
+
+
+@contextlib.contextmanager
+def keepalive_json_get_client():
+    """Yield a keep-alive ``fetch(url, timeout=...)`` backed by a pooled ``requests.Session``."""
+    req_mod = _resolve_requests_module()
+    with req_mod.Session() as sess:
+        def _fetch(url: str, *, timeout: float = 10.0) -> object:
+            return fetch_requests_json_get(url, timeout=timeout, requests_mod=sess)
+        yield _fetch
 
 
 def fetch_requests_json_post(

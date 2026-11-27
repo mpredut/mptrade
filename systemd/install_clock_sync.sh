@@ -32,7 +32,7 @@ if [ -f /etc/chrony/chrony.conf ] && [ ! -f /etc/chrony/chrony.conf.orig ]; then
   cp -a /etc/chrony/chrony.conf /etc/chrony/chrony.conf.orig
 fi
 
-install -d -m 0755 /etc/chrony/conf.d /var/lib/chrony /var/log/chrony
+install -d -m 0755 /etc/chrony/conf.d
 install -m 0644 -o root -g root "$CHRONY_SRC" /etc/chrony/chrony.conf
 chronyd -p -f /etc/chrony/chrony.conf >/dev/null
 

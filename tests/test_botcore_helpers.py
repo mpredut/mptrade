@@ -1806,6 +1806,17 @@ def test_clock_sync_policy_parsers_and_health_evaluator():
             _ = kwargs
             return ClockSample(source=self.name, kind="venue", ok=True, server_ms=1_795_000_000_000, offset_ms=4.0, rtt_ms=20)
 
+    class _MockFailingStrategy(ClockRepairStrategyBase):
+        name = "mock-failing-first"
+        priority = 0
+
+        def can_apply(self) -> bool:
+            return True
+
+        def repair(self, *, needs_makestep: bool = False) -> ClockRepairResult:
+            _ = needs_makestep
+            return ClockRepairResult(ok=False, strategy=self.name, message="wrapper missing subcommand", returncode=2)
+
     class _MockRepairStrategy(ClockRepairStrategyBase):
         name = "mock-ptp-resync"
         priority = 1
@@ -1822,6 +1833,7 @@ def test_clock_sync_policy_parsers_and_health_evaluator():
     p_reg.register_os_probe(_MockPtpOsProbe())
     p_reg.register_venue_probe(_MockNewVenueProbe())
     r_reg = ClockRepairRegistry()
+    r_reg.register_strategy(_MockFailingStrategy())
     r_reg.register_strategy(_MockRepairStrategy())
     svc = ClockSyncService(probe_registry=p_reg, repair_registry=r_reg)
     rep, repair_res = svc.check(include_venue_probes=True, auto_repair=True, policy=pol)

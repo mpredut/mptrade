@@ -45,7 +45,7 @@ from core.config import (
     required_float_env,
     required_int_env,
 )
-from core.http import fetch_public_json
+from core.http import keepalive_json_get_client
 
 TRADING_ADMIN_BIN: str = "/usr/local/sbin/trading-admin"
 
@@ -492,15 +492,25 @@ class VenueClockProbeBase(ClockProbeBase, ABC):
         now_ms_fn: Optional[Callable[[], int]] = None,
         max_rtt_ms: Optional[float] = None,
     ) -> ClockSample:
-        fetcher = fetch_json_fn if callable(fetch_json_fn) else fetch_public_json
         eff_timeout = safe_pos_float(timeout_sec, default=4.0) or 4.0
         try:
-            server_ms, offset_ms, rtt_ms = measure_rtt_compensated_offset_ms(
-                lambda: self.extract_server_time_ms(fetcher(self.url, timeout=eff_timeout)),
-                now_ms_fn=now_ms_fn,
-                max_rtt_ms=max_rtt_ms,
-                max_attempts=2 if max_rtt_ms is not None else 1,
-            )
+            if callable(fetch_json_fn):
+                server_ms, offset_ms, rtt_ms = measure_rtt_compensated_offset_ms(
+                    lambda: self.extract_server_time_ms(fetch_json_fn(self.url, timeout=eff_timeout)),
+                    now_ms_fn=now_ms_fn,
+                    max_rtt_ms=max_rtt_ms,
+                    max_attempts=2 if max_rtt_ms is not None else 1,
+                )
+            else:
+                with keepalive_json_get_client() as ka_fetch:
+                    # Warm the TCP+TLS socket once so handshake asymmetry does not bias the midpoint offset.
+                    ka_fetch(self.url, timeout=eff_timeout)
+                    server_ms, offset_ms, rtt_ms = measure_rtt_compensated_offset_ms(
+                        lambda: self.extract_server_time_ms(ka_fetch(self.url, timeout=eff_timeout)),
+                        now_ms_fn=now_ms_fn,
+                        max_rtt_ms=max_rtt_ms,
+                        max_attempts=2 if max_rtt_ms is not None else 1,
+                    )
             return ClockSample(
                 source=self.name,
                 kind="venue",
@@ -767,13 +777,21 @@ class ClockSyncService:
         return out
 
     def repair(self, *, needs_makestep: bool = False) -> ClockRepairResult:
+        failures: list[ClockRepairResult] = []
         for strat in self.repair_registry.list_strategies():
             try:
                 if not strat.can_apply():
                     continue
-                return strat.repair(needs_makestep=needs_makestep)
+                res = strat.repair(needs_makestep=needs_makestep)
+                if res.ok:
+                    return res
+                failures.append(res)
             except Exception as exc:
-                return ClockRepairResult(ok=False, strategy=strat.name, message=str(exc), returncode=1)
+                failures.append(ClockRepairResult(ok=False, strategy=strat.name, message=str(exc), returncode=1))
+        if failures:
+            last = failures[-1]
+            summary = " | ".join(f"{f.strategy}: {f.message}" for f in failures)
+            return ClockRepairResult(ok=False, strategy=last.strategy, message=summary, returncode=last.returncode or 1)
         return ClockRepairResult(ok=False, strategy="none", message="no applicable clock repair strategy", returncode=1)
 
     def check(
@@ -785,9 +803,14 @@ class ClockSyncService:
         policy: ClockSyncPolicy | Mapping[str, float | int] | None = None,
     ) -> tuple[ClockHealthReport, Optional[ClockRepairResult]]:
         eff_policy = policy if policy is not None else resolve_clock_sync_policy()
+        eff_rtt_cap = (
+            eff_policy.max_sync_rtt_ms
+            if isinstance(eff_policy, ClockSyncPolicy)
+            else safe_pos_float(eff_policy.get("max_sync_rtt_ms"), default=None)
+        )
         os_sample = self.collect_os_clock(timeout_sec=min(3.0, probe_timeout_sec))
         v_samples = (
-            self.probe_venues(timeout_sec=probe_timeout_sec)
+            self.probe_venues(timeout_sec=probe_timeout_sec, max_rtt_ms=eff_rtt_cap)
             if _parse_bool_flag(include_venue_probes, False)
             else {}
         )
@@ -797,7 +820,7 @@ class ClockSyncService:
             repair_res = self.repair(needs_makestep=report.needs_makestep)
             os_sample = self.collect_os_clock(timeout_sec=min(3.0, probe_timeout_sec))
             v_samples = (
-                self.probe_venues(timeout_sec=probe_timeout_sec)
+                self.probe_venues(timeout_sec=probe_timeout_sec, max_rtt_ms=eff_rtt_cap)
                 if _parse_bool_flag(include_venue_probes, False)
                 else {}
             )

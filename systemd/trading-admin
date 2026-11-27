@@ -70,7 +70,7 @@ case "$cmd" in
         systemctl start chrony.service
       fi
       chronyc -a burst 4/4 >/dev/null 2>&1 || true
-      sleep 2
+      chronyc waitsync 6 0.05 0.0 1 >/dev/null 2>&1 || true
       off_abs=$(chronyc -c tracking 2>/dev/null | awk -F',' '{v=$5+0; if (v<0) v=-v; printf "%.6f", v}')
       if [ -n "${off_abs:-}" ] && awk -v v="$off_abs" 'BEGIN { exit !(v >= 0.5) }'; then
         log "sync clock: large offset (${off_abs}s >= 0.5s) -> chronyc makestep"
