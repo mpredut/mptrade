@@ -261,8 +261,10 @@ def sample_current_prices(symbols, *, snapshot=None):
         if sample_ts is None or px_val is None:
             continue
         # The loop runs every two seconds, but the source may publish less often.
-        # Avoid recording the same tick repeatedly and inflating the log and RAM cache.
-        if sample_ts <= _LAST_SAMPLED_TS.get(symbol, -math.inf):
+        # Avoid recording the same tick repeatedly and inflating the log and RAM cache,
+        # while self-healing if _LAST_SAMPLED_TS sits in the future after a clock rollback.
+        prev_ts = _LAST_SAMPLED_TS.get(symbol, -math.inf)
+        if prev_ts <= now_s + 60.0 and sample_ts <= prev_ts:
             continue
         pending.append((symbol, sample_ts, raw_px))
     if not pending:
@@ -419,9 +421,16 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=None):
         )
         return entries
 
-    data = read_json_dict(path, default={}, recover_previous=True)
-    entries = lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
+    used_backup = False
     if readers_unpatched:
+        data = read_json_dict(path, default=None, recover_previous=False)
+        if data is None:
+            data = read_json_dict(path, default={}, recover_previous=True)
+            used_backup = True
+    else:
+        data = read_json_dict(path, default={}, recover_previous=True)
+    entries = lookup_symbol_cache_items(data, symbol, allow_base_fallback=False, require_list=True, unwrap_items=True) or []
+    if readers_unpatched and not used_backup:
         lru_dict_put(
             _PRICE_FILE_CACHE,
             cache_key,
@@ -431,9 +440,10 @@ def _load_cachedb_price_entries(filename, symbol, max_bytes=None):
     return entries
 
 
-def _ingest_cachedb_points(points: dict, entries) -> None:
+def _ingest_cachedb_points(points: dict, entries, *, max_ts_s=None) -> None:
     isfinite = math.isfinite
     trunc = math.trunc
+    upper_ts_s = min(max_ts_s, 32_503_680_000.0) if (max_ts_s is not None and max_ts_s > 0.0) else 32_503_680_000.0
     for entry in entries or ():
         if not isinstance(entry, (list, tuple)) or len(entry) < 2:
             continue
@@ -447,6 +457,9 @@ def _ingest_cachedb_points(points: dict, entries) -> None:
             t_ms = safe_pos_float(t_raw, default=None)
         if t_ms is None:
             continue
+        t_s = t_ms / 1000.0
+        if t_s <= 0.0 or t_s >= 32_503_680_000.0 or t_s > upper_ts_s:
+            continue
         p_type = type(p_raw)
         if p_type is float:
             p_val = p_raw if (p_raw > 0.0 and isfinite(p_raw)) else None
@@ -455,7 +468,7 @@ def _ingest_cachedb_points(points: dict, entries) -> None:
         else:
             p_val = safe_pos_float(p_raw, default=None)
         if p_val is not None:
-            points[trunc(t_ms / 1000.0)] = p_val
+            points[trunc(t_s)] = p_val
 
 
 def load_price_series_live(symbol, days_back, include_history=True):
@@ -467,19 +480,20 @@ def load_price_series_live(symbol, days_back, include_history=True):
     windows already covered by dense caches, saving parsing on each cycle.
     """
     points = {}
+    max_ts_s = time.time() + 60.0
     if include_history:
-        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_sparse_price_filename(symbol), symbol))
-        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_365_price_filename(symbol), symbol))
+        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_sparse_price_filename(symbol), symbol), max_ts_s=max_ts_s)
+        _ingest_cachedb_points(points, _load_cachedb_price_entries(cache_365_price_filename(symbol), symbol), max_ts_s=max_ts_s)
     own_ts, own_px = load_price_samples(symbol, days_back)
     for t, p in zip(own_ts, own_px):
-        t_val = safe_pos_float(t, default=None)
+        t_val = normalize_epoch_sec(t, default=None)
         p_val = safe_pos_float(p, default=None)
-        if t_val is not None and p_val is not None:
+        if t_val is not None and p_val is not None and 0.0 < t_val <= max_ts_s:
             points[math.trunc(t_val)] = p_val
     c24_entries = _load_cachedb_price_entries(cache_24_price_filename(symbol), symbol)
     if not c24_entries:
         c24_entries = _load_cachedb_price_entries(cache_24_price_filename(symbol, ext=".json"), symbol)
-    _ingest_cachedb_points(points, c24_entries)
+    _ingest_cachedb_points(points, c24_entries, max_ts_s=max_ts_s)
     ts_sorted = sorted(points)
     return ts_sorted, [points[t] for t in ts_sorted]
 
@@ -1236,6 +1250,7 @@ setInterval(function() {{
                 write_html(
                     symbols, live_minutes=live_minutes, active_summary=active_summary, refresh_ms=html_refresh_ms,
                 )
+            render_had_error = False
             for symbol in symbols:
                 try:
                     chart_specs = [
@@ -1310,10 +1325,11 @@ setInterval(function() {{
                             render_state_image(state_text, state_out)
                             last_state_text[symbol] = state_text
                 except Exception as e:
+                    render_had_error = True
                     print(f"[tradeall_observe] render error {symbol}: {e}")
-            if due_day:
+            if due_day and not render_had_error:
                 last_day_mono = cycle_mono
-            if due_week:
+            if due_week and not render_had_error:
                 last_week_mono = cycle_mono
             last_memory_trim = _trim_memory_and_sleep(last_memory_trim, interval_sec)
     except KeyboardInterrupt:

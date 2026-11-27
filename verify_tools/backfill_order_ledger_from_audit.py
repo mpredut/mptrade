@@ -24,12 +24,14 @@ from botcore import (
     clean_scalar_str,
     clean_upper_scalar,
     extract_order_id,
+    normalize_epoch_sec,
     safe_nonneg_float,
     safe_nonneg_int,
     safe_pos_float,
 )
 from providers.execution_audit import iter_audit_jsonl_paths
 from providers.order_id_context import all_correlatable_client_order_ids, extract_client_order_id
+from providers.order_ohlc_utils import _EXEC_QTY_KEYS, extract_executed_qty
 from providers.order_ledger import (
     OrderLedgerReader,
     _AUDIT_EVENT_TO_LEDGER_EVENT,
@@ -62,7 +64,7 @@ def _convert_audit_row_to_ledger_event(rec: dict[str, Any]) -> Optional[dict[str
     mapped = _AUDIT_EVENT_TO_LEDGER_EVENT.get(ev_name) or _EXTRA_BACKFILL_EVENT_MAP.get(ev_name)
     if mapped is None:
         return None
-    ts_v = safe_pos_float(rec.get("ts"), default=None)
+    ts_v = normalize_epoch_sec(rec.get("ts"), default=None)
     if ts_v is None:
         return None
     venue = rec.get("venue")
@@ -70,6 +72,10 @@ def _convert_audit_row_to_ledger_event(rec: dict[str, Any]) -> Optional[dict[str
     if not clean_scalar_str(symbol):
         return None
     fq_val = safe_nonneg_float(rec.get("filled_qty"), default=None)
+    if fq_val is None and (any(k in rec for k in _EXEC_QTY_KEYS) or ("origSz" in rec and "sz" in rec)):
+        fq_val = safe_nonneg_float(extract_executed_qty(rec, default=None), default=None)
+    elif fq_val is None:
+        fq_val = safe_nonneg_float(rec.get("cumQty"), default=None)
     cost_val = safe_nonneg_float(rec.get("cost"), default=None)
     avg_px = (
         (cost_val / fq_val)
@@ -150,30 +156,31 @@ def backfill_order_ledger_from_audit(
     cachedb_dir: str,
     *,
     dry_run: bool = False,
+    now_ts: Optional[float] = None,
 ) -> dict[str, Any]:
     """Backfill legacy ``execution_audit_*.jsonl`` history into Order Ledger events & closed archives."""
     reader = OrderLedgerReader(cachedb_dir=cachedb_dir)
-    live_day, live_ts = _find_first_live_event_boundary(reader)
+    now_s = safe_pos_float(now_ts, default=None) or time.time()
+    live_day, live_ts = _find_first_live_event_boundary(reader, now_ts=now_s)
 
     audit_paths = iter_audit_jsonl_paths(audit_dir, max_day=live_day) if live_day else iter_audit_jsonl_paths(audit_dir)
     events_by_day: dict[str, list[dict[str, Any]]] = {}
     day_source_mtime: dict[str, float] = {}
     all_backfill_events: list[dict[str, Any]] = []
     source_rows = 0
-    now_s = time.time()
-    max_mtime = now_s + 60.0
+    max_ts = now_s + 60.0
     for ap in audit_paths:
         base = os.path.basename(ap)
         fday = base[len("execution_audit_") : -len(".jsonl")] if base.startswith("execution_audit_") and base.endswith(".jsonl") else ""
         try:
             raw_mtime = os.path.getmtime(ap)
-            ap_mtime = raw_mtime if (0.0 < raw_mtime <= max_mtime) else 0.0
+            ap_mtime = raw_mtime if (0.0 < raw_mtime <= max_ts) else 0.0
         except OSError:
             ap_mtime = 0.0
         for rec in read_jsonl_dicts(ap):
             source_rows += 1
-            ts_r = safe_pos_float(rec.get("ts"), default=None)
-            if ts_r is None:
+            ts_r = normalize_epoch_sec(rec.get("ts"), default=None)
+            if ts_r is None or ts_r > max_ts:
                 continue
             if live_ts > 0.0 and ts_r >= live_ts:
                 continue

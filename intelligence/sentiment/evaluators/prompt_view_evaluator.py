@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from botcore import (
     _parse_bool_flag,
     first_epoch_sec,
+    first_pos_float,
     normalize_epoch_sec,
     resolve_now_ts,
     safe_float,
@@ -71,6 +72,10 @@ from instrument_registry import (
     is_equity_symbol,
     observe_only_registry_symbols,
     resolve_symbol_identity,
+)
+from providers.order_ohlc_utils import (
+    _EXEC_QTY_KEYS,
+    extract_executed_qty,
 )
 from providers.order_status_ssot import (
     TERMINAL_CANCEL_VENUE_STATUSES,
@@ -601,7 +606,14 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
     cls_name = "PortfolioPromptViewEvaluator"
 
     @staticmethod
-    def _clean_open_orders(open_lim: List[Any]) -> Tuple[List[Any], set[str]]:
+    def _open_order_executed_qty(order: Dict[str, Any]) -> float:
+        if any(k in order for k in _EXEC_QTY_KEYS) or ("origSz" in order and "sz" in order) or isinstance(order.get("filled"), dict):
+            return safe_nonneg_float(extract_executed_qty(order, default=0.0), default=0.0) or 0.0
+        cum_q = safe_nonneg_float(order.get("cumQty"), default=None)
+        return cum_q if cum_q is not None else 0.0
+
+    @classmethod
+    def _clean_open_orders(cls, open_lim: List[Any]) -> Tuple[List[Any], set[str]]:
         def _clean_order_val(k: str, v: Any) -> Any:
             if k == "fill_prob_1h_pct" and not isinstance(v, bool):
                 fp = safe_nonneg_float(v, default=None)
@@ -609,21 +621,25 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                     return round(fp) if fp >= 1.0 else round(fp, 1)
             return v
 
-        clean_open_lim = [
-            {
+        clean_open_lim: List[Any] = []
+        for o in open_lim:
+            if not isinstance(o, dict):
+                clean_open_lim.append(o)
+                continue
+            exec_q = cls._open_order_executed_qty(o)
+            cleaned_o = {
                 k: _clean_order_val(k, v)
                 for k, v in o.items()
                 if k not in _DUP_OPEN_ORDER_KEYS
                 and not (
                     k in ("orig_qty", "remaining_qty")
                     and v == o.get("qty")
-                    and (safe_float(o.get("filled_qty"), 0.0) or 0.0) == 0.0
+                    and exec_q == 0.0
                 )
             }
-            if isinstance(o, dict)
-            else o
-            for o in open_lim
-        ]
+            if exec_q > 0.0 and cleaned_o.get("filled_qty") is None:
+                cleaned_o["filled_qty"] = round(exec_q, 8)
+            clean_open_lim.append(cleaned_o)
         shown_open_oids = {
             str(oid)
             for oo in open_lim
@@ -883,7 +899,7 @@ class PortfolioPromptViewEvaluator(PromptViewEvaluatorBase):
                 if not isinstance(lt, dict):
                     continue
                 l_q = safe_float(lt.get("qty"), None)
-                l_px = round_opt_px(lt.get("entry_px"), 6)
+                l_px = round_opt_px(first_pos_float(lt.get("entry_px"), lt.get("price"), default=None), 6)
                 if l_q is not None and l_px is not None and l_q > 0.0 and l_px > 0.0 and l_q * l_px >= 1.0:
                     l_pnl_pct = ((px_f - l_px) / l_px) * 100.0 if px_f > 0.0 else 0.0
                     valid_lots.append((l_q, l_px, l_pnl_pct))

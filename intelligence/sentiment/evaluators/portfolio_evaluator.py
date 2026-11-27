@@ -293,25 +293,35 @@ def select_fresh_open_lots(
     *,
     held_qty: float = -1.0,
     fallback_newest_ts_ms: int = 0,
+    now_ms: Optional[int] = None,
 ) -> tuple[List[Dict[str, Any]], int]:
     """Filter up to the 4 newest open lots within the active holding window, extending to match ``held_qty``."""
     lots_seq = open_lots if isinstance(open_lots, list) else []
+    max_ts_ms = (now_ms + 60_000) if (now_ms is not None and now_ms > 0) else None
+
+    def _valid_lot_ts_ms(raw_ts: Any) -> int:
+        t_v = normalize_timestamp_ms(raw_ts, default=0) or 0
+        if max_ts_ms is not None and t_v > max_ts_ms:
+            return 0
+        return t_v
+
+    fb_ts = _valid_lot_ts_ms(fallback_newest_ts_ms)
     newest_lot_ts = (
         max(
-            (safe_pos_int(x.get("ts_ms"), default=0) or 0 for x in lots_seq if isinstance(x, dict)),
+            (_valid_lot_ts_ms(x.get("ts_ms")) for x in lots_seq if isinstance(x, dict)),
             default=0,
         )
-        or (safe_pos_int(fallback_newest_ts_ms, default=0) or 0)
+        or fb_ts
     )
     tail_lots = lots_seq[-4:]
     fresh_lots = [
-        ({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+        ({**lot, "entry_px": lot_px} if safe_pos_float(lot.get("entry_px"), default=None) is None else lot)
         for lot in tail_lots
         if isinstance(lot, dict)
-        and (lot_px := safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)) > 0
+        and (lot_px := first_pos_float(lot.get("entry_px"), lot.get("price"), default=0.0) or 0.0) > 0
         and (
             newest_lot_ts <= 0
-            or not (lot_ts := safe_pos_int(lot.get("ts_ms"), default=0) or 0)
+            or not (lot_ts := _valid_lot_ts_ms(lot.get("ts_ms")))
             or (newest_lot_ts - lot_ts) <= 14 * 86400 * 1000
         )
     ]
@@ -323,9 +333,9 @@ def select_fresh_open_lots(
             for lot in reversed(lots_seq):
                 if not isinstance(lot, dict):
                     continue
-                lot_px = safe_float(lot.get("entry_px") if lot.get("entry_px") is not None else lot.get("price"), 0.0)
+                lot_px = first_pos_float(lot.get("entry_px"), lot.get("price"), default=0.0) or 0.0
                 lq = safe_pos_float(lot.get("qty"), 0.0) or 0.0
-                lot_ts = safe_pos_int(lot.get("ts_ms"), default=0) or 0
+                lot_ts = _valid_lot_ts_ms(lot.get("ts_ms"))
                 if lot_px <= 0.0 or lq <= 0.0:
                     continue
                 if newest_lot_ts > 0 and lot_ts > 0 and (newest_lot_ts - lot_ts) > 45 * 86400 * 1000:
@@ -334,7 +344,11 @@ def select_fresh_open_lots(
                 if not is_recent_14d and acc_q >= held_qty * 0.999:
                     break
                 if acc_q + lq <= held_qty * 1.05 or is_recent_14d:
-                    ext_rev.append({**lot, "entry_px": lot_px} if lot.get("entry_px") is None else lot)
+                    ext_rev.append(
+                        {**lot, "entry_px": lot_px}
+                        if safe_pos_float(lot.get("entry_px"), default=None) is None
+                        else lot
+                    )
                     acc_q += lq
             if len(ext_rev) > len(fresh_lots):
                 fresh_lots = list(reversed(ext_rev))
@@ -397,7 +411,7 @@ def compute_open_lots_vwap(
         if not isinstance(lt, dict):
             continue
         lq = safe_pos_float(lt.get("qty"), None)
-        lpx = round_opt_px(lt.get("entry_px"), decimals)
+        lpx = round_opt_px(first_pos_float(lt.get("entry_px"), lt.get("price"), default=None), decimals)
         if lq is not None and lpx is not None and lpx > 0.0 and lq * lpx >= min_notional:
             tot_q += lq
             tot_cost += lq * lpx
@@ -437,14 +451,19 @@ def is_last_buy_lot_harvested(
     px_f = safe_pos_float(last_buy_px, None)
     if px_f is None:
         return False
-    if last_buy_ts_ms > 0.0 and last_sell_ts_ms > 0.0 and last_buy_ts_ms > last_sell_ts_ms:
+    lb_ms = normalize_timestamp_ms(last_buy_ts_ms, default=0) or 0
+    ls_ms = normalize_timestamp_ms(last_sell_ts_ms, default=0) or 0
+    if lb_ms > 0 and ls_ms > 0 and lb_ms > ls_ms:
         return False
     if is_flat_dust:
         return True
     lots_seq = open_lots if isinstance(open_lots, list) else []
     return (
         len(lots_seq) > 0
-        and not any(isinstance(lt, dict) and same_anchor_px(px_f, lt.get("entry_px")) for lt in lots_seq)
+        and not any(
+            isinstance(lt, dict) and same_anchor_px(px_f, first_pos_float(lt.get("entry_px"), lt.get("price"), default=None))
+            for lt in lots_seq
+        )
     )
 
 
@@ -698,7 +717,12 @@ def _resolve_cycle_high_since(
         casefold_get(prices_and_trends, sym_u),
     )
     eff_now_ms = now_ms if (now_ms is not None and now_ms > 0) else math.trunc(resolve_now_ts(None) * 1000)
-    pos_age_ms = (eff_now_ms - oldest_ts_ms) if oldest_ts_ms > 0 else 0
+    eff_oldest_ms = normalize_timestamp_ms(oldest_ts_ms, default=0) or 0
+    if eff_oldest_ms > eff_now_ms + 60_000:
+        if memo is not None:
+            memo[memo_k] = 0.0
+        return 0.0
+    pos_age_ms = (eff_now_ms - eff_oldest_ms) if eff_oldest_ms > 0 else 0
     best_high = 0.0
     if isinstance(pt_entry, dict):
         if pos_age_ms >= 24 * 3600 * 1000 or (allow_24h_fallback and pos_age_ms >= 12 * 3600 * 1000):
@@ -709,9 +733,9 @@ def _resolve_cycle_high_since(
             h15 = safe_pos_float(pt_entry.get("high_15m"), default=0.0) or 0.0
             if h15 > best_high:
                 best_high = h15
-    if callable(archive_high_resolver) and oldest_ts_ms > 0:
+    if callable(archive_high_resolver) and eff_oldest_ms > 0:
         best_high = safe_nonneg_float(
-            archive_high_resolver(cands, oldest_ts_ms, best_high),
+            archive_high_resolver(cands, eff_oldest_ms, best_high),
             default=best_high,
         ) or best_high
     if memo is not None:
@@ -1923,6 +1947,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             open_lots,
             held_qty=held_cur,
             fallback_newest_ts_ms=(safe_pos_int(lb.get("ts_ms"), default=0) or 0) if isinstance(lb, dict) else 0,
+            now_ms=now_ms,
         )
         if not is_flat_after_exit and held_cur > 1e-8:
             ro["held_qty"] = round(held_cur, 6)
@@ -1969,11 +1994,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
             act_avg_pk = safe_pos_float(pos.get("active_avg_buy_px"), default=None)
             max_lot_px = max(
                 (
-                    safe_pos_float(
-                        lt.get("entry_px") if lt.get("entry_px") is not None else lt.get("price"),
-                        default=0.0,
-                    )
-                    or 0.0
+                    first_pos_float(lt.get("entry_px"), lt.get("price"), default=0.0) or 0.0
                     for lt in open_lots
                     if isinstance(lt, dict)
                 ),
@@ -2152,11 +2173,7 @@ class PositionCostBasisEnrichmentEvaluator(PortfolioEvaluatorBase):
                 ro_lots_c = ro.get("open_lots") if isinstance(ro, dict) and isinstance(ro.get("open_lots"), list) else []
                 max_lot_px_c = max(
                     (
-                        safe_pos_float(
-                            lt.get("entry_px") if lt.get("entry_px") is not None else lt.get("price"),
-                            default=0.0,
-                        )
-                        or 0.0
+                        first_pos_float(lt.get("entry_px"), lt.get("price"), default=0.0) or 0.0
                         for lt in ro_lots_c
                         if isinstance(lt, dict)
                     ),

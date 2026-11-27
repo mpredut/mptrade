@@ -1519,4 +1519,49 @@ def test_pass25_ohlc_bar_archive_rejects_future_freshness_and_recovers_fetch_pla
     assert plan_full.fetch_start_ms == valid_bars[0][0]
 
 
+def test_pass30_long_horizon_future_and_corrupt_bars_invariant_and_crosscheck() -> None:
+    """Pass 30 pure invariants & cross-checks: corrupt far-future or out-of-range bars never hijack ref_end_ms/YTD/52w
+    or crash datetime.fromtimestamp in evaluate_symbol_long_horizon, compute_zigzag_swings, or render_ascii_chart_view."""
+    start_dt = datetime(2025, 11, 1, tzinfo=timezone.utc)
+    base_bars = _make_daily_bars(start_dt, [80000.0 + i * 50.0 for i in range(180)])
+    now_ts = (start_dt + timedelta(days=179)).timestamp()
+
+    # 1. Pure invariant: corrupt far-future bar (+365d) + extreme overflow ts (1e18) must NOT alter evaluation
+    ev_clean = evaluate_symbol_long_horizon("BTCUSDC", base_bars, months=12, now_ts=now_ts, source="binance:BTCUSDC")
+    assert ev_clean is not None
+
+    poisoned_bars = list(base_bars) + [
+        [(now_ts + 365.0 * 86400.0) * 1000.0, 999999.0, 999999.0, 999999.0, 999999.0, 1.0],
+        [1e18, 123456.0, 123456.0, 123456.0, 123456.0, 1.0],
+    ]
+    ev_poisoned = evaluate_symbol_long_horizon("BTCUSDC", poisoned_bars, months=12, now_ts=now_ts, source="binance:BTCUSDC")
+    assert ev_poisoned is not None
+    assert ev_poisoned["last_date"] == ev_clean["last_date"]
+    assert ev_poisoned["last_close"] == ev_clean["last_close"]
+    assert ev_poisoned["high_52w"] == ev_clean["high_52w"]
+    assert ev_poisoned["low_52w"] == ev_clean["low_52w"]
+    assert ev_poisoned["ytd_pct"] == ev_clean["ytd_pct"]
+
+    # 2. Dependent cross-check: compute_zigzag_swings(preserve_intraday=True) & render_ascii_chart_view ignore bad/overflow timestamps
+    intraday_poison = [
+        [int((now_ts - 7200.0) * 1000.0), 100.0, 102.0, 99.0, 101.0, 10.0],
+        [int((now_ts - 3600.0) * 1000.0), 101.0, 125.0, 100.0, 124.0, 10.0],
+        [int(now_ts * 1000.0), 124.0, 125.0, 98.0, 100.0, 10.0],
+        [1e18, 500.0, 500.0, 500.0, 500.0, 1.0],
+    ]
+    swings_intra = compute_zigzag_swings(intraday_poison, threshold_pct=10.0, preserve_intraday=True)
+    assert len(swings_intra) >= 2
+    assert all(s["px"] < 200.0 for s in swings_intra)
+
+    corrupt_item = {
+        **ev_clean,
+        "weekly_bars": [["bad_ts", 100.0, 100.0, 100.0, 100.0, 1.0], [1e18, 999.0, 999.0, 999.0, 999.0, 1.0]]
+        + list(ev_clean["weekly_bars"]),
+    }
+    chart_out = render_ascii_chart_view(corrupt_item, timeframe="1w")
+    assert "=== BTCUSDC (1w," in chart_out
+    assert "1970-01-01" not in chart_out
+
+
+
 

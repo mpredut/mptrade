@@ -779,4 +779,63 @@ def test_pass22_entry_latest_ts_and_sampling_reject_future_poison_invariant_and_
     assert log_path.read_text(encoding="utf-8").splitlines() == [f"{t_now - 2.0}|BTCUSDC|61250.5"]
 
 
+def test_pass30_observe_clock_rollback_future_points_and_backup_memo_invariant_and_crosscheck(tmp_path, monkeypatch):
+    """Pass 30 pure invariants & cross-checks for visuals/tradeall_observe.py:
+    1. sample_current_prices self-heals _LAST_SAMPLED_TS sitting in the future after a clock rollback.
+    2. _ingest_cachedb_points normalizes epoch-s and drops far-future/overflow timestamps.
+    3. _load_cachedb_price_entries does NOT pin .previous backup recovery in _PRICE_FILE_CACHE under corrupt primary sig.
+    """
+    t_now = 1_796_250_000.0
+    monkeypatch.setattr(observe.time, "time", lambda: t_now)
+    observe._LAST_SAMPLED_TS.clear()
+    observe._PRICE_FILE_CACHE.clear()
+
+    # 1. Pure invariant + cross-check: future _LAST_SAMPLED_TS heals on next valid tick after clock rollback
+    cache_path = tmp_path / "cache_short_trend.json"
+    logger_dir = tmp_path / "logger"
+    monkeypatch.setattr(observe, "CACHE_TREND_PATH", str(cache_path))
+    monkeypatch.setattr(observe, "LOGGER_DIR", str(logger_dir))
+    observe._LAST_SAMPLED_TS["BTCUSDC"] = t_now + 3600.0
+    cache_path.write_text(json.dumps({"BTCUSDC": {"ts": t_now - 1.0, "current_price": 61800.0}}), encoding="utf-8")
+    observe.sample_current_prices(["BTCUSDC"])
+    log_path = next(logger_dir.glob("tradeall_price_samples_*.log"))
+    assert log_path.read_text(encoding="utf-8").splitlines() == [f"{t_now - 1.0}|BTCUSDC|61800.0"]
+    assert observe._LAST_SAMPLED_TS["BTCUSDC"] == pytest.approx(t_now - 1.0)
+
+    # 2. Pure invariant: _ingest_cachedb_points drops far-future/overflow timestamps while preserving valid ms ticks
+    pts: dict[int, float] = {}
+    observe._ingest_cachedb_points(
+        pts,
+        [
+            [int((t_now - 30.0) * 1000), 61700.0],
+            [int((t_now - 10.0) * 1000), 61750.0],
+            [int((t_now + 7200.0) * 1000), 99999.0],  # far future
+            [1e18, 88888.0],                          # overflow
+        ],
+        max_ts_s=t_now + 60.0,
+    )
+    assert pts == {int(t_now - 30.0): 61700.0, int(t_now - 10.0): 61750.0}
+
+    # 3. Dependent cross-check: corrupt primary JSON falling back to .previous must NOT pin stale .previous in _PRICE_FILE_CACHE
+    cdb = tmp_path / "cachedb"
+    prices_dir = cdb / "prices"
+    prices_dir.mkdir(parents=True)
+    monkeypatch.setattr(observe, "get_cachedb_dir", lambda: str(cdb))
+    fname = "cache_24_price_BTCUSDC.json"
+    prim = prices_dir / fname
+    prev = prices_dir / f"{fname}.previous"
+    prim.write_text("{corrupt", encoding="utf-8")
+    prev.write_text(json.dumps({"BTCUSDC": [[int((t_now - 120.0) * 1000), 60000.0]]}), encoding="utf-8")
+    got_prev = observe._load_cachedb_price_entries(fname, "BTCUSDC")
+    assert got_prev == [[int((t_now - 120.0) * 1000), 60000.0]]
+    assert len(observe._PRICE_FILE_CACHE) == 0
+
+    # Once primary heals, immediate subsequent read returns fresh primary data and caches it
+    prim.write_text(json.dumps({"BTCUSDC": [[int((t_now - 5.0) * 1000), 61900.0]]}), encoding="utf-8")
+    got_fresh = observe._load_cachedb_price_entries(fname, "BTCUSDC")
+    assert got_fresh == [[int((t_now - 5.0) * 1000), 61900.0]]
+    assert len(observe._PRICE_FILE_CACHE) == 1
+
+
+
 

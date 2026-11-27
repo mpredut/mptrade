@@ -3377,6 +3377,144 @@ def test_pass15_small_btc_lifo_lot_plain_decimal_and_section3b_future_ob_invaria
     assert r_sec and r_sec == r_ms
 
 
+def test_pass30_prompt_view_partial_fill_clean_and_portfolio_lot_future_ts_invariants() -> None:
+    """Pass 30 pure invariants & dependent cross-checks:
+    1. PortfolioPromptViewEvaluator._clean_open_orders preserves venue-shaped partial fills (executedQty, vol_exec,
+       Hyperliquid origSz - sz) instead of stripping orig_qty/remaining_qty and losing filled_qty.
+    2. select_fresh_open_lots(now_ms=...) ignores corrupt far-future lot timestamps, skips '0' entry_px shadowing,
+       is_last_buy_lot_harvested normalizes mixed sec/ms timestamps, and _resolve_cycle_high_since rejects far-future oldest_ts.
+    """
+    from intelligence.sentiment.evaluators.portfolio_evaluator import (
+        _resolve_cycle_high_since,
+        compute_open_lots_vwap,
+        is_last_buy_lot_harvested,
+        select_fresh_open_lots,
+    )
+    from intelligence.sentiment.evaluators.prompt_view_evaluator import (
+        evaluate_portfolio_prompt_view,
+        evaluate_tradable_position_prompt_view,
+    )
+
+    # 1. Pure invariant + dependent cross-check on _clean_open_orders via evaluate_portfolio_prompt_view
+    ps = {
+        "open_limit_orders": [
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "BUY",
+                "price": 60000.0,
+                "qty": 0.5,
+                "orig_qty": 0.5,
+                "remaining_qty": 0.3,
+                "executedQty": 0.2,
+                "orderId": "bn-p30-1",
+            },
+            {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "SELL",
+                "price": 66.0,
+                "qty": 10.0,
+                "orig_qty": 10.0,
+                "remaining_qty": 6.0,
+                "origSz": "10.0",
+                "sz": "6.0",
+                "order_id": "hl-p30-1",
+            },
+            {
+                "venue": "binance",
+                "symbol": "ETHUSDC",
+                "side": "BUY",
+                "price": 1700.0,
+                "qty": 1.0,
+                "orig_qty": 1.0,
+                "remaining_qty": 1.0,
+                "order_id": "bn-p30-unfilled",
+            },
+        ]
+    }
+    pview = evaluate_portfolio_prompt_view(ps, asset_scope="crypto")
+    cleaned = pview["clean_open_limit_orders"]
+    assert cleaned[0]["filled_qty"] == pytest.approx(0.2)
+    assert cleaned[0]["orig_qty"] == pytest.approx(0.5)
+    assert cleaned[0]["remaining_qty"] == pytest.approx(0.3)
+    assert cleaned[1]["filled_qty"] == pytest.approx(4.0)
+    assert cleaned[1]["orig_qty"] == pytest.approx(10.0)
+    assert "orig_qty" not in cleaned[2] and "remaining_qty" not in cleaned[2]
+    assert "filled_qty" not in cleaned[2]
+
+    # 2. Pure invariants & cross-checks on open-lot helpers & _resolve_cycle_high_since
+    now_s = 1_796_250_000.0
+    now_ms = int(now_s * 1000)
+    day_ms = 86_400_000
+    lots_with_poison = [
+        {"qty": 0.5, "entry_px": "0", "price": 59000.0, "ts_ms": now_ms - 3 * day_ms},
+        {"qty": 0.5, "entry_px": 60000.0, "ts_ms": now_ms - 1 * day_ms},
+        {"qty": 0.1, "entry_px": 99999.0, "ts_ms": now_ms + 365 * day_ms},
+    ]
+    fresh_lots, newest_ts = select_fresh_open_lots(lots_with_poison, held_qty=1.0, now_ms=now_ms)
+    assert newest_ts == now_ms - 1 * day_ms
+    assert len(fresh_lots) == 3
+    assert fresh_lots[0]["entry_px"] == pytest.approx(59000.0)
+
+    vwap_legacy, q_leg, _ = compute_open_lots_vwap([{"qty": 1.0, "entry_px": "0", "price": 100.0}, {"qty": 1.0, "price": 120.0}])
+    assert q_leg == pytest.approx(2.0)
+    assert vwap_legacy == pytest.approx(110.0)
+
+    # evaluate_tradable_position handles legacy price-only open_lots too
+    tp_view = evaluate_tradable_position_prompt_view(
+        {
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "price": 62000.0,
+            "free_base": 0.02,
+            "active_avg_buy_px": 59500.0,
+            "open_lots": [{"qty": 0.01, "entry_px": "0", "price": 59000.0}, {"qty": 0.01, "price": 60000.0}],
+        }
+    )
+    assert len(tp_view["shown_lifo_lots"]) == 2
+
+    # Mixed sec vs ms in is_last_buy_lot_harvested must NOT miscompare
+    assert (
+        is_last_buy_lot_harvested(
+            61000.0,
+            [{"qty": 0.01, "price": 59000.0}],
+            last_buy_ts_ms=now_s - 10.0,          # newer buy in seconds
+            last_sell_ts_ms=(now_s - 600.0) * 1000.0,  # older sell in milliseconds
+        )
+        is False
+    )
+
+    # _resolve_cycle_high_since normalizes seconds and rejects far-future oldest_ts_ms without calling archive resolver
+    resolver_calls: list[int] = []
+    pt_h = {"BTCUSDC": {"price": 60000.0, "high_24h": 65000.0, "high_15m": 60500.0}}
+    assert (
+        _resolve_cycle_high_since(
+            "BTCUSDC",
+            (),
+            int(now_ms + 3600_000),
+            pt_h,
+            now_ms=now_ms,
+            archive_high_resolver=lambda _c, t, b: resolver_calls.append(t) or 70000.0,
+        )
+        == 0.0
+    )
+    assert resolver_calls == []
+    # Seconds-epoch 60s ago must NOT look 56 years old and pull 24h high
+    assert (
+        _resolve_cycle_high_since(
+            "BTCUSDC",
+            (),
+            int(now_s - 60.0),
+            pt_h,
+            now_ms=now_ms,
+            allow_24h_fallback=True,
+        )
+        == 0.0
+    )
+
+
+
 
 
 

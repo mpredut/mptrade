@@ -25,6 +25,7 @@ from intelligence.sentiment.evaluators.prompt_view_evaluator import PromptViewEv
 
 _DAYS_PER_MONTH = 30.4375
 _MS_PER_DAY = 86_400_000.0
+_MAX_VALID_TS_MS = 32_503_680_000_000.0  # year 3000 UTC in ms
 _NOTE_TTL_RE = re.compile(r"^\s*TTL\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*([dhDH])?\s*$")
 _NOTE_EXPIRES_RE = re.compile(r"^\s*EXPIRES\s*:\s*(\d{4}-\d{2}-\d{2})(?:[T\s](\d{2}:\d{2}))?\s*$", re.IGNORECASE)
 _YM_RE = re.compile(r"^(\d{4})-(\d{2})(?:-(\d{2}))?$")
@@ -88,9 +89,18 @@ def _fmt_range_px(px: Any) -> str:
     return f"${v:.4f}"
 
 
-def _normalize_daily_bars(raw_bars: Sequence[Sequence[Any]]) -> List[List[float]]:
+def _normalize_daily_bars(
+    raw_bars: Sequence[Sequence[Any]],
+    *,
+    max_ts_ms: Optional[float] = None,
+) -> List[List[float]]:
     """Normalize and deduplicate daily bars into sorted ``[ts_ms, open, high, low, close, vol]`` rows."""
     by_day: Dict[str, List[float]] = {}
+    upper_ts_ms = (
+        min(max_ts_ms, _MAX_VALID_TS_MS)
+        if (max_ts_ms is not None and max_ts_ms > 0.0)
+        else _MAX_VALID_TS_MS
+    )
     for row in raw_bars or ():
         if not isinstance(row, (list, tuple)) or len(row) < 2:
             continue
@@ -98,6 +108,8 @@ def _normalize_daily_bars(raw_bars: Sequence[Sequence[Any]]) -> List[List[float]
         if ts_raw is None:
             continue
         ts_ms = ts_raw if ts_raw > 1e11 else ts_raw * 1000.0
+        if ts_ms <= 0.0 or ts_ms >= _MAX_VALID_TS_MS or ts_ms > upper_ts_ms:
+            continue
         if len(row) >= 5:
             o_v = safe_pos_float(row[1], default=None)
             h_v = safe_pos_float(row[2], default=None)
@@ -139,7 +151,7 @@ def compute_zigzag_swings(
     if preserve_intraday:
         bars = [
             [
-                (t_v if t_v > 1e11 else t_v * 1000.0),
+                t_ms,
                 safe_pos_float(b[1], 0.0) or 0.0,
                 safe_pos_float(b[2], 0.0) or 0.0,
                 safe_pos_float(b[3], 0.0) or 0.0,
@@ -150,6 +162,7 @@ def compute_zigzag_swings(
             if isinstance(b, (list, tuple))
             and len(b) >= 5
             and (t_v := safe_pos_float(b[0], default=None)) is not None
+            and 0.0 < (t_ms := (t_v if t_v > 1e11 else t_v * 1000.0)) < _MAX_VALID_TS_MS
         ]
         bars.sort(key=lambda r: r[0])
     else:
@@ -279,11 +292,11 @@ def evaluate_symbol_long_horizon(
     include_bars: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Compute multi-month/annual structural anchors, ZigZag swings, and optional embedded zoom bars for one symbol."""
-    all_bars = _normalize_daily_bars(daily_bars)
-    if len(all_bars) < 2:
-        return None
     eff_months = resolve_long_horizon_months(months)
     eff_now = resolve_now_ts(now_ts)
+    all_bars = _normalize_daily_bars(daily_bars, max_ts_ms=eff_now * 1000.0 + _MS_PER_DAY)
+    if len(all_bars) < 2:
+        return None
     last_ts_ms = all_bars[-1][0]
     ref_end_ms = max(last_ts_ms, eff_now * 1000.0)
     horizon_days = round(eff_months * _DAYS_PER_MONTH)
@@ -661,7 +674,7 @@ def render_ascii_chart_view(
     if bars_override:
         bars = [
             [
-                (t_v if t_v > 1e11 else t_v * 1000.0),
+                t_ms,
                 safe_pos_float(b[1], 0.0) or 0.0,
                 safe_pos_float(b[2], 0.0) or 0.0,
                 safe_pos_float(b[3], 0.0) or 0.0,
@@ -672,6 +685,7 @@ def render_ascii_chart_view(
             if isinstance(b, (list, tuple))
             and len(b) >= 5
             and (t_v := safe_pos_float(b[0], default=None)) is not None
+            and 0.0 < (t_ms := (t_v if t_v > 1e11 else t_v * 1000.0)) < _MAX_VALID_TS_MS
         ]
         bars.sort(key=lambda r: r[0])
     elif daily_bars:
@@ -681,12 +695,24 @@ def render_ascii_chart_view(
         raw_bars = item.get("recent_daily_bars") if tf == "1d" else item.get("weekly_bars")
         if not isinstance(raw_bars, list) or not raw_bars:
             raw_bars = item.get("weekly_bars") or item.get("recent_daily_bars") or []
-        bars = _normalize_daily_bars(raw_bars) if tf == "1d" else [
-            [safe_pos_float(b[0], 0.0) or 0.0, safe_pos_float(b[1], 0.0) or 0.0, safe_pos_float(b[2], 0.0) or 0.0,
-             safe_pos_float(b[3], 0.0) or 0.0, safe_pos_float(b[4], 0.0) or 0.0, safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0]
-            for b in raw_bars
-            if isinstance(b, (list, tuple)) and len(b) >= 5
-        ]
+        bars = _normalize_daily_bars(raw_bars) if tf == "1d" else sorted(
+            [
+                [
+                    t_ms,
+                    safe_pos_float(b[1], 0.0) or 0.0,
+                    safe_pos_float(b[2], 0.0) or 0.0,
+                    safe_pos_float(b[3], 0.0) or 0.0,
+                    safe_pos_float(b[4], 0.0) or 0.0,
+                    safe_nonneg_float(b[5], 0.0) if len(b) > 5 else 0.0,
+                ]
+                for b in raw_bars
+                if isinstance(b, (list, tuple))
+                and len(b) >= 5
+                and (t_v := safe_pos_float(b[0], default=None)) is not None
+                and 0.0 < (t_ms := (t_v if t_v > 1e11 else t_v * 1000.0)) < _MAX_VALID_TS_MS
+            ],
+            key=lambda r: r[0],
+        )
     if not bars:
         return f"No long-horizon bars available for {item.get('symbol', '?')}."
 

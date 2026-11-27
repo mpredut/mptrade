@@ -2178,6 +2178,80 @@ def test_pass25_order_ledger_future_verified_ts_recently_closed_and_worker_hb(tm
     assert hb_calls[2][0]["status"] == "error"
 
 
+def test_pass30_backfill_rejects_future_audit_rows_normalizes_ms_and_reads_venue_exec_qty(tmp_path):
+    """[Pass 30] backfill_order_ledger_from_audit rejects corrupt far-future audit timestamps (no 2099 files),
+    normalizes epoch-ms audit timestamps, and preserves venue-shaped executedQty/vol_exec partial fills."""
+    from verify_tools import backfill_order_ledger_from_audit as bfl
+
+    t_now = 1_796_250_000.0
+    audit_dir = tmp_path / "logger" / "execution_audit"
+    cdb_dir = tmp_path / "cachedb"
+    audit_dir.mkdir(parents=True)
+    day_ok = bfl.utc_day_for_ts(t_now - 86400.0)
+    audit_file = audit_dir / f"execution_audit_{day_ok}.jsonl"
+
+    # Pure invariant on _convert_audit_row_to_ledger_event: epoch-ms ts normalized + venue executedQty extracted
+    conv = bfl._convert_audit_row_to_ledger_event(
+        {
+            "event": "order_terminal",
+            "status": "PARTIALLY_FILLED",
+            "ts": (t_now - 86400.0) * 1000.0,
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "qty": 0.05,
+            "executedQty": 0.02,
+            "price": 60000.0,
+            "order_id": "bn-p30-ms",
+        }
+    )
+    assert conv is not None
+    assert conv["ts"] == pytest.approx(t_now - 86400.0)
+    assert conv["fq"] == pytest.approx(0.02)
+
+    # Dependent cross-check: backfill skips far-future row (no future order_events_*.jsonl created) & writes valid ms row
+    rows = [
+        {
+            "event": "order_terminal",
+            "status": "FILLED",
+            "ts": t_now + 365.0 * 86400.0,  # corrupt 1 year in the future
+            "venue": "binance",
+            "symbol": "BTCUSDC",
+            "side": "BUY",
+            "qty": 0.01,
+            "filled_qty": 0.01,
+            "price": 99999.0,
+            "order_id": "bn-p30-future",
+        },
+        {
+            "event": "order_terminal",
+            "status": "FILLED",
+            "ts": (t_now - 86400.0) * 1000.0,
+            "venue": "kraken",
+            "symbol": "HYPEUSD",
+            "side": "SELL",
+            "qty": 2.0,
+            "vol_exec": 2.0,
+            "price": 66.0,
+            "order_id": "kr-p30-valid",
+        },
+    ]
+    audit_file.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    stats = bfl.backfill_order_ledger_from_audit(str(audit_dir), str(cdb_dir), dry_run=False, now_ts=t_now)
+    assert stats["events_converted"] == 1
+    assert stats["event_days_written"] == 1
+    reader = OrderLedgerReader(cachedb_dir=str(cdb_dir))
+    ev_files = reader.list_event_files()
+    assert len(ev_files) == 1
+    assert day_ok in os.path.basename(ev_files[0])
+    written_rows = [json.loads(ln) for ln in open(ev_files[0], encoding="utf-8") if ln.strip()]
+    assert len(written_rows) == 1
+    assert written_rows[0]["vid"] == "kr-p30-valid"
+    assert written_rows[0]["fq"] == pytest.approx(2.0)
+
+
+
 
 
 
