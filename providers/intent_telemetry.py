@@ -131,6 +131,7 @@ def _match_intent_recent_fill(
     fill_px: Optional[float],
     filled_qty: float,
     recent_orders: dict[str, Any],
+    now_ts: Optional[float] = None,
 ) -> tuple[Optional[float], float, int]:
     """Match an executed intent against symbol ``recent_orders`` fill history."""
     raw_cands = cache_symbol_variants(symbol, quotes=compatible_quote_suffixes(symbol))
@@ -162,6 +163,12 @@ def _match_intent_recent_fill(
             if isinstance(cand_f, dict) and cand_f not in fill_cands:
                 fill_cands.append(cand_f)
     min_fill_ts_ms = ts_val * 1000.0 if order_type == "LIMIT" else (ts_val - 120.0) * 1000.0
+    max_fill_ts_ms = (resolve_now_ts(now_ts) + 60.0) * 1000.0 if now_ts is not None else None
+
+    def _cand_fill_ts_ms(cand: Mapping[str, Any]) -> int:
+        ts_s = _parse_pos_epoch_s(cand.get("ts_ms")) or _parse_pos_epoch_s(cand.get("ts"))
+        return math.trunc(ts_s * 1000.0) if ts_s is not None else 0
+
     last_fill = None
     for cand_f in fill_cands:
         f_oid = clean_order_id(cand_f.get("order_id"))
@@ -170,7 +177,9 @@ def _match_intent_recent_fill(
                 last_fill = cand_f
                 break
             continue
-        f_ts_ms = normalize_timestamp_ms(cand_f.get("ts_ms"), default=0) or 0
+        f_ts_ms = _cand_fill_ts_ms(cand_f)
+        if max_fill_ts_ms is not None and f_ts_ms > max_fill_ts_ms:
+            continue
         f_actor = str(cand_f.get("actor") or "").strip().upper()
         if f_actor != "BOT" and (ts_val <= 0 or f_ts_ms <= 0 or f_ts_ms >= min_fill_ts_ms):
             last_fill = cand_f
@@ -183,12 +192,12 @@ def _match_intent_recent_fill(
         if fill_px is None or venue_st in UNFILLED_ORDER_STATUSES:
             fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
         filled_qty = cand_qty
-        matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+        matched_fill_ts_ms = _cand_fill_ts_ms(last_fill)
         return fill_px, filled_qty, matched_fill_ts_ms
     if exact_oid_match and cand_qty > filled_qty + 1e-12:
         fill_px = safe_pos_float(last_fill.get("price"), default=fill_px)
         filled_qty = cand_qty
-        matched_fill_ts_ms = normalize_timestamp_ms(last_fill.get("ts_ms"), default=0) or 0
+        matched_fill_ts_ms = _cand_fill_ts_ms(last_fill)
         return fill_px, filled_qty, matched_fill_ts_ms
     return fill_px, filled_qty, 0
 
@@ -438,6 +447,7 @@ def _resolve_intent_execution_details(
             fill_px=fill_px,
             filled_qty=filled_qty,
             recent_orders=recent_orders,
+            now_ts=now_ts,
         )
 
     is_unfilled_resting_limit = (
@@ -774,8 +784,8 @@ def build_last_cycle_execution_status(
             has_fill = (
                 ep_st in ("FILLED", "PARTIALLY_FILLED", "CLOSED")
                 or extract_executed_qty(ep, default=0.0) > 0.0
-                or ep.get("filled_at") is not None
-                or ep.get("filled_ts") is not None
+                or _parse_pos_epoch_s(ep.get("filled_at")) is not None
+                or _parse_pos_epoch_s(ep.get("filled_ts")) is not None
             )
             if has_fill and ep_st not in TERMINAL_CANCEL_VENUE_STATUSES:
                 for k in ("filled_at", "filled_ts", "terminal_ts", "updated_ts"):
@@ -1095,7 +1105,7 @@ def summarize_active_ai_trade_plans(
             if not isinstance(lb_entry, dict):
                 continue
             lb_ts_s = _parse_pos_epoch_s(lb_entry.get("ts_ms")) or _parse_pos_epoch_s(lb_entry.get("ts"))
-            if lb_ts_s is not None and lb_ts_s > after_ts + 1.0:
+            if lb_ts_s is not None and after_ts + 1.0 < lb_ts_s <= eff_now + 60.0:
                 return True
         return False
     _non_active_exec_statuses = (
@@ -1202,6 +1212,7 @@ def summarize_active_ai_trade_plans(
                 inv_px,
                 tgt_px,
                 start_ts=eff_ts,
+                end_ts=eff_now + 60.0,
                 price_bars=sym_bars,
                 is_resting=is_resting,
             )

@@ -5934,6 +5934,232 @@ def test_pass25_intent_telemetry_ignores_far_future_timestamps_and_preserves_age
     assert status_out["order_id"] == "ord_real_1"
 
 
+def test_pass32_venue_prune_zero_fill_markers_future_ts_and_plan_bar_bounds():
+    """Pass 32 pure invariants + cross-checks for intent_state, ai_survival_guard, intent_telemetry, and ai_attribution."""
+    from datetime import datetime
+    from botcore import BUCHAREST
+    from providers.ai_attribution import summarize_delta_gate_logs
+    from providers.ai_survival_guard import (
+        _extract_intent_exec_ts,
+        _is_filled_ai_intent,
+        evaluate_ai_ping_pong_guard,
+        evaluate_filled_trade_plans,
+    )
+    from providers.intent_state import prune_reconciled_terminal_open_orders
+    from providers.intent_telemetry import (
+        build_last_cycle_execution_status,
+        summarize_active_ai_trade_plans,
+    )
+
+    now_ts = 1_760_000_000.0
+
+    # 1. Pure invariant: prune_reconciled_terminal_open_orders handles Kraken (vol_exec/vol),
+    # T212 (filledQuantity/orderedQuantity), and Hyperliquid (nested filled.totalSz/origSz),
+    # while keeping partial fills intact.
+    intents_prune = [
+        {
+            "intent_id": "i_kr_full",
+            "venue": "kraken",
+            "status": "EXECUTED",
+            "execution_payload": {"txid": "KR-FULL", "status": "CLOSED", "vol": "2.0", "vol_exec": "2.0"},
+        },
+        {
+            "intent_id": "i_kr_part",
+            "venue": "kraken",
+            "status": "EXECUTED",
+            "execution_payload": {"txid": "KR-PART", "status": "CLOSED", "vol": "5.0", "vol_exec": "1.0"},
+        },
+        {
+            "intent_id": "i_t212_full",
+            "venue": "t212",
+            "status": "EXECUTED",
+            "execution_payload": {"orderId": "T212-1", "status": "FILLED", "orderedQuantity": 3.0, "filledQuantity": 3.0},
+        },
+        {
+            "intent_id": "i_hl_full",
+            "venue": "hyperliquid",
+            "status": "EXECUTED",
+            "execution_payload": {"oid": "HL-1", "status": "FILLED", "origSz": "10.0", "filled": {"totalSz": "10.0"}},
+        },
+    ]
+    open_book = [
+        {"venue": "kraken", "order_id": "KR-FULL"},
+        {"venue": "kraken", "order_id": "KR-PART"},
+        {"venue": "t212", "order_id": "T212-1"},
+        {"venue": "hyperliquid", "order_id": "HL-1"},
+    ]
+    pruned_book = prune_reconciled_terminal_open_orders(open_book, intents_prune)
+    assert [o["order_id"] for o in pruned_book] == ["KR-PART"]
+
+    # 2. Pure invariant + dependent cross-check: zero/blank fill markers (avgPrice="0.00000000", filled_ts=0, fill_px=0.0)
+    # on an unfilled LIMIT order must NOT classify as filled or trigger ping-pong cooldown.
+    unfilled_zero_markers = {
+        "intent_id": "i_unfilled_zero",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 120.0,
+        "limit_price": 60000.0,
+        "filled_ts": 0,
+        "fill_px": 0.0,
+        "execution_payload": {
+            "orderId": "BN-ZERO",
+            "avgPrice": "0.00000000",
+            "filled_at": "",
+            "filled_ts": 0,
+        },
+    }
+    assert _is_filled_ai_intent(unfilled_zero_markers, set()) is False
+    ok_pp_unfilled, _, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "i_sell_try", "decision": "SELL"},
+        [unfilled_zero_markers],
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60010.0,
+        now_ts=now_ts,
+    )
+    assert ok_pp_unfilled is True
+
+    # 3. Pure invariant + cross-check: corrupt far-future updateTime in execution_payload must NOT
+    # cause _extract_intent_exec_ts(..., max_ts=...) to drop a real filled BUY and bypass ping-pong cooldown.
+    filled_with_future_upd = {
+        "intent_id": "i_buy_real",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "MARKET",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 300.0,
+        "execution_payload": {
+            "orderId": "BN-BUY-1",
+            "status": "FILLED",
+            "executedQty": "0.01",
+            "price": "60000.0",
+            "updateTime": int((now_ts + 7 * 86400.0) * 1000),
+        },
+    }
+    assert _extract_intent_exec_ts(filled_with_future_upd, max_ts=now_ts + 60.0) == pytest.approx(now_ts - 300.0)
+    ok_pp_real, rsn_pp_real, _ = evaluate_ai_ping_pong_guard(
+        {"intent_id": "i_sell_flip", "decision": "SELL"},
+        [filled_with_future_upd],
+        decision="SELL",
+        symbol="BTCUSDC",
+        venue="binance",
+        price=60050.0,
+        now_ts=now_ts,
+    )
+    assert ok_pp_real is False
+    assert "ai_ping_pong_flip_cooldown" in rsn_pp_real
+
+    # 4. Pure invariant + cross-check: far-future OHLC bar must NOT falsely invalidate/freeze an active plan,
+    # and far-future last_buy.ts_ms must NOT erase an active SELL plan in summarize_active_ai_trade_plans.
+    bars_with_future_crash = [
+        [int((now_ts - 600.0) * 1000), 60500.0, 10.0, 60800.0, 60200.0],
+        [int((now_ts + 30 * 86400.0) * 1000), 40000.0, 10.0, 41000.0, 39000.0],
+    ]
+    newly_res: dict[str, str] = {}
+    st_counts, _, _ = evaluate_filled_trade_plans(
+        [
+            {
+                "intent_id": "i_plan_buy",
+                "ts": now_ts - 900.0,
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "inst_key": ("binance", "BTC", ("USDC", "USDT", "USD")),
+                "side": "BUY",
+                "px": 60000.0,
+                "has_plan": True,
+                "invalidation_px": 55000.0,
+                "target_px": 66000.0,
+            }
+        ],
+        {"BTCUSDC": 60500.0},
+        price_bars_by_symbol={"BTCUSDC": bars_with_future_crash},
+        newly_resolved_out=newly_res,
+        now_ts=now_ts,
+    )
+    assert st_counts["ACTIVE"] == 1
+    assert st_counts["INVALIDATED"] == 0
+    assert newly_res == {}
+
+    sell_plan_intent = {
+        "intent_id": "i_plan_sell",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "SELL",
+        "order_type": "MARKET",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 1800.0,
+        "invalidation_px": 64000.0,
+        "target_px": 56000.0,
+        "execution_payload": {"orderId": "BN-SELL-1", "status": "FILLED", "executedQty": "0.01", "price": "60000.0"},
+    }
+    plans_out = summarize_active_ai_trade_plans(
+        [sell_plan_intent],
+        "crypto",
+        now_ts,
+        lambda it, default=None: it.get("suggested_notional_usd", default),
+        tradable_positions=[{"venue": "binance", "symbol": "BTCUSDC", "price": 59500.0, "value_usd": 500.0, "effective_max_buy_usd": 500.0}],
+        recent_orders={"binance:BTCUSDC": {"last_buy": {"ts_ms": int((now_ts + 30 * 86400.0) * 1000), "price": 59000.0}}},
+        price_bars_by_symbol={"BTCUSDC": [[int((now_ts + 30 * 86400.0) * 1000), 90000.0, 1.0, 91000.0, 89000.0]]},
+    )
+    assert len(plans_out) == 1
+    assert plans_out[0]["side"] == "SELL"
+    assert plans_out[0]["status"] == "ACTIVE"
+
+    # 5. Pure invariant: resting order with filled_ts=0 must NOT promote updated_ts as a fill timestamp in build_last_cycle_execution_status.
+    resting_zero_ft = {
+        "intent_id": "i_rest_zero",
+        "venue": "binance",
+        "symbol": "ETHUSDC",
+        "decision": "BUY",
+        "order_type": "LIMIT",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 5000.0,
+        "limit_price": 1700.0,
+        "execution_payload": {"orderId": "ETH-REST-0", "status": "NEW", "filled_ts": 0, "updated_ts": now_ts - 10.0},
+    }
+    recent_fill = {
+        "intent_id": "i_btc_recent",
+        "venue": "binance",
+        "symbol": "BTCUSDC",
+        "decision": "BUY",
+        "order_type": "MARKET",
+        "status": "EXECUTED",
+        "timestamp": now_ts - 120.0,
+        "execution_payload": {"orderId": "BTC-REAL-1", "status": "FILLED", "executedQty": "0.01", "price": "60000.0"},
+    }
+    last_cyc = build_last_cycle_execution_status(
+        [resting_zero_ft, recent_fill],
+        "crypto",
+        now_ts,
+        lambda it, default=None: it.get("suggested_notional_usd", default),
+    )
+    assert isinstance(last_cyc, dict)
+    assert last_cyc["order_id"] == "BTC-REAL-1"
+
+    # 6. Pure invariant: summarize_delta_gate_logs rejects corrupt far-future log lines and eval_state.ts
+    valid_ts_str = datetime.fromtimestamp(now_ts - 60.0, tz=BUCHAREST).strftime("%Y-%m-%d %H:%M:%S")
+    future_ts_str = datetime.fromtimestamp(now_ts + 10 * 86400.0, tz=BUCHAREST).strftime("%Y-%m-%d %H:%M:%S")
+    dg = summarize_delta_gate_logs(
+        [
+            f"{valid_ts_str} [DELTA GATE] Delta-Gate HOLD carry-forward",
+            f"{future_ts_str} [DELTA GATE] Delta-Gate HOLD carry-forward",
+            f"{future_ts_str} Autonomous AI Supervisor cycle complete: ok",
+        ],
+        cutoff_ts=now_ts - 3600.0,
+        now_ts=now_ts,
+        eval_state={"model_used": "gemini-3", "ts": now_ts + 10 * 86400.0},
+    )
+    assert dg["delta_gate_skips"] == 1
+    assert dg["llm_cycles_completed"] == 0
+    assert dg["last_eval_ts"] == 0.0
+
+
+
 
 
 

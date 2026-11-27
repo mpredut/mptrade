@@ -58,11 +58,14 @@ do_check() {
         target_file="$STATUS_30D"
         remote_name="ai_attribution_30d.json"
     fi
-    local scp_base fetched=0
+    local scp_base fetched=0 tmp_file="${target_file}.tmp.$$"
     scp_base="$(dev_remote_scp_prefix)"
     if scp -o BatchMode=yes -o ConnectTimeout=4 -P "$DEV_PORT" \
-        "$scp_base/cachedb/llm/$remote_name" "$target_file" >/dev/null 2>&1; then
+        "$scp_base/cachedb/llm/$remote_name" "$tmp_file" >/dev/null 2>&1 && [ -s "$tmp_file" ]; then
+        mv -f "$tmp_file" "$target_file"
         fetched=1
+    else
+        rm -f "$tmp_file" 2>/dev/null || true
     fi
     if [ ! -f "$target_file" ]; then
         echo "[DEV OBS] No cached $remote_name found (DEV synced=$fetched). Run './offline/runners/run_dev_observability.sh run' locally or retry when LAN 192.168.0.x is reachable."
@@ -88,7 +91,7 @@ do_install_cron() {
     rpath="$(dev_remote_path_expr)"
     echo "[dev_obs $(date '+%F %T')] Installing systemd/crontab.dev.txt onto DEV ($DEV_HOST:$DEV_PORT)..."
     dev_remote_git_pull 2>&1 | sed 's/^/  [dev] /'
-    dev_ssh "cd \"$rpath\" && crontab -l > logs/crontab.dev.bak.\$(date +%Y%m%d_%H%M%S) 2>/dev/null || true && crontab systemd/crontab.dev.txt && crontab -l | tail -n 8" 2>&1 | sed 's/^/  [dev] /'
+    dev_ssh "cd \"$rpath\" && { crontab -l > logs/crontab.dev.bak.\$(date +%Y%m%d_%H%M%S) 2>/dev/null || true; } && crontab systemd/crontab.dev.txt && crontab -l | tail -n 8" 2>&1 | sed 's/^/  [dev] /'
     echo "[dev_obs $(date '+%F %T')] DEV crontab installed cleanly."
 }
 

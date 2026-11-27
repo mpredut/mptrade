@@ -36,7 +36,7 @@ trap cleanup_suite_tmp EXIT INT TERM
 run_step() {  # $1=id $2=name $3=cmd [$4=timeout_sec]
     local id="$1" name="$2" cmd="$3" step_tmo="${4:-${STEP_TIMEOUT_SEC:-3600}}" t0 rc=0 dt
     printf '\n--------------------------------------------------------------------------------\n[STEP %s] START: %s (%s) | CMD: %s\n--------------------------------------------------------------------------------\n' "$id" "$name" "$(date '+%T')" "$cmd"
-    t0=$(date +%s); ( exec 9>&-; timeout --kill-after=60 "$step_tmo" bash -c "$cmd" ) || rc=$?; dt=$(( $(date +%s) - t0 ))
+    t0=$(date +%s); ( exec 9>&-; timeout --kill-after=60 "$step_tmo" bash -c "$cmd" ) || rc=$?; dt=$(( $(date +%s) - t0 )); [ "$dt" -lt 0 ] && dt=0
     if [ "$rc" -eq 0 ]; then
         PASSED_STEPS=$((PASSED_STEPS + 1))
         STEP_REPORT_LINES+="| \`$id\` | $name | PASS | ${dt}s |"$'\n'
@@ -97,6 +97,7 @@ run_step "9B" "Trading212 Continuous Multi-Asset Factorial Grid (16 equities/ETF
 run_step "10" "Full DEV Test Regression Suite (pytest tests/)" "SKIP_GIT_SYNC=1 bash offline/runners/run_dev_regression.sh run"
 
 TOTAL_ELAPSED=$(( $(date +%s) - START_SEC ))
+[ "$TOTAL_ELAPSED" -lt 0 ] && TOTAL_ELAPSED=0
 DURATION_FMT="$((TOTAL_ELAPSED / 3600))h $(( (TOTAL_ELAPSED % 3600) / 60 ))m $((TOTAL_ELAPSED % 60))s"
 echo -e "\n================================================================================\n  AUTONOMOUS OVERNIGHT MASTER SUITE FINISHED: $(date '+%F %T %Z') ($DURATION_FMT | Passed: $PASSED_STEPS | Failed: $FAILED_STEPS)\n================================================================================"
 

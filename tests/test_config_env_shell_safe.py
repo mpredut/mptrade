@@ -2247,6 +2247,69 @@ def test_pass31_run_dev_regression_fail_closed_and_future_ts_age(tmp_path):
     assert "DEV CI Regression RECOVERED" in curl_log.read_text(encoding="utf-8")
 
 
+def test_pass32_dev_observability_atomic_scp_and_overnight_duration_clamp(tmp_path):
+    """Pass 32 pure invariant + cross-check: run_dev_observability.sh preserves cached JSON on failing partial scp and groups crontab fallback; run_overnight_master_suite.sh clamps negative clock-rollback durations."""
+    import sys
+
+    obs_script = os.path.join(ROOT, "offline", "runners", "run_dev_observability.sh")
+    ovn_script = os.path.join(ROOT, "offline", "runners", "run_overnight_master_suite.sh")
+    for sc in (obs_script, ovn_script):
+        chk = subprocess.run(["bash", "-n", sc], capture_output=True, text=True, check=False)
+        assert chk.returncode == 0, chk.stderr
+
+    # 1. Structural invariants: safe crontab grouping and non-negative elapsed clamps
+    obs_txt = open(obs_script, encoding="utf-8").read()
+    assert '{ crontab -l > logs/crontab.dev.bak.' in obs_txt
+    ovn_txt = open(ovn_script, encoding="utf-8").read()
+    assert '[ "$dt" -lt 0 ] && dt=0' in ovn_txt
+    assert '[ "$TOTAL_ELAPSED" -lt 0 ] && TOTAL_ELAPSED=0' in ovn_txt
+
+    # 2. Dependent cross-check: failing partial scp must NOT truncate/overwrite pre-existing cached status JSON
+    fake_root = tmp_path / "obs_root"
+    fake_bin = tmp_path / "obs_bin"
+    (fake_root / "cachedb" / "llm").mkdir(parents=True)
+    (fake_root / "logs").mkdir(parents=True)
+    fake_bin.mkdir()
+
+    cached_json = fake_root / "cachedb" / "llm" / "ai_attribution_status.json"
+    valid_payload = {
+        "lookback_days": 7.0,
+        "scope": "all",
+        "ai_intents_total": 4,
+        "ai_filled_total": 2,
+        "ai_summary": {"scored": 2, "closed_trades": 1, "open_mtm": 1, "realized_net_usd": 12.5, "total_net_usd": 15.0},
+    }
+    cached_json.write_text(json.dumps(valid_payload), encoding="utf-8")
+
+    # Stub scp writes truncated garbage into the destination argument (last arg) then exits 1
+    _write_bash_stub(
+        fake_bin,
+        "scp",
+        'dst="${@: -1}"\nprintf "{truncated" > "$dst"\nexit 1\n',
+    )
+    obs_env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "ROOT": str(fake_root),
+        "REPO_ROOT": str(fake_root),
+        "PYTHONPATH": ROOT,
+        "PYTHON_BIN": sys.executable,
+    }
+    res_obs = subprocess.run(
+        ["bash", obs_script, "check", "7"],
+        env=obs_env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert res_obs.returncode == 0, res_obs.stderr
+    assert "LOCAL CACHE (DEV unreachable)" in res_obs.stdout
+    assert "AI Intents: total=4, filled=2" in res_obs.stdout
+    assert json.loads(cached_json.read_text(encoding="utf-8")) == valid_payload
+    assert list((fake_root / "cachedb" / "llm").glob("*.tmp.*")) == []
+
+
+
 
 
 

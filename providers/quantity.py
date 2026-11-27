@@ -24,6 +24,7 @@ from botcore import (
     obj_attr,
     require_buy_sell_side,
     require_pos_float,
+    resolve_now_ts,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -155,8 +156,8 @@ def compute_fills_cost_basis(
         else:
             base_fee, quote_fee = fee_info["base_fee"], fee_info["quote_fee"]
         fill_id = next(
-            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := row.get(k)) is not None),
-            idx + 1,
+            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := clean_order_id_str(row.get(k)))),
+            str(idx + 1),
         )
         normalized.append({
             "id": fill_id,
@@ -186,6 +187,7 @@ def summarize_fills_position_and_cost(
     base_asset: str = "",
     quote_asset: str = "",
     held_qty: Optional[float] = None,
+    now_ts: Optional[float] = None,
 ) -> Optional[dict[str, Any]]:
     """Reconstruct open moving-average cost basis, remaining qty, and realized PnL from chronological fills.
 
@@ -195,6 +197,7 @@ def summarize_fills_position_and_cost(
     """
     if not isinstance(rows, (list, tuple)) or not rows:
         return None
+    max_ts_ms = (resolve_now_ts(now_ts) + 60.0) * 1000.0 if now_ts is not None else None
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for idx, r in enumerate(rows):
@@ -204,13 +207,18 @@ def summarize_fills_position_and_cost(
         px = extract_order_price(r, default=0.0) or 0.0
         qty_f = extract_order_qty(r, default=0.0) or 0.0
         side = extract_order_side(r)
-        if ts_ms <= 0 or px <= 0.0 or qty_f <= 0.0 or side not in ("BUY", "SELL"):
+        if (
+            ts_ms <= 0
+            or (max_ts_ms is not None and ts_ms > max_ts_ms)
+            or px <= 0.0
+            or qty_f <= 0.0
+            or side not in ("BUY", "SELL")
+        ):
             continue
-        raw_id = next(
-            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := r.get(k)) is not None),
-            None,
+        fill_id = next(
+            (v for k in ("id", "tid", "tradeId", "ordertxid", "orderId", "order_id", "txid", "oid") if (v := clean_order_id_str(r.get(k)))),
+            f"row_{idx}_{ts_ms}",
         )
-        fill_id = clean_order_id_str(raw_id) or f"row_{idx}_{ts_ms}"
         if fill_id in seen_ids:
             continue
         seen_ids.add(fill_id)

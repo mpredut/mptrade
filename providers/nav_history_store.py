@@ -54,7 +54,10 @@ def load_nav_history_state(workspace_dir: str) -> list[dict[str, Any]]:
 
 def _load_workspace_balances_and_prices(
     workspace_dir: str,
+    *,
+    now_ts: Optional[float] = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    eff_now = resolve_now_ts(now_ts)
     cache_dir = os.path.join(workspace_dir, "cachedb")
     bal_caches = load_venue_balance_caches(cache_dir)
     vb = load_venue_balances_state_dict(cache_dir)
@@ -70,11 +73,18 @@ def _load_workspace_balances_and_prices(
             bn_fee = (fee_state.get("venues") or {}).get("binance") if isinstance(fee_state, dict) else None
             bnb_px = safe_pos_float(bn_fee.get("bnb_price_usdc") if isinstance(bn_fee, dict) else None, default=None)
             if bnb_px is not None:
-                bnb_ts_s = first_epoch_sec(
-                    bn_fee.get("ts") if isinstance(bn_fee, dict) else None,
-                    fee_state.get("ts") if isinstance(fee_state, dict) else None,
-                    default=None,
-                ) or resolve_now_ts()
+                max_fee_ts = eff_now + 60.0
+                bn_ts_cand = first_epoch_sec(bn_fee.get("ts") if isinstance(bn_fee, dict) else None, default=None)
+                fs_ts_cand = first_epoch_sec(fee_state.get("ts") if isinstance(fee_state, dict) else None, default=None)
+                bnb_ts_s = (
+                    bn_ts_cand
+                    if (bn_ts_cand is not None and bn_ts_cand <= max_fee_ts)
+                    else (
+                        fs_ts_cand
+                        if (fs_ts_cand is not None and fs_ts_cand <= max_fee_ts)
+                        else eff_now
+                    )
+                )
                 bnb_ts_ms = math.trunc(bnb_ts_s * 1000.0)
                 bnb_sym = ensure_quote_suffix("BNB", "USDC")
                 if isinstance(cp_out.get("items"), dict):
@@ -105,7 +115,7 @@ def record_nav_history_snapshot(
     bc_map = venue_balance_caches
     cp_map = live_prices
     if (vb_map is None and bc_map is None) or cp_map is None:
-        disk_bc, disk_vb, disk_cp = _load_workspace_balances_and_prices(workspace_dir)
+        disk_bc, disk_vb, disk_cp = _load_workspace_balances_and_prices(workspace_dir, now_ts=eff_now)
         if bc_map is None and vb_map is None:
             bc_map = disk_bc
             vb_map = disk_vb
@@ -156,7 +166,7 @@ def load_and_evaluate_nav_drawdown(
     history = load_nav_history_state(workspace_dir)
     cur_pt: Optional[Mapping[str, Any]] = current_point
     if cur_pt is None and include_live_point:
-        bc_map, vb_map, cp_map = _load_workspace_balances_and_prices(workspace_dir)
+        bc_map, vb_map, cp_map = _load_workspace_balances_and_prices(workspace_dir, now_ts=eff_now)
         cur_pt = build_nav_history_point(
             vb_map,
             venue_balance_caches=bc_map,

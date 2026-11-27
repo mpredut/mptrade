@@ -712,6 +712,83 @@ def test_pass25_build_cached_balance_observations_normalizes_epoch_ms_against_la
     assert obs2[("binance", "USDC")].ts == pytest.approx(now_s + 120.0)
 
 
+def test_pass32_nav_future_quote_isolation_bnb_future_ts_and_quantity_fill_id_invariants(tmp_path):
+    """Pass 32 pure invariants + cross-checks for portfolio_valuation, nav_history_store, and quantity fill cost basis."""
+    import time
+    from providers.nav_history_store import _load_workspace_balances_and_prices
+    from providers.portfolio_valuation import compute_venue_nav_breakdown
+    from providers.quantity import compute_fills_cost_basis, summarize_fills_position_and_cost
+    from providers.venue_fee_maintenance import resolve_fee_schedule_cache_path
+    from state_io import atomic_write_json
+
+    now_s = 1_760_000_000.0
+
+    # 1. Pure invariant + dependent cross-check: corrupt far-future sibling quote (HYPEUSD @ now+30d, $999)
+    # must NOT evict real fresh HYPEUSDC ($65) in compute_venue_nav_breakdown or build_nav_history_point.
+    live_prices = {
+        "items": {
+            "HYPEUSDC": [[int((now_s - 2.0) * 1000), 65.0]],
+            "HYPEUSD": [[int((now_s + 30 * 86400.0) * 1000), 999.0]],
+        },
+        "fetchtime": {
+            "HYPEUSDC": int((now_s - 2.0) * 1000),
+            "HYPEUSD": int((now_s + 30 * 86400.0) * 1000),
+        },
+    }
+    bal_caches = {
+        "hyperliquid": {
+            "venue": "hyperliquid",
+            "verified_ts": now_s - 5.0,
+            "items": {"HYPE": {"free": 10.0, "locked": 0.0}},
+        }
+    }
+    nav_b = compute_venue_nav_breakdown(venue_balance_caches=bal_caches, live_prices=live_prices, now_ts=now_s)
+    assert nav_b["portfolio_total_usd"] == pytest.approx(650.0, abs=0.05)
+    pt = build_nav_history_point({}, venue_balance_caches=bal_caches, live_prices=live_prices, now_ts=now_s)
+    assert pt is not None and pt["nav_usd"] == pytest.approx(650.0, abs=0.05)
+
+    # 2. Pure invariant: _load_workspace_balances_and_prices rejects corrupt far-future bn_fee.ts
+    # and falls back to valid fee_state.ts instead of synthesizing a future BNBUSDC tick.
+    cdir = tmp_path / "cachedb"
+    valid_fee_ts = now_s - 300.0
+    atomic_write_json(
+        resolve_fee_schedule_cache_path(str(cdir)),
+        {"ts": valid_fee_ts, "venues": {"binance": {"ts": now_s + 10 * 86400.0, "bnb_price_usdc": 620.0}}},
+    )
+    _, _, cp_out = _load_workspace_balances_and_prices(str(tmp_path), now_ts=now_s)
+    assert cp_out["BNBUSDC"][0][0] == int(valid_fee_ts * 1000)
+    assert cp_out["BNBUSDC"][0][1] == pytest.approx(620.0)
+
+    # 3. Pure invariant + dependent cross-check: empty-string id="" must fall back to orderId
+    # in both compute_fills_cost_basis (avoiding None abort) and summarize_fills_position_and_cost
+    # (preventing duplicate fill double-counting), and far-future SELL rows are skipped when now_ts is set.
+    real_now_s = time.time()
+    buy_ts_ms = int((real_now_s - 300.0) * 1000)
+    rows_blank_id = [
+        {"id": "", "orderId": "ORD-101", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": buy_ts_ms},
+    ]
+    avg_cost = compute_fills_cost_basis(rows_blank_id, held_qty=2.0, since_s=3600.0)
+    assert avg_cost == pytest.approx(100.0)
+
+    rows_dup_and_future = [
+        {"id": "", "orderId": "ORD-101", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": buy_ts_ms},
+        {"id": "  ", "orderId": "ORD-101", "side": "BUY", "price": 100.0, "qty": 2.0, "timestamp": buy_ts_ms},
+        {
+            "id": "FUT-SELL",
+            "side": "SELL",
+            "price": 50.0,
+            "qty": 2.0,
+            "timestamp": int((real_now_s + 30 * 86400.0) * 1000),
+        },
+    ]
+    pos_sum = summarize_fills_position_and_cost(rows_dup_and_future, now_ts=real_now_s)
+    assert pos_sum is not None
+    assert pos_sum["fills_count"] == 1
+    assert pos_sum["qty"] == pytest.approx(2.0)
+    assert pos_sum["avg_cost_px"] == pytest.approx(100.0)
+
+
+
 
 
 

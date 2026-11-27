@@ -124,10 +124,17 @@ def _collect_canceled_order_ids(items: list[dict[str, Any]], exclude_iid: str = 
 def _has_explicit_fill_marker(it: dict[str, Any], ep: dict[str, Any], ep_st: str, ep_msg: str) -> bool:
     if ep_st in _FILLED_VENUE_STATUSES or ep_msg.startswith("filled"):
         return True
-    for key in ("filled_at", "filled_ts", "avg_fill_price", "avgPrice", "fill_price"):
-        if ep.get(key) is not None:
+    for key in ("filled_at", "filled_ts"):
+        if parse_pos_epoch_s(ep.get(key)) is not None:
             return True
-    return it.get("filled_ts") is not None or it.get("fill_px") is not None
+    for key in ("avg_fill_price", "avgPrice", "fill_price"):
+        if safe_pos_float(ep.get(key), default=None) is not None:
+            return True
+    return (
+        parse_pos_epoch_s(it.get("filled_ts")) is not None
+        or parse_pos_epoch_s(it.get("filled_at")) is not None
+        or safe_pos_float(it.get("fill_px"), default=None) is not None
+    )
 
 
 def _is_filled_ai_intent(it: dict[str, Any], canceled_oids: set[str]) -> bool:
@@ -173,28 +180,45 @@ def _extract_intent_exec_price(it: dict[str, Any]) -> float:
     return px if px is not None else 0.0
 
 
-def _extract_intent_exec_ts(it: dict[str, Any]) -> float:
-    _, base_ts = extract_intent_timestamp_s(it)
+def _extract_intent_exec_ts(it: dict[str, Any], *, max_ts: Optional[float] = None) -> float:
+    _, raw_base_ts = extract_intent_timestamp_s(it)
+    base_ts = raw_base_ts if (max_ts is None or raw_base_ts <= max_ts) else 0.0
     fill_ts = base_ts
     for key in ("filled_ts", "filled_at"):
-        if (ts_v := parse_pos_epoch_s(it.get(key))) is not None and ts_v >= base_ts:
+        if (
+            (ts_v := parse_pos_epoch_s(it.get(key))) is not None
+            and ts_v >= base_ts
+            and (max_ts is None or ts_v <= max_ts)
+        ):
             fill_ts = max(fill_ts, ts_v)
             break
     ep = it.get("execution_payload")
     if isinstance(ep, dict):
         for key in ("filled_at", "filled_ts", "terminal_ts", "updated_ts", "updateTime", "workingTime", "transactTime"):
-            if (ts_v := parse_pos_epoch_s(ep.get(key))) is not None and ts_v >= base_ts:
+            if (
+                (ts_v := parse_pos_epoch_s(ep.get(key))) is not None
+                and ts_v >= base_ts
+                and (max_ts is None or ts_v <= max_ts)
+            ):
                 fill_ts = max(fill_ts, ts_v)
                 break
     if fill_ts <= base_ts:
         hist = it.get("history") if isinstance(it.get("history"), list) else []
         last_h = hist[-1] if hist and isinstance(hist[-1], dict) else {}
         if str(last_h.get("action") or "") in ("RECONCILED_EXECUTED", "RECONCILED_PARTIAL"):
-            if (lh_ts := parse_pos_epoch_s(last_h.get("ts"))) is not None and lh_ts > fill_ts:
+            if (
+                (lh_ts := parse_pos_epoch_s(last_h.get("ts"))) is not None
+                and lh_ts > fill_ts
+                and (max_ts is None or lh_ts <= max_ts)
+            ):
                 fill_ts = lh_ts
     if fill_ts <= base_ts:
         for key in ("executed_at", "executed_ts"):
-            if (ts_v := parse_pos_epoch_s(it.get(key))) is not None and ts_v > fill_ts:
+            if (
+                (ts_v := parse_pos_epoch_s(it.get(key))) is not None
+                and ts_v > fill_ts
+                and (max_ts is None or ts_v <= max_ts)
+            ):
                 fill_ts = ts_v
                 break
     return fill_ts
@@ -914,7 +938,7 @@ def evaluate_ai_tokenized_equity_sell_guard(
                 it.get("symbol"), sym, venue_a=it.get("venue"), venue_b=ven
             ):
                 continue
-            ts_s = _extract_intent_exec_ts(it)
+            ts_s = _extract_intent_exec_ts(it, max_ts=eff_now + 60.0)
             if 0.0 < ts_s <= eff_now + 60.0 and ts_s > latest_sell_ts:
                 latest_sell_ts = ts_s
         if latest_sell_ts > 0.0 and (eff_now - latest_sell_ts) < cd_sec:
@@ -1001,7 +1025,7 @@ def evaluate_ai_ping_pong_guard(
         it_side = extract_intent_side(it)
         if it_side not in ("BUY", "SELL"):
             continue
-        ts_s = _extract_intent_exec_ts(it)
+        ts_s = _extract_intent_exec_ts(it, max_ts=eff_now + 60.0)
         if ts_s <= 0.0 or ts_s > eff_now + 60.0:
             continue
         fill_px = _extract_intent_exec_price(it)
@@ -1188,7 +1212,7 @@ def evaluate_ai_decision_scorecard(
         side = extract_intent_side(it)
         if side not in ("BUY", "SELL"):
             continue
-        ts_s = _extract_intent_exec_ts(it)
+        ts_s = _extract_intent_exec_ts(it, max_ts=eff_now + 60.0)
         px = _extract_intent_exec_price(it)
         if ts_s <= 0.0 or ts_s > eff_now + 60.0 or px <= 0.0:
             continue
@@ -1670,6 +1694,7 @@ def evaluate_filled_trade_plans(
                         row.get("invalidation_px"),
                         row.get("target_px"),
                         start_ts=prev_ts,
+                        end_ts=eff_now + 60.0,
                         price_bars=sym_bars,
                         check_spot=(spot_px_cached is not None and spot_px_cached > 0.0),
                     )
@@ -1773,7 +1798,7 @@ def evaluate_ai_calibration_feedback(
         if eff_scope != "all" and not matches_asset_scope(sym, ven, eff_scope):
             continue
         _, base_ts = extract_intent_timestamp_s(it)
-        exec_ts = _extract_intent_exec_ts(it)
+        exec_ts = _extract_intent_exec_ts(it, max_ts=eff_now + 60.0)
         ref_ts = exec_ts if exec_ts > 0.0 else base_ts
         if ref_ts <= 0.0 or ref_ts < cutoff or ref_ts > eff_now + 60.0:
             continue

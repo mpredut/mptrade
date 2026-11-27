@@ -136,16 +136,17 @@ def build_nav_history_point(
     has_state = isinstance(venue_balances_state, Mapping) and bool(venue_balances_state)
     if not has_caches and not has_state:
         return None
+    eff_now = resolve_now_ts(now_ts)
     nav = compute_venue_nav_breakdown(
         venue_balance_caches=dict(venue_balance_caches) if has_caches else None,
         venue_balances_state=dict(venue_balances_state) if has_state else None,
         live_prices=live_prices,
         scope=scope,
+        now_ts=eff_now,
     )
     total_usd = safe_pos_float(nav.get("portfolio_total_usd"), default=None)
     if total_usd is None:
         return None
-    eff_now = resolve_now_ts(now_ts)
     pt: dict[str, Any] = {
         "ts": round(eff_now, 3),
         "nav_usd": round(total_usd, 2),

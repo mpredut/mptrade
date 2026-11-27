@@ -469,11 +469,14 @@ def compute_venue_nav_breakdown(
     venue_overrides: object = None,
     exclude_venues: tuple[str, ...] = (),
     scope: str = "all",
+    now_ts: object = None,
 ) -> dict[str, object]:
     """Canonical SSOT multi-venue NAV calculator and position/cash deduplicator."""
 
     excl_set = {normalize_venue_name(v) or str(v).strip().lower() for v in (exclude_venues or ()) if v}
     scope_norm = str(scope or "all").strip().lower()
+    eff_now = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
+    max_live_ts = (eff_now + 60.0) if eff_now is not None else None
     live_src = (
         live_prices.get("items")
         if isinstance(live_prices, dict) and isinstance(live_prices.get("items"), dict)
@@ -640,7 +643,11 @@ def compute_venue_nav_breakdown(
                     if len(matched_cands) == 1:
                         live_px = matched_cands[0][1]
                     elif matched_cands:
-                        ts_cands = [c for c in matched_cands if c[2] is not None]
+                        ts_cands = [
+                            c
+                            for c in matched_cands
+                            if c[2] is not None and (max_live_ts is None or c[2] <= max_live_ts)
+                        ]
                         if ts_cands:
                             max_cand_ts = max(c[2] for c in ts_cands if c[2] is not None)
                             pool = [c for c in ts_cands if c[2] is not None and (max_cand_ts - c[2]) <= 600.0]

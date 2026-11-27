@@ -534,6 +534,7 @@ def summarize_delta_gate_logs(
     log_lines: list[str],
     *,
     cutoff_ts: float = 0.0,
+    now_ts: Optional[float] = None,
     eval_state: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Summarize Delta-Gate LLM call savings, quota routing shifts, and high-effort escalations."""
@@ -545,18 +546,20 @@ def summarize_delta_gate_logs(
     escalated_models: dict[str, int] = {}
     soft_shift_models: dict[str, int] = {}
     wake_reasons: dict[str, int] = {}
+    max_ts = (resolve_now_ts(now_ts) + 60.0) if now_ts is not None else None
 
     for line in log_lines:
         if not isinstance(line, str) or not line:
             continue
-        if cutoff_ts > 0.0:
+        if cutoff_ts > 0.0 or max_ts is not None:
             m_ts = _LOG_TS_RE.search(line)
             if m_ts:
                 try:
                     dt = datetime.strptime(m_ts.group(1).replace("T", " "), "%Y-%m-%d %H:%M:%S").replace(
                         tzinfo=BUCHAREST
                     )
-                    if dt.timestamp() < cutoff_ts:
+                    line_ts = dt.timestamp()
+                    if (cutoff_ts > 0.0 and line_ts < cutoff_ts) or (max_ts is not None and line_ts > max_ts):
                         continue
                 except ValueError:
                     pass
@@ -584,6 +587,8 @@ def summarize_delta_gate_logs(
     total_cycles = skips + llm_cycles
     saved_pct = round((skips / total_cycles) * 100.0, 1) if total_cycles > 0 else 0.0
     ev_map = eval_state if isinstance(eval_state, Mapping) else {}
+    raw_eval_ts = parse_pos_epoch_s(ev_map.get("ts")) or 0.0
+    safe_eval_ts = raw_eval_ts if (max_ts is None or raw_eval_ts <= max_ts) else 0.0
     return {
         "delta_gate_skips": skips,
         "llm_cycles_completed": llm_cycles,
@@ -596,7 +601,7 @@ def summarize_delta_gate_logs(
         "soft_shift_models": soft_shift_models,
         "wake_reasons": wake_reasons,
         "last_eval_model": clean_scalar_str(ev_map.get("model_used")) or "",
-        "last_eval_ts": round(parse_pos_epoch_s(ev_map.get("ts")) or 0.0, 3),
+        "last_eval_ts": round(safe_eval_ts, 3),
     }
 
 
@@ -646,7 +651,7 @@ def evaluate_ai_attribution(
         if eff_scope != "all" and not matches_asset_scope(sym, ven, eff_scope):
             continue
         _, base_ts = extract_intent_timestamp_s(it)
-        exec_ts = _extract_intent_exec_ts(it)
+        exec_ts = _extract_intent_exec_ts(it, max_ts=eff_now + 60.0)
         ref_ts = exec_ts if exec_ts > 0.0 else base_ts
         if ref_ts <= 0.0 or ref_ts > eff_now + 60.0:
             continue
@@ -774,6 +779,7 @@ def evaluate_ai_attribution(
                     entry_row["invalidation_px"],
                     entry_row["target_px"],
                     start_ts=safe_float(entry_row.get("ts"), default=0.0) or 0.0,
+                    end_ts=eff_now + 60.0,
                     price_bars=sym_bars,
                 )
         gross_pct = compute_signed_price_edge_pct(side, entry_row["px"], spot_px)
@@ -909,6 +915,7 @@ def evaluate_ai_attribution(
     delta_gate = summarize_delta_gate_logs(
         reconciler_log_lines if isinstance(reconciler_log_lines, list) else [],
         cutoff_ts=cutoff,
+        now_ts=eff_now,
         eval_state=crypto_eval_state,
     )
     nav_dd = evaluate_nav_drawdown_metrics(

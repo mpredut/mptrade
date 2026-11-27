@@ -46,6 +46,7 @@ from .order_id_context import (
     extract_client_order_id,
     resolve_order_actor,
 )
+from .order_ohlc_utils import extract_executed_qty, extract_orig_qty
 from .order_status_ssot import FILL_COMPLETE_QTY_RATIO, TERMINAL_FILL_ROW_STATUSES
 
 _CURRENCY_STRIP_RE = re.compile(r"[\$,\s]|(?:USD[CT]?)\b", re.IGNORECASE)
@@ -221,18 +222,8 @@ def prune_reconciled_terminal_open_orders(
         if not is_reconciled:
             if ep_st not in ("FILLED", "CLOSED") or clean_upper_scalar(item.get("status")) != "EXECUTED":
                 continue
-            exec_q = safe_nonneg_float(
-                ep.get("executedQty")
-                if ep.get("executedQty") is not None
-                else (ep.get("filled_qty") if ep.get("filled_qty") is not None else ep.get("filled")),
-                default=0.0,
-            ) or 0.0
-            orig_q = safe_pos_float(
-                ep.get("origQty")
-                if ep.get("origQty") is not None
-                else (ep.get("qty") if ep.get("qty") is not None else ep.get("amount")),
-                default=None,
-            )
+            exec_q = safe_nonneg_float(extract_executed_qty(ep, default=0.0), default=0.0) or 0.0
+            orig_q = safe_pos_float(extract_orig_qty(ep, default=None), default=None)
             if exec_q <= 0.0 or (orig_q is not None and exec_q < orig_q * FILL_COMPLETE_QTY_RATIO):
                 continue
         item_v = normalize_venue_name(item.get("venue") or item.get("provider_name") or item.get("provider")) or ""
