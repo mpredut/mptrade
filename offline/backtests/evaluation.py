@@ -19,7 +19,12 @@ from statistics import fmean
 from typing import Any
 
 from cachepaths import normalize_venue_name
-from offline.backtests.datasets import dataset_metadata
+from offline.backtests.datasets import (
+    dataset_metadata,
+    load_dataset,
+    save_dataset,
+    validate_dataset,
+)
 from offline.backtests.walk_forward import summarize_test_windows, walk_forward_splits
 from state_io import atomic_write_json
 from strategies.replay_execution import ExecutionModel
@@ -560,6 +565,41 @@ def evaluate_spot_segment(
         warmup_records=warmup_records,
         validate_contract=validate_contract,
     )
+
+
+def load_or_fetch_walk_forward_dataset(
+    *,
+    frozen_file: Path | None,
+    interval: int,
+    symbol_label: str,
+    fetch_fn: Callable[[], Sequence[dict] | None],
+    frozen_path_fn: Callable[[dict[str, Any]], Path],
+    api_source_label_fn: Callable[[Path], str],
+    frozen_source_label: str | None = None,
+    min_bars: int = 20,
+) -> tuple[list[dict], Path, str] | None:
+    """Load a supplied frozen CSV or fetch + validate + freeze live/archive OHLC candles for walk-forward runs."""
+    if frozen_file is not None:
+        raw_loaded = load_dataset(frozen_file)
+        if len(raw_loaded) < min_bars:
+            print(f"[!] Insufficient bars for {symbol_label} {interval}m ({len(raw_loaded)} < {min_bars}); skipping.")
+            return None
+        records = validate_dataset(raw_loaded, interval_minutes=interval)
+        source_label = frozen_source_label if frozen_source_label is not None else f"frozen file: {frozen_file}"
+        return records, frozen_file, source_label
+
+    raw_candles = fetch_fn()
+    if not raw_candles:
+        print(f"[!] No candles returned for {symbol_label} {interval}m; skipping.")
+        return None
+    if len(raw_candles) < min_bars:
+        print(f"[!] Insufficient bars for {symbol_label} {interval}m ({len(raw_candles)} < {min_bars}); skipping.")
+        return None
+    records = validate_dataset(raw_candles, interval_minutes=interval)
+    meta = dataset_metadata(records, interval_minutes=interval)
+    frozen_path = frozen_path_fn(meta)
+    save_dataset(records, frozen_path)
+    return records, frozen_path, api_source_label_fn(frozen_path)
 
 
 def build_and_save_interval_baseline_report(

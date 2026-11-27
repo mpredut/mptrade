@@ -15,12 +15,9 @@ if ROOT not in sys.path:
 from botcore import optional_env
 from offline.backtests.datasets import (
     DAILY_DATASET_MAX_AGE_SEC,
-    format_ohlc_bars_log_span,
     has_usable_ohlc_csv,
-    merge_with_existing_ohlc_csv,
     parse_ohlc_refresh_cli_args,
-    save_dataset,
-    should_skip_ohlc_csv_refresh,
+    refresh_ohlc_csv_dataset,
 )
 from providers.market_api import api as mkt
 from state_io import atomic_snapshot_file
@@ -44,44 +41,23 @@ def fetch(
     missing_only: bool = False,
     max_age_sec: float = DAILY_DATASET_MAX_AGE_SEC,
 ) -> bool:
-    out_path = os.path.join(DATA, f"{name}_240m.csv")
-    skip, has_usable = should_skip_ohlc_csv_refresh(
-        out_path,
+    return refresh_ohlc_csv_dataset(
+        os.path.join(DATA, f"{name}_240m.csv"),
+        lambda: mkt.fetch_ohlc_candles(
+            symbol,
+            interval=240,
+            provider_name="binance",
+            start_ms=START_MS,
+            drop_incomplete=True,
+        ),
+        label=name,
         min_bars=MIN_GRID_BARS,
         strict=True,
         force=force,
         missing_only=missing_only,
         max_age_sec=max_age_sec,
+        min_timestamp=START_MS // 1000,
     )
-    if skip:
-        print(f"[fetch] {name}: using fresh cached {out_path}", flush=True)
-        return True
-    try:
-        candles = mkt.fetch_ohlc_candles(
-            symbol, interval=240, provider_name="binance", start_ms=START_MS, drop_incomplete=True,
-        )
-        if not candles:
-            print(f"[fetch] {name}: no candles returned; keeping existing file if present", flush=True)
-            return has_usable
-        # Allow historical exchange maintenance windows while enforcing strict chronological order & OHLC invariants.
-        merged = merge_with_existing_ohlc_csv(
-            candles,
-            out_path,
-            min_timestamp=START_MS // 1000,
-        )
-        if len(merged) < MIN_GRID_BARS:
-            print(
-                f"[fetch] {name}: insufficient bars ({len(merged)} < {MIN_GRID_BARS}); "
-                "keeping existing file if present",
-                flush=True,
-            )
-            return has_usable
-        save_dataset(merged, out_path)
-        print(f"[fetch] {name}: {format_ohlc_bars_log_span(merged)}", flush=True)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print(f"[fetch] {name}: error {exc}; keeping existing file if present", flush=True)
-        return has_usable
 
 
 if __name__ == "__main__":

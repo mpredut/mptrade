@@ -252,7 +252,19 @@ class MarketApi:
         )
 
     @staticmethod
-    def _archive_symbol_candidates(symbol: str) -> list[str]:
+    def _parse_ohlc_range_days(range_spec: Any) -> Optional[int]:
+        """Parse Yahoo-style OHLC range tokens (``60d``, ``6mo``, ``2y``, ``48h``) into positive lookback days."""
+        token = (clean_scalar_str(range_spec) or "").lower()
+        if not token:
+            return None
+        for suffix, mult in (("mo", 30.5), ("y", 365.25), ("d", 1.0), ("h", 1.0 / 24.0)):
+            if token.endswith(suffix):
+                qty = safe_pos_float(token[: -len(suffix)], default=None)
+                return max(1, math.ceil(qty * mult)) if qty is not None else None
+        return None
+
+    @staticmethod
+    def _archive_symbol_candidates(symbol: str, providers: Any = ()) -> list[str]:
         raw = str(symbol or "").strip()
         if not raw:
             return []
@@ -270,10 +282,21 @@ class MarketApi:
         tok_sym, is_tok = resolve_kraken_tokenized_pair(raw)
         if is_tok and tok_sym:
             _add(tok_sym)
-        if not is_tok and not is_equity_symbol(raw) and not has_crypto_quote_suffix(raw) and not raw.startswith("@"):
-            _add(ensure_quote_suffix(raw, "USDC"))
-            _add(ensure_quote_suffix(raw, "USD"))
-            _add(ensure_equity_suffix(raw))
+        if raw.startswith("@"):
+            for prov in providers or ():
+                known_pairs = getattr(prov, "KNOWN_SPOT_PAIRS", None)
+                if not isinstance(known_pairs, dict):
+                    continue
+                for base_tok, spot_code in known_pairs.items():
+                    if str(spot_code or "").strip() == raw and base_tok:
+                        _add(ensure_quote_suffix(str(base_tok).strip().upper(), "USDC"))
+                        _add(ensure_quote_suffix(str(base_tok).strip().upper(), "USD"))
+        elif not is_tok and not has_crypto_quote_suffix(raw):
+            if not is_equity_symbol(raw):
+                _add(ensure_quote_suffix(raw, "USDC"))
+                _add(ensure_quote_suffix(raw, "USD"))
+            if not has_equity_suffix(raw):
+                _add(ensure_equity_suffix(raw))
         return cands
 
     def fetch_ohlc_candles(
@@ -299,30 +322,36 @@ class MarketApi:
             lb_days = safe_pos_int(kwargs.get("lookback_days"), default=None)
             if lb_days is None and (lb_h := safe_pos_float(kwargs.get("lookback_hours"), default=None)) is not None:
                 lb_days = max(1, math.ceil(lb_h / 24.0))
-            is_eq_any = is_equity_symbol(symbol)
-            exp_src_pref: Optional[str] = None
-            if provider_name is not None:
-                prov_obj = self._provider_explicit_or_routed(symbol, provider_name)
-                exp_src_pref = (
-                    "yahoo"
-                    if getattr(prov_obj, "_ASSET_SCOPE", "") == "equities"
-                    else normalize_venue_name(provider_name)
-                )
-            for cand in self._archive_symbol_candidates(symbol):
-                is_eq = is_eq_any or is_equity_symbol(cand)
-                cached = load_ohlc_archive_dataset(
-                    eff_cache_dir,
-                    cand,
-                    interval,
-                    lookback_days=lb_days,
-                    drop_incomplete=eff_drop,
-                    require_contiguous=not is_eq,
-                    allow_market_closed_stale=is_eq,
-                    expected_source_prefix=exp_src_pref,
-                )
-                if cached:
-                    return cached
-        return self._provider_explicit_or_routed(symbol, provider_name).fetch_ohlc_candles(
+            raw_range = kwargs.get("range_")
+            range_supported = True
+            if lb_days is None and raw_range is not None:
+                lb_days = self._parse_ohlc_range_days(raw_range)
+                range_supported = lb_days is not None
+            if range_supported:
+                is_eq_any = is_equity_symbol(symbol)
+                exp_src_pref: Optional[str] = None
+                if provider_name is not None:
+                    prov_obj = self._resolve_routed_or_named_provider(symbol, provider_name)
+                    exp_src_pref = (
+                        "yahoo"
+                        if getattr(prov_obj, "_ASSET_SCOPE", "") == "equities"
+                        else normalize_venue_name(provider_name)
+                    )
+                for cand in self._archive_symbol_candidates(symbol, providers=self._providers):
+                    is_eq = is_eq_any or is_equity_symbol(cand)
+                    cached = load_ohlc_archive_dataset(
+                        eff_cache_dir,
+                        cand,
+                        interval,
+                        lookback_days=lb_days,
+                        drop_incomplete=eff_drop,
+                        require_contiguous=not is_eq,
+                        allow_market_closed_stale=is_eq,
+                        expected_source_prefix=exp_src_pref,
+                    )
+                    if cached:
+                        return cached
+        return self._resolve_routed_or_named_provider(symbol, provider_name).fetch_ohlc_candles(
             symbol,
             interval,
             drop_incomplete=eff_drop,
@@ -366,7 +395,7 @@ class MarketApi:
         is_eq = is_equity_symbol(sym_u)
         if _parse_bool_flag(use_archive, True) and (cache_dir is not None or botcore.is_shared_disk_cache_enabled()):
             eff_cache_dir = cache_dir or get_cachedb_dir()
-            for cand in self._archive_symbol_candidates(symbol):
+            for cand in self._archive_symbol_candidates(symbol, providers=self._providers):
                 pts_cached = load_ohlc_archive_points(
                     eff_cache_dir,
                     cand,

@@ -22,9 +22,11 @@ T212_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from providers.market_api import api as mkt
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
+    ohlc_records_to_tuples,
     print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
@@ -53,10 +55,28 @@ _ipo_common_mod = load_local_module(T212_DIR, "ipo_common", module_key="t212_ipo
 _load_isolated_t212_cfg = _ipo_common_mod.load_isolated_t212_cfg
 
 
+def fetch_yahoo_candles(
+    sym: str,
+    rng: str,
+    interval: str,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Yahoo OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        sym,
+        interval=interval,
+        range_=rng,
+        drop_incomplete=drop_incomplete,
+        provider_name="t212",
+        **kwargs,
+    )
+
+
 def fetch_candles(sym, rng, interval):
     """Fetch completed Yahoo candles as (open, high, low, close) tuples."""
-    records = _md_mod.fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True)
-    return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+    return ohlc_records_to_tuples(fetch_yahoo_candles(sym, rng, interval, drop_incomplete=True))
 
 
 _DEFAULT_FETCH_CANDLES = fetch_candles
@@ -280,7 +300,7 @@ def main() -> int:
         ohlc, timestamps = resolve_cli_ohlc_and_timestamps(
             fetch_candles,
             _DEFAULT_FETCH_CANDLES,
-            lambda: _md_mod.fetch_yahoo_candles(sym, range_tok, interval_tok, drop_incomplete=True),
+            lambda: fetch_yahoo_candles(sym, range_tok, interval_tok, drop_incomplete=True),
             sym,
             range_tok,
             interval_tok,

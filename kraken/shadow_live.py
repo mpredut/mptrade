@@ -62,11 +62,29 @@ from botcore import (  # noqa: E402
     safe_nonneg_float,
     safe_pos_float,
 )
+from providers.market_api import api as mkt  # noqa: E402
 from providers.ohlc_utils import validate_ohlc_candle_bar  # noqa: E402
 from strategies import spot_engine as strat, spot_replay as rp
+from strategies.replay_metrics import ohlc_records_to_timed_tuples  # noqa: E402
 prepare_shadow_runtime(ROOT, HERE)
 from kraken.kraken_common import load_isolated_kraken_cfg  # noqa: E402
-from kraken.market_data import fetch_ohlc_candles  # noqa: E402
+
+
+def fetch_ohlc_candles(
+    pair: str,
+    interval: int,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Kraken OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        pair,
+        interval,
+        drop_incomplete=drop_incomplete,
+        provider_name="kraken",
+        **kwargs,
+    )
 
 DEFAULT_ENV = os.path.join(HERE, ".env")
 LOG_DIR = os.path.join(ROOT, "offline", "shadow_runs", "kraken")
@@ -155,7 +173,7 @@ def _fetch_with_ts(pair: str, interval: int):
         if "timed out" not in str(exc).lower():
             raise
         records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
-    return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
+    return ohlc_records_to_timed_tuples(records)
 
 
 _SAFE_PAIR_RE = re.compile(r"[^A-Za-z0-9._-]+")

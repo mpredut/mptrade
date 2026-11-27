@@ -39,19 +39,38 @@ from offline.backtests.evaluation import (  # noqa: E402
     validate_bt_cli_token,
 )
 
+from providers.market_api import api as mkt  # noqa: E402
+
 t212_replay = load_venue_replay_module("t212", "t212_wf_replay")
 StratParams = t212_replay._strat.StratParams
 _t212_md = t212_replay._md
-fetch_yahoo_candles = _t212_md.fetch_yahoo_candles
 parse_interval_minutes = _t212_md.parse_interval_minutes
+
+
+def fetch_yahoo_candles(
+    symbol: str,
+    range_: str,
+    interval: str,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Yahoo OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        symbol,
+        interval=interval,
+        range_=range_,
+        drop_incomplete=drop_incomplete,
+        provider_name="t212",
+        **kwargs,
+    )
 
 
 def periods_per_year(interval_minutes: int) -> float:
     return t212_replay.equity_periods_per_year(interval_minutes)
 
 
-def _validate_safe_token(value: str, label: str) -> str:
-    return validate_bt_cli_token(value, label)
+_validate_safe_token = validate_bt_cli_token
 
 
 def fx_quote(currency: str) -> tuple[str, bool]:

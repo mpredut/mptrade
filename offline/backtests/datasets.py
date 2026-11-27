@@ -14,7 +14,7 @@ import hashlib
 import io
 import os
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from botcore import exact_pos_int, is_cache_fresh, parse_cli_float, resolve_now_ts, safe_pos_float
 from providers.ohlc_utils import (
@@ -306,6 +306,63 @@ def summarize_ohlc_dir_coverage(
 ) -> str | None:
     """Scan OHLC CSVs in ``data_dir`` and return formatted ``start -> end (last bar: ...)`` coverage."""
     return summarize_ohlc_spans(scan_ohlc_csv_spans(data_dir, suffix=suffix), include_time=include_time)
+
+
+def _emit_flush(message: str) -> None:
+    print(message, flush=True)
+
+
+def refresh_ohlc_csv_dataset(
+    csv_path: str | Path,
+    fetch_fn: Callable[[], Sequence[Mapping] | None],
+    *,
+    label: str,
+    min_bars: int,
+    strict: bool = True,
+    force: bool = False,
+    missing_only: bool = False,
+    max_age_sec: float = DAILY_DATASET_MAX_AGE_SEC,
+    min_timestamp: int | None = None,
+    window_seconds: int | None = None,
+    log_skip: bool = True,
+    emit: Callable[[str], Any] = _emit_flush,
+) -> bool:
+    """Refresh an offline OHLC CSV dataset via ``fetch_fn`` with age skip, history-preserving merge, and fallback."""
+    skip, has_usable = should_skip_ohlc_csv_refresh(
+        csv_path,
+        min_bars=min_bars,
+        strict=strict,
+        force=force,
+        missing_only=missing_only,
+        max_age_sec=max_age_sec,
+    )
+    if skip:
+        if log_skip:
+            emit(f"[fetch] {label}: using fresh cached {csv_path}")
+        return True
+    try:
+        candles = fetch_fn()
+        if not candles:
+            emit(f"[fetch] {label}: no candles returned; keeping existing file if present")
+            return has_usable
+        merged = merge_with_existing_ohlc_csv(
+            candles,
+            csv_path,
+            min_timestamp=min_timestamp,
+            window_seconds=window_seconds,
+        )
+        if len(merged) < min_bars:
+            emit(
+                f"[fetch] {label}: insufficient bars ({len(merged)} < {min_bars}); "
+                "keeping existing file if present"
+            )
+            return has_usable
+        save_dataset(merged, Path(csv_path))
+        emit(f"[fetch] {label}: {format_ohlc_bars_log_span(merged)}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        emit(f"[fetch] {label}: error {exc}; keeping existing file if present")
+        return has_usable
 
 
 def dataset_metadata(records: Iterable[Mapping], *, interval_minutes: int | None = None) -> dict:

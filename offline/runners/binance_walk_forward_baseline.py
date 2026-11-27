@@ -17,18 +17,13 @@ sys.path.insert(0, str(ROOT))
 
 from botcore import load_layered_env_config, safe_pos_float
 from cachepaths import split_symbol_assets
-from offline.backtests.datasets import (
-    dataset_metadata,
-    load_dataset,
-    save_dataset,
-    validate_dataset,
-)
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     build_and_save_interval_baseline_report,
     ensure_cli_output_dir,
     extract_cfg_float,
     extract_cfg_int,
+    load_or_fetch_walk_forward_dataset,
     parse_cli_int,
     parse_dataset_specs,
     parse_optional_lookback_days,
@@ -119,29 +114,23 @@ def main(argv: list[str] | None = None) -> int:
         summary_by_interval = {}
 
         for interval in args.intervals:
-            frozen_path = supplied_datasets.get(interval)
-            source_label = "frozen_csv"
-            if frozen_path is not None:
-                records = load_dataset(frozen_path)
-                if len(records) < 20:
-                    print(f"[!] Insufficient bars for {symbol} {interval}m ({len(records)} < 20); skipping.")
-                    continue
-                records = validate_dataset(records, interval_minutes=interval)
-            else:
-                source_label = "binance_public_klines"
-                raw_records = fetch_ohlc_candles(
+            loaded = load_or_fetch_walk_forward_dataset(
+                frozen_file=supplied_datasets.get(interval),
+                interval=interval,
+                symbol_label=symbol,
+                fetch_fn=lambda iv=interval: fetch_ohlc_candles(
                     symbol,
-                    interval=interval,
+                    interval=iv,
                     lookback_days=lookback_days,
                     drop_incomplete=True,
-                )
-                if not raw_records or len(raw_records) < 20:
-                    print(f"[!] Insufficient bars for {symbol} {interval}m ({len(raw_records or ())} < 20); skipping.")
-                    continue
-                records = validate_dataset(raw_records, interval_minutes=interval)
-                meta = dataset_metadata(records, interval_minutes=interval)
-                frozen_path = dataset_dir / f"{symbol}_{interval}m_{meta['sha256'][:12]}.csv"
-                save_dataset(records, frozen_path)
+                ),
+                frozen_path_fn=lambda meta, iv=interval: dataset_dir / f"{symbol}_{iv}m_{meta['sha256'][:12]}.csv",
+                api_source_label_fn=lambda _p: "binance_public_klines",
+                frozen_source_label="frozen_csv",
+            )
+            if loaded is None:
+                continue
+            records, frozen_path, source_label = loaded
             aligned_params = align_spot_interval_params(strat_params, interval)
             adapter = make_spot_replay_adapter(
                 params=scale_subbar_timeout_params(aligned_params, interval),

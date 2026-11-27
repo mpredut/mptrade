@@ -33,10 +33,13 @@ from botcore import (
     safe_nonneg_int,
     safe_pos_float,
 )
-from kraken.backtest import _bt_params, fetch_candles, simulate  # noqa: F401
-from kraken.market_data import fetch_ohlc_candles
+from kraken.backtest import _bt_params, fetch_candles, fetch_ohlc_candles, simulate  # noqa: F401
 from strategies import spot_replay as rp
-from strategies.replay_metrics import buy_hold_pct as bh, validate_bt_cli_token
+from strategies.replay_metrics import (
+    buy_hold_pct as bh,
+    ohlc_records_to_timed_tuples,
+    validate_bt_cli_token,
+)
 
 
 _ISOLATED_COMPARISON_OVERRIDES = {
@@ -66,8 +69,7 @@ def _resolve_reentry_drop(P: dict) -> float:
 
 def fetch_with_time(pair, interval):
     """Fetch completed candles with timestamps for intraday distribution analysis."""
-    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
-    return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
+    return ohlc_records_to_timed_tuples(fetch_ohlc_candles(pair, interval, drop_incomplete=True))
 
 
 def _run_isolated_replay(ohlc, P, caller: str, overrides: dict, *, warmup_ohlc=()):
@@ -142,12 +144,16 @@ def _eval_fixed_vs_trail(ohlc, params, *, warmup_ohlc=()):
     return h, f, t, win
 
 
+def _tally_winner(win: str, counts: dict[str, int]) -> None:
+    counts[win] = counts.get(win, 0) + 1
+
+
 def run_compare(pairs, intervals):
     P = base_params()
     print(f"params: entry={P['entry']} dca={P['dca']} drop={P['drop']}% sl={P['sl']}% | "
           f"FIX tp={P['tp']}% | TRAIL act={P['tp']}% trail={P['trail']}%  (fee {P['fee']}%/leg)")
     print(f"{'pair':<9} {'intv':<5} {'bars':<5} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
-    fixw = trailw = ties = 0
+    counts = {"TP-fix": 0, "trailing": 0, "tie": 0}
     for pair in pairs:
         for iv in intervals:
             try:
@@ -157,14 +163,10 @@ def run_compare(pairs, intervals):
             if len(ohlc) < 30:
                 print(f"{pair:<9} {iv:<5} not enough data ({len(ohlc)})"); continue
             h, f, t, win = _eval_fixed_vs_trail(ohlc, {**P, "interval": iv})
-            if win == "tie":
-                ties += 1
-            elif win == "trailing":
-                trailw += 1
-            else:
-                fixw += 1
+            _tally_winner(win, counts)
             print(f"{pair:<9} {iv:<5} {len(ohlc):<5} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} cases ({ties} ties)")
+    total = sum(counts.values())
+    print(f"\nTRAILING beats TP-fix in {counts['trailing']}/{total} cases ({counts['tie']} ties)")
 
 
 def run_wf(pair, interval, segments=4):
@@ -178,7 +180,7 @@ def run_wf(pair, interval, segments=4):
     n = len(ohlc); seg = max(1, n // segments)
     print(f"=== WALK-FORWARD {pair} interval={interval}m ({n} bars, {segments} segments) ===")
     print(f"{'segment':<9} {'buy&hold':>9} {'TP-fix':>8} {'trailing':>9}  winner")
-    fixw = trailw = ties = 0
+    counts = {"TP-fix": 0, "trailing": 0, "tie": 0}
     for i in range(segments):
         start_idx = i * seg
         end_idx = (i + 1) * seg if i < segments - 1 else n
@@ -187,14 +189,10 @@ def run_wf(pair, interval, segments=4):
             continue
         warmup = ohlc[max(0, start_idx - 40):start_idx]
         h, f, t, win = _eval_fixed_vs_trail(s, P, warmup_ohlc=warmup)
-        if win == "tie":
-            ties += 1
-        elif win == "trailing":
-            trailw += 1
-        else:
-            fixw += 1
+        _tally_winner(win, counts)
         print(f"#{i+1:<8} {h:>+8.1f}% {f:>+7.2f}% {t:>+8.2f}%  {win}")
-    print(f"\nTRAILING beats TP-fix in {trailw}/{trailw+fixw+ties} segments ({ties} ties, sequential out-of-sample)")
+    total = sum(counts.values())
+    print(f"\nTRAILING beats TP-fix in {counts['trailing']}/{total} segments ({counts['tie']} ties, sequential out-of-sample)")
 
 
 def run_intraday(pair, tz_offset=3):

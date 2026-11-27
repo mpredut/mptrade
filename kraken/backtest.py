@@ -25,6 +25,7 @@ from strategies.spot_engine import StratParams
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     create_backtest_cli_parser,
+    ohlc_records_to_tuples,
     print_bt_cli_error,
     resolve_cli_ohlc_and_timestamps,
     run_cli_single_or_sweep_backtest,
@@ -40,9 +41,27 @@ from botcore import (
     safe_pos_float,
 )
 from instrument_registry import resolve_kraken_tokenized_pair
+from providers.market_api import api as mkt
 from strategies import spot_replay as rp
 from kraken.kraken_common import load_isolated_kraken_cfg
-from kraken.market_data import fetch_ohlc_candles, load_archive_ohlc_candles
+from kraken.market_data import load_archive_ohlc_candles
+
+
+def fetch_ohlc_candles(
+    pair: str,
+    interval: int,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Kraken OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        pair,
+        interval,
+        drop_incomplete=drop_incomplete,
+        provider_name="kraken",
+        **kwargs,
+    )
 
 
 def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
@@ -113,8 +132,7 @@ def _bt_params(base: dict, over: dict | None = None) -> "StratParams":
 
 def fetch_candles(pair, interval):
     """Fetch completed Kraken candles as (open, high, low, close) tuples."""
-    records = fetch_ohlc_candles(pair, interval, drop_incomplete=True)
-    return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+    return ohlc_records_to_tuples(fetch_ohlc_candles(pair, interval, drop_incomplete=True))
 
 
 _DEFAULT_FETCH_CANDLES = fetch_candles
@@ -192,7 +210,7 @@ def main() -> int:
     try:
         if getattr(args, "from_archive", False):
             recs = load_archive_ohlc_candles(pair_tok, args.interval, drop_incomplete=True)
-            ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in recs]
+            ohlc = ohlc_records_to_tuples(recs)
             timestamps = [r["timestamp"] for r in recs]
         else:
             ohlc, timestamps = resolve_cli_ohlc_and_timestamps(

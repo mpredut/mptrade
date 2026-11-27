@@ -375,6 +375,18 @@ def run_tp_drop_sl_sweep(
     return rows
 
 
+def ohlc_records_to_tuples(records: Sequence[Mapping[str, Any]]) -> list[tuple[float, float, float, float]]:
+    """Extract ``(open, high, low, close)`` tuples from canonical OHLC candle dicts."""
+    return [(r["open"], r["high"], r["low"], r["close"]) for r in records]
+
+
+def ohlc_records_to_timed_tuples(
+    records: Sequence[Mapping[str, Any]],
+) -> list[tuple[int, float, float, float, float]]:
+    """Extract ``(timestamp, open, high, low, close)`` tuples from canonical OHLC candle dicts."""
+    return [(r["timestamp"], r["open"], r["high"], r["low"], r["close"]) for r in records]
+
+
 def resolve_cli_ohlc_and_timestamps(
     fetch_candles,
     default_sentinel,
@@ -385,7 +397,7 @@ def resolve_cli_ohlc_and_timestamps(
     if fetch_candles is default_sentinel:
         records = records_fn()
         return (
-            [(r["open"], r["high"], r["low"], r["close"]) for r in records],
+            ohlc_records_to_tuples(records),
             [r["timestamp"] for r in records],
         )
     return fetch_candles(*fetch_args), None
@@ -587,11 +599,14 @@ __all__ = [
     "calculate_performance_metrics",
     "create_backtest_cli_parser",
     "format_performance_summary",
+    "ohlc_records_to_timed_tuples",
+    "ohlc_records_to_tuples",
     "parse_bt_cli_float",
     "parse_bt_cli_int",
     "print_ascii_table_header",
     "print_bt_cli_error",
     "print_single_backtest_report",
+    "resolve_cli_ohlc_and_timestamps",
     "round_metric",
     "run_cli_single_or_sweep_backtest",
     "run_tp_drop_sl_sweep",

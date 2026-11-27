@@ -46,19 +46,38 @@ from botcore import (
     safe_nonneg_float,
     safe_pos_float,
 )
+from providers.market_api import api as mkt
 from strategies.replay_metrics import (
     add_common_backtest_cli_args,
     buy_hold_pct,
     create_backtest_cli_parser,
+    ohlc_records_to_tuples,
     run_cli_single_or_sweep_backtest,
+    validate_bt_cli_token,
 )
 
 
 _common_mod = load_local_module(_HERE, "common")
 load_isolated_hl_cfg = _common_mod.load_isolated_hl_cfg
 _md_local = load_local_module(_HERE, "market_data")
-fetch_ohlc_candles = _md_local.fetch_ohlc_candles
 fetch_funding_history = _md_local.fetch_funding_history
+
+
+def fetch_ohlc_candles(
+    coin: str,
+    interval: int | str = 60,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Hyperliquid OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        coin,
+        interval,
+        drop_incomplete=drop_incomplete,
+        provider_name="hyperliquid",
+        **kwargs,
+    )
 
 _hl_mod = load_local_module(_HERE, "replay")
 run_replay = _hl_mod.run_replay
@@ -127,19 +146,21 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_isolated_hl_cfg(_HERE)
 
-    coin = (args.coin or required_env("HL_COIN", env=cfg)).strip().upper()
-    if (
-        not coin
-        or coin.startswith("-")
-        or ".." in coin
-        or "/" in coin
-        or "\\" in coin
-        or any(ch.isspace() for ch in coin)
-    ):
-        ap.error(f"invalid --coin: {coin!r}")
+    try:
+        coin = validate_bt_cli_token(args.coin or required_env("HL_COIN", env=cfg), "--coin").upper()
+    except ValueError as exc:
+        ap.error(str(exc))
     direction = (args.direction or required_env("HL_DIRECTION", env=cfg)).strip().lower()
     if direction not in ("long", "short"):
         ap.error(f"invalid --direction: {direction!r}")
+
+    def _opt_pos_int(arg_val, env_key: str, default: int) -> int | None:
+        return (
+            exact_pos_int(arg_val, default=None)
+            if arg_val is not None
+            else exact_pos_int(optional_env(env_key, env=cfg), default=default)
+        )
+
     entry = args.entry if args.entry is not None else required_float_env("STRAT_ENTRY", env=cfg)
     dca = args.dca if args.dca is not None else required_float_env("STRAT_DCA", env=cfg)
     disc = args.disc if args.disc is not None else required_float_env("STRAT_ENTRY_DISCOUNT_PCT", env=cfg)
@@ -149,67 +170,46 @@ def main(argv: list[str] | None = None) -> int:
     budget = args.budget if args.budget is not None else required_float_env("STRAT_MAX_BUDGET", env=cfg)
     fee = args.fee if args.fee is not None else required_float_env("HL_FEE_PCT", env=cfg)
     sl = args.sl if args.sl is not None else required_float_env("STRAT_STOP_LOSS_PCT", env=cfg)
-    fast_h = (
-        exact_pos_int(args.fast, default=None)
-        if args.fast is not None
-        else exact_pos_int(optional_env("SIGNAL_FAST_H", env=cfg), default=12)
-    )
-    slow_h = (
-        exact_pos_int(args.slow, default=None)
-        if args.slow is not None
-        else exact_pos_int(optional_env("SIGNAL_SLOW_H", env=cfg), default=48)
-    )
+    fast_h = _opt_pos_int(args.fast, "SIGNAL_FAST_H", 12)
+    slow_h = _opt_pos_int(args.slow, "SIGNAL_SLOW_H", 48)
     if fast_h is None or slow_h is None or fast_h >= slow_h:
         ap.error("--fast and --slow must be positive integers with fast < slow")
-    if args.band is not None:
-        band_pct = safe_nonneg_float(args.band, default=None)
-        if band_pct is None:
-            ap.error("--band must be >= 0")
-    else:
-        raw_band = optional_env("SIGNAL_BAND_PCT", env=cfg)
-        band_pct = safe_nonneg_float(raw_band, default=0.3) if raw_band is not None else 0.3
-    win_h = (
-        exact_pos_int(args.win, default=None)
-        if args.win is not None
-        else exact_pos_int(optional_env("ANALYSIS_WINDOW_H", env=cfg), default=24)
-    )
-    step_h = (
-        exact_pos_int(args.step, default=None)
-        if args.step is not None
-        else exact_pos_int(optional_env("ANALYSIS_STEP_H", env=cfg), default=8)
-    )
+    raw_band = args.band if args.band is not None else optional_env("SIGNAL_BAND_PCT", env=cfg)
+    band_pct = safe_nonneg_float(raw_band, default=None if args.band is not None else 0.3)
+    if band_pct is None:
+        ap.error("--band must be >= 0")
+    win_h = _opt_pos_int(args.win, "ANALYSIS_WINDOW_H", 24)
+    step_h = _opt_pos_int(args.step, "ANALYSIS_STEP_H", 8)
     if win_h is None or step_h is None:
         ap.error("--win and --step must be positive integers")
     ttl_min = safe_float(optional_env("STRAT_ORDER_TTL_MIN", env=cfg), 60.0)
     reentry_tol = safe_float(optional_env("STRAT_REENTRY_TOLERANCE_PCT", env=cfg), 0.0)
     currency = optional_env("STRAT_CURRENCY", "USDC", env=cfg).strip().upper() or "USDC"
-    strat_mode = optional_env("STRATEGY_MODE", "avg_tp", env=cfg).strip().lower()
-    enable_tp = strat_mode != "dca_only"
+    enable_tp = optional_env("STRATEGY_MODE", "avg_tp", env=cfg).strip().lower() != "dca_only"
 
-    if (budget := safe_pos_float(budget, default=None)) is None:
-        ap.error("--budget must be > 0")
-    if (entry := safe_pos_float(entry, default=None)) is None:
-        ap.error("--entry must be > 0")
-    if (maxdca := exact_nonneg_int(maxdca, default=None)) is None:
-        ap.error("--maxdca must be a non-negative integer")
-    if maxdca > 0:
-        if (dca := safe_pos_float(dca, default=None)) is None:
-            ap.error("--dca must be > 0 when maxdca > 0")
-    elif (dca := safe_nonneg_float(dca, default=None)) is None:
-        ap.error("--dca must be >= 0")
-    if (drop := safe_pos_float(drop, default=None)) is None:
-        ap.error("--drop must be > 0")
-    if enable_tp:
-        if (tp := safe_pos_float(tp, default=None)) is None:
-            ap.error("--tp must be > 0 when take-profit is enabled")
-    elif (tp := safe_nonneg_float(tp, default=None)) is None:
-        ap.error("--tp must be >= 0")
-    if (disc := safe_nonneg_float(disc, default=None)) is None or disc >= 100.0:
-        ap.error("--disc must be in [0, 100)")
-    if (fee := safe_nonneg_float(fee, default=None)) is None or fee >= 100.0:
-        ap.error("--fee must be in [0, 100)")
-    if (sl := safe_nonneg_float(sl, default=None)) is None:
-        ap.error("--sl must be >= 0")
+    def _req_bound(val, validator, msg: str, *, lt_100: bool = False):
+        parsed = validator(val, default=None)
+        if parsed is None or (lt_100 and parsed >= 100.0):
+            ap.error(msg)
+        return parsed
+
+    budget = _req_bound(budget, safe_pos_float, "--budget must be > 0")
+    entry = _req_bound(entry, safe_pos_float, "--entry must be > 0")
+    maxdca = _req_bound(maxdca, exact_nonneg_int, "--maxdca must be a non-negative integer")
+    dca = _req_bound(
+        dca,
+        safe_pos_float if maxdca > 0 else safe_nonneg_float,
+        "--dca must be > 0 when maxdca > 0" if maxdca > 0 else "--dca must be >= 0",
+    )
+    drop = _req_bound(drop, safe_pos_float, "--drop must be > 0")
+    tp = _req_bound(
+        tp,
+        safe_pos_float if enable_tp else safe_nonneg_float,
+        "--tp must be > 0 when take-profit is enabled" if enable_tp else "--tp must be >= 0",
+    )
+    disc = _req_bound(disc, safe_nonneg_float, "--disc must be in [0, 100)", lt_100=True)
+    fee = _req_bound(fee, safe_nonneg_float, "--fee must be in [0, 100)", lt_100=True)
+    sl = _req_bound(sl, safe_nonneg_float, "--sl must be >= 0")
 
     warmup_h = max(slow_h + 6, math.ceil(win_h + step_h * 14), 48) if args.signal != "off" else 5
     records = fetch_ohlc_candles(coin, "1h", lookback_hours=days_i * 24 + warmup_h, drop_incomplete=True)
@@ -223,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
     if eval_start >= len(records):
         eval_start = 0
     eval_records = records[eval_start:]
-    ohlc = [(r["open"], r["high"], r["low"], r["close"]) for r in eval_records]
+    ohlc = ohlc_records_to_tuples(eval_records)
     ts = [r["timestamp"] * 1000 for r in eval_records]
     sig = all_sig[eval_start:]
     closes = [x[3] for x in ohlc]

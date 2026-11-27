@@ -26,17 +26,12 @@ from botcore import (
 from strategies.spot_engine import StratParams as SpotStratParams
 from strategies.spot_replay import align_spot_interval_params
 
-from offline.backtests.datasets import (
-    dataset_metadata,
-    load_dataset,
-    save_dataset,
-    validate_dataset,
-)
 from offline.backtests.evaluation import (
     add_walk_forward_cli_args,
     build_and_save_interval_baseline_report,
     build_execution_model_from_args,
     ensure_cli_output_dir,
+    load_or_fetch_walk_forward_dataset,
     load_venue_replay_module,
     parse_cli_float,
     parse_cli_int,
@@ -129,43 +124,31 @@ def main(argv: list[str] | None = None) -> int:
         dataset_map = parse_dataset_specs(args.dataset)
         output_dir = ensure_cli_output_dir(args.output_dir)
 
+        fetch_kwargs = {"lookback_hours": lookback_days * 24} if lookback_days is not None else {"start_ms": 0}
+        quote_ccy = strat_params.currency if args.engine == "spot" else "USDC"
         summary_by_interval = {}
         for interval in args.intervals:
-            frozen_file = dataset_map.get(interval)
-            if frozen_file:
-                frozen_path = frozen_file
-                raw_loaded = load_dataset(frozen_file)
-                if len(raw_loaded) < 20:
-                    print(f"[!] Insufficient bars for {coin} {interval}m ({len(raw_loaded)} < 20); skipping.")
-                    continue
-                records = validate_dataset(raw_loaded, interval_minutes=interval)
-                source_label = f"frozen file: {frozen_file}"
-            else:
-                fetch_kwargs = (
-                    {"lookback_hours": lookback_days * 24}
-                    if lookback_days is not None
-                    else {"start_ms": 0}
-                )
-                raw_candles = fetch_ohlc_candles(
+            loaded = load_or_fetch_walk_forward_dataset(
+                frozen_file=dataset_map.get(interval),
+                interval=interval,
+                symbol_label=coin,
+                fetch_fn=lambda iv=interval: fetch_ohlc_candles(
                     coin,
-                    interval,
+                    iv,
                     drop_incomplete=True,
                     engine=args.engine,
                     spot_pair=cfg.get("HL_SPOT_PAIR"),
-                    quote=strat_params.currency if args.engine == "spot" else "USDC",
+                    quote=quote_ccy,
                     **fetch_kwargs,
-                )
-                if not raw_candles:
-                    print(f"[!] No candles returned for {coin} {interval}m; skipping.")
-                    continue
-                if len(raw_candles) < 20:
-                    print(f"[!] Insufficient bars for {coin} {interval}m ({len(raw_candles)} < 20); skipping.")
-                    continue
-                records = validate_dataset(raw_candles, interval_minutes=interval)
-                meta = dataset_metadata(records, interval_minutes=interval)
-                frozen_path = output_dir / "datasets" / f"{coin}_{args.engine}_{interval}m_{meta['sha256'][:12]}.csv"
-                save_dataset(records, frozen_path)
-                source_label = f"Hyperliquid API, frozen to {frozen_path}"
+                ),
+                frozen_path_fn=lambda meta, iv=interval: (
+                    output_dir / "datasets" / f"{coin}_{args.engine}_{iv}m_{meta['sha256'][:12]}.csv"
+                ),
+                api_source_label_fn=lambda fp: f"Hyperliquid API, frozen to {fp}",
+            )
+            if loaded is None:
+                continue
+            records, frozen_path, source_label = loaded
 
             effective_params = (
                 align_spot_interval_params(strat_params, interval)

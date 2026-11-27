@@ -16,7 +16,8 @@ HL_DIR = ROOT / "hyperliquid"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from botcore import exact_int, exact_pos_int, safe_int
+from botcore import exact_int, exact_pos_int
+from providers.market_api import api as mkt
 from state_io import atomic_write_bytes, atomic_write_json
 from offline.backtests.datasets import canonical_bytes, dataset_metadata_and_csv_path
 from offline.backtests.evaluation import (
@@ -30,7 +31,23 @@ from offline.backtests.evaluation import (
 _hl_md = load_venue_module("hyperliquid", "market_data.py", "local_hl_market_data")
 API_URL = _hl_md.API_URL
 INTERVALS = _hl_md.INTERVALS
-fetch_ohlc_candles = _hl_md.fetch_ohlc_candles
+
+
+def fetch_ohlc_candles(
+    coin: str,
+    interval: int | str = 60,
+    *,
+    drop_incomplete: bool = True,
+    **kwargs,
+) -> list[dict]:
+    """Fetch completed Hyperliquid OHLC records via archive-first ``MarketApi``."""
+    return mkt.fetch_ohlc_candles(
+        coin,
+        interval,
+        drop_incomplete=drop_incomplete,
+        provider_name="hyperliquid",
+        **kwargs,
+    )
 
 
 def resolve_spot_pair(token: str, quote: str, spot_meta: dict) -> str:
@@ -127,10 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(str(exc))
 
     generated_at = dt.datetime.now(tz=dt.timezone.utc)
-    end_ms = safe_int(generated_at.timestamp() * 1000, 0)
-    start_ms = (
-        max(0, end_ms - args.lookback_days * 24 * 60 * 60 * 1000)
-        if args.lookback_days is not None else 0
+    fetch_window = (
+        {"lookback_hours": args.lookback_days * 24}
+        if args.lookback_days is not None
+        else {"start_ms": 0}
     )
     try:
         spot_meta = _hl_md._post_info({"type": "spotMeta"})
@@ -164,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         stem = f"{args.token.strip().upper()}{args.quote.strip().upper()}"
         for interval in args.intervals:
             records = fetch_ohlc_candles(
-                coin, interval, start_ms=start_ms, end_ms=end_ms, drop_incomplete=True,
+                coin, interval, drop_incomplete=True, **fetch_window,
             )
             if not records:
                 raise RuntimeError(f"an empty dataset for {coin} {interval}m")

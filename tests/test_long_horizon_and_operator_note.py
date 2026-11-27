@@ -1563,5 +1563,167 @@ def test_pass30_long_horizon_future_and_corrupt_bars_invariant_and_crosscheck() 
     assert "1970-01-01" not in chart_out
 
 
+def test_offline_and_manual_ohlc_scripts_normalize_via_market_api_and_shared_helpers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify MarketApi range_/@index archive routing, non-configured public OHLC queries,
+    unified manual/offline script routing, and shared dataset/tuple helpers."""
+    from providers.market_api import MarketApi, api as global_mkt
+    from providers.hyperliquid_provider import HyperliquidProvider
+    from providers.ohlc_bar_archive import upsert_ohlc_bar_archive
+    from strategies.replay_metrics import ohlc_records_to_timed_tuples, ohlc_records_to_tuples
+    from offline.backtests.datasets import load_dataset, refresh_ohlc_csv_dataset
+    from offline.backtests.evaluation import load_or_fetch_walk_forward_dataset, load_venue_module
+
+    # 1. MarketApi._parse_ohlc_range_days & Yahoo range_ archive-first slicing + fallback on 10y/max/ytd
+    assert MarketApi._parse_ohlc_range_days("60d") == 60
+    assert MarketApi._parse_ohlc_range_days("6mo") == 183
+    assert MarketApi._parse_ohlc_range_days("1y") == 366
+    assert MarketApi._parse_ohlc_range_days("10y") == 3653
+    assert MarketApi._parse_ohlc_range_days("max") is None
+    assert MarketApi._parse_ohlc_range_days("ytd") is None
+    assert MarketApi._parse_ohlc_range_days(True) is None
+
+    cache_dir = str(tmp_path / "cachedb")
+    os.makedirs(os.path.join(cache_dir, "prices"), exist_ok=True)
+    now_dt = datetime(2026, 11, 25, 16, 0, tzinfo=timezone.utc)
+    now_ts = now_dt.timestamp()
+    monkeypatch.setattr("providers.ohlc_bar_archive.resolve_now_ts", lambda ts=None: now_ts if ts is None else ts)
+
+    # Seed 400 daily bars (~13 months) for NVDA_US_EQ and 60 contiguous 4h bars for HYPEUSDC
+    eq_start = now_dt - timedelta(days=400)
+    eq_1d = [
+        [int((eq_start + timedelta(days=i)).timestamp() * 1000), 100.0 + i * 0.1, 102.0 + i * 0.1, 99.0 + i * 0.1, 101.0 + i * 0.1, 1000.0]
+        for i in range(400)
+    ]
+    upsert_ohlc_bar_archive(cache_dir, "NVDA_US_EQ", eq_1d, timeframe="1d", source="yahoo:NVDA", requested_from_ms=eq_1d[0][0], now_ts=now_ts)
+
+    hl_start = now_dt - timedelta(hours=4 * 60)
+    hl_4h = [
+        [int((hl_start + timedelta(hours=4 * i)).timestamp() * 1000), 25.0 + i * 0.05, 26.0 + i * 0.05, 24.5 + i * 0.05, 25.5 + i * 0.05, 500.0]
+        for i in range(60)
+    ]
+    upsert_ohlc_bar_archive(cache_dir, "HYPEUSDC", hl_4h, timeframe="4h", source="hyperliquid:HYPEUSDC", requested_from_ms=hl_4h[0][0], now_ts=now_ts)
+
+    rest_calls: list[tuple[str, str, Any, dict[str, Any]]] = []
+
+    class _FakeT212:
+        name = "T212"
+        _ASSET_SCOPE = "equities"
+
+        def supports_symbol(self, _s: str) -> bool:
+            return False
+
+        def fetch_ohlc_candles(self, sym: str, interval: Any = "1h", *, drop_incomplete: bool = True, **kw: Any):
+            rest_calls.append(("t212", sym, interval, dict(kw)))
+            return [{"timestamp": int(now_ts) - 86400, "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5}]
+
+    hl_prov = HyperliquidProvider(token="HYPE")
+    monkeypatch.setattr(
+        hl_prov,
+        "fetch_ohlc_candles",
+        lambda sym, interval=60, *, drop_incomplete=True, **kw: (
+            rest_calls.append(("hyperliquid", sym, interval, dict(kw)))
+            or [{"timestamp": int(now_ts) - 14400, "open": 20.0, "high": 21.0, "low": 19.0, "close": 20.5}]
+        ),
+    )
+    facade = MarketApi([_FakeT212(), hl_prov])
+
+    # 1a. NVDA range_="6mo" -> archive hit sliced cleanly (~183d), 0 REST calls
+    nvda_6mo = facade.fetch_ohlc_candles("NVDA", interval="1d", range_="6mo", provider_name="t212", cache_dir=cache_dir)
+    assert 170 <= len(nvda_6mo) <= 190
+    assert rest_calls == []
+
+    # 1b. NVDA range_="10y" (exceeds 400d archive) & range_="max" (unparseable) -> fall back to Yahoo REST
+    assert len(facade.fetch_ohlc_candles("NVDA", interval="1d", range_="10y", provider_name="t212", cache_dir=cache_dir)) == 1
+    assert len(facade.fetch_ohlc_candles("NVDA", interval="1d", range_="max", provider_name="t212", cache_dir=cache_dir)) == 1
+    assert [c[3].get("range_") for c in rest_calls] == ["10y", "max"]
+    rest_calls.clear()
+
+    # 1c. Hyperliquid "@107" resolves to HYPEUSDC archive with 0 REST calls
+    hl_arch = facade.fetch_ohlc_candles("@107", 240, lookback_hours=48, provider_name="hyperliquid", cache_dir=cache_dir)
+    assert len(hl_arch) >= 10
+    assert rest_calls == []
+
+    # 1d. Public OHLC fetch for non-configured HL symbol ("BTC") does NOT raise HyperliquidProvider.validate_symbol error
+    btc_hl = facade.fetch_ohlc_candles("BTC", "1h", lookback_hours=24, provider_name="hyperliquid", cache_dir=cache_dir)
+    assert len(btc_hl) == 1 and rest_calls == [("hyperliquid", "BTC", "1h", {"lookback_hours": 24})]
+
+    # 2. All normalized manual/offline scripts delegate to MarketApi.fetch_ohlc_candles with expected venue
+    sample_rec = [{"timestamp": 1700000000, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0}]
+    routed_calls: list[tuple[str, Any, Any]] = []
+    monkeypatch.setattr(
+        global_mkt,
+        "fetch_ohlc_candles",
+        lambda sym, interval=60, *, drop_incomplete=True, provider_name=None, **kw: (
+            routed_calls.append((str(provider_name), sym, interval)) or list(sample_rec)
+        ),
+    )
+
+    from kraken import backtest as kr_bt, backtest_trail as kr_trail, shadow_live as kr_sl
+    from offline.runners import fetch_hyperliquid_candles as fhc, t212_walk_forward_baseline as t212_wf
+    hl_bt = load_venue_module("hyperliquid", "backtest.py", "test_hl_backtest_mod")
+    t212_bt = load_venue_module("212trading", "backtest.py", "test_t212_backtest_mod")
+
+    assert kr_bt.fetch_candles("HYPEUSD", 60) == [(10.0, 12.0, 9.0, 11.0)]
+    assert kr_trail.fetch_with_time("BTCUSD", 240) == [(1700000000, 10.0, 12.0, 9.0, 11.0)]
+    assert kr_sl._fetch_with_ts("HYPEUSD", 240) == [(1700000000, 10.0, 12.0, 9.0, 11.0)]
+    assert hl_bt.fetch_ohlc_candles("BTC", "1h", lookback_hours=24) == sample_rec
+    assert t212_bt.fetch_candles("NVDA", "1y", "1d") == [(10.0, 12.0, 9.0, 11.0)]
+    assert t212_wf.fetch_yahoo_candles("EURUSD=X", "2y", "1d") == sample_rec
+    assert fhc.fetch_ohlc_candles("@107", 240, start_ms=0) == sample_rec
+    assert routed_calls == [
+        ("kraken", "HYPEUSD", 60),
+        ("kraken", "BTCUSD", 240),
+        ("kraken", "HYPEUSD", 240),
+        ("hyperliquid", "BTC", "1h"),
+        ("t212", "NVDA", "1d"),
+        ("t212", "EURUSD=X", "1d"),
+        ("hyperliquid", "@107", 240),
+    ]
+
+    # 3. Shared helpers: tuple converters, refresh_ohlc_csv_dataset, load_or_fetch_walk_forward_dataset
+    assert ohlc_records_to_tuples(sample_rec) == [(10.0, 12.0, 9.0, 11.0)]
+    assert ohlc_records_to_timed_tuples(sample_rec) == [(1700000000, 10.0, 12.0, 9.0, 11.0)]
+
+    grid_csv = tmp_path / "grid.csv"
+    bars_25 = [
+        {"timestamp": 1700000000 + i * 3600, "open": 10.0, "high": 11.0, "low": 9.5, "close": 10.5}
+        for i in range(25)
+    ]
+    assert refresh_ohlc_csv_dataset(grid_csv, lambda: bars_25, label="TEST", min_bars=20, emit=lambda _m: None) is True
+    assert len(load_dataset(grid_csv)) == 25
+    # Fresh CSV skips network call
+    assert refresh_ohlc_csv_dataset(
+        grid_csv,
+        lambda: (_ for _ in ()).throw(AssertionError("should skip fresh CSV")),
+        label="TEST",
+        min_bars=20,
+        emit=lambda _m: None,
+    ) is True
+
+    wf_out = load_or_fetch_walk_forward_dataset(
+        frozen_file=None,
+        interval=60,
+        symbol_label="TEST",
+        fetch_fn=lambda: bars_25,
+        frozen_path_fn=lambda meta: tmp_path / f"wf_{meta['sha256'][:8]}.csv",
+        api_source_label_fn=lambda fp: f"api:{fp.name}",
+        min_bars=20,
+    )
+    assert wf_out is not None and len(wf_out[0]) == 25 and wf_out[1].exists()
+    assert load_or_fetch_walk_forward_dataset(
+        frozen_file=None,
+        interval=60,
+        symbol_label="TEST",
+        fetch_fn=lambda: bars_25[:5],
+        frozen_path_fn=lambda _meta: tmp_path / "should_not_exist.csv",
+        api_source_label_fn=lambda _fp: "api",
+        min_bars=20,
+    ) is None
+    assert not (tmp_path / "should_not_exist.csv").exists()
+
+
+
 
 
