@@ -841,3 +841,106 @@ def test_single_pass_ttl_and_owner_maps_reused_per_cycle_and_dynamic_provider_na
     assert mock_filter.call_args.kwargs["provider_name"] == "Kraken"
     assert completed_providers == ["Kraken"]
 
+
+def test_warmup_failed_pair_seeds_without_spam_and_only_notifies_new_orders():
+    """Invariant: a warmup failure on one (symbol, side) defers seeding for that pair instead of spamming historical orders."""
+    def _warmup_open(side, symbol):
+        if symbol == "ETHUSDC" and side == "SELL":
+            raise monitororder.ProviderError("temporary warmup outage")
+        if symbol == "BTCUSDC" and side == "SELL":
+            return {101: {"price": 90000.0, "quantity": 0.1, "remainingQty": 0.1}}
+        return {}
+
+    with (
+        patch.object(monitororder.sym, "monitored_order_symbols", return_value=["BTCUSDC", "ETHUSDC"]),
+        patch.object(monitororder.api, "get_open_orders", side_effect=_warmup_open),
+    ):
+        monitororder.warmup_open_orders()
+
+    assert ("ETHUSDC", "SELL") in monitororder._warmup_pending_pairs
+    assert ("BTCUSDC", "SELL") not in monitororder._warmup_pending_pairs
+    assert "101" in monitororder._notified_placed_order_ids
+
+    # First successful read on ETHUSDC SELL seeds historical order 5001 silently (no PLACED spam).
+    hist_orders = {5001: {"price": 3200.0, "quantity": 0.5, "remainingQty": 0.5}}
+    with (
+        patch.object(monitororder.api, "get_open_orders", return_value=hist_orders),
+        patch.object(monitororder.api, "get_current_price", return_value=3000.0),
+        patch("notify_engine.ntfyapi.notify") as mock_notify,
+    ):
+        monitororder.monitor_open_orders_by_type("ETHUSDC", "SELL")
+        mock_notify.assert_not_called()
+    assert ("ETHUSDC", "SELL") not in monitororder._warmup_pending_pairs
+    assert "5001" in monitororder._notified_placed_order_ids
+
+    # Subsequent tick with a genuinely new order 5002 notifies ONLY 5002.
+    next_orders = {
+        5001: {"price": 3200.0, "quantity": 0.5, "remainingQty": 0.5},
+        5002: {"price": 3250.0, "quantity": 0.2, "remainingQty": 0.2},
+    }
+    with (
+        patch.object(monitororder.api, "get_open_orders", return_value=next_orders),
+        patch.object(monitororder.api, "get_current_price", return_value=3000.0),
+        patch("notify_engine.ntfyapi.notify") as mock_notify,
+    ):
+        monitororder.monitor_open_orders_by_type("ETHUSDC", "SELL")
+        mock_notify.assert_called_once()
+        assert "5002" in mock_notify.call_args.kwargs["body"]
+
+
+def test_monitor_orders_isolates_symbol_failure_and_reports_degraded_then_ok_heartbeat():
+    """Cross-check: one failing symbol must not starve sibling symbols and heartbeat reflects degraded/error/ok transitions."""
+    cycle_num = {"n": 0}
+    visited: list[tuple[int, str, str]] = []
+    heartbeats: list[dict] = []
+    sleeps: list[float] = []
+
+    def _fake_monitor_pair(symbol, side, **_kw):
+        c = cycle_num["n"]
+        visited.append((c, symbol, side))
+        if c == 0 and symbol == "BTCUSDC" and side == "SELL":
+            raise monitororder.ProviderError("binance timeout")
+        if c == 1:
+            raise monitororder.ProviderError("all venues down")
+
+    def _fake_hb(name, **kw):
+        heartbeats.append({"name": name, **kw})
+
+    def _fake_sleep(sec):
+        sleeps.append(sec)
+        cycle_num["n"] += 1
+        if cycle_num["n"] >= 3:
+            raise SystemExit(0)
+
+    with (
+        patch.object(monitororder, "warmup_open_orders"),
+        patch.object(monitororder.sym, "monitored_order_symbols", return_value=["BTCUSDC", "ETHUSDC"]),
+        patch.object(monitororder, "monitor_open_orders_by_type", side_effect=_fake_monitor_pair),
+        patch.object(monitororder, "touch_module_heartbeat", side_effect=_fake_hb),
+        patch.object(monitororder.time, "sleep", side_effect=_fake_sleep),
+        patch.object(monitororder.api, "stop", False, create=True),
+    ):
+        with pytest.raises(SystemExit):
+            monitororder.monitor_orders()
+
+    # Cycle 0: BTCUSDC SELL failed, but BTCUSDC BUY and both ETHUSDC sides still ran.
+    c0_pairs = [(s, side) for c, s, side in visited if c == 0]
+    assert c0_pairs == [("BTCUSDC", "SELL"), ("BTCUSDC", "BUY"), ("ETHUSDC", "SELL"), ("ETHUSDC", "BUY")]
+
+    # Heartbeat sequence: startup, cycle 0 degraded, cycle 1 error (all 4 pairs failed), cycle 2 recovered ok.
+    loop_hbs = heartbeats[1:]
+    assert loop_hbs[0]["status"]["status"] == "degraded"
+    assert loop_hbs[0]["status"]["errors"] == 1
+    assert loop_hbs[0]["force"] is True
+    assert loop_hbs[1]["status"]["status"] == "error"
+    assert loop_hbs[1]["status"]["errors"] == 4
+    assert loop_hbs[1]["force"] is True
+    assert loop_hbs[2]["status"] == {"status": "ok"}
+    assert loop_hbs[2]["force"] is True
+    assert sleeps == [
+        monitororder.TIME_SLEEP_ERROR,
+        monitororder.TIME_SLEEP_ERROR,
+        monitororder.MONITOR_OPEN_ORDER_INTERVAL,
+    ]
+
+

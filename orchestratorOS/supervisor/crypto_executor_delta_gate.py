@@ -294,6 +294,26 @@ def _collect_delta_gate_prices(
     return eval_prices
 
 
+def _extract_open_order_filled_qty(oo: Mapping[str, Any]) -> float:
+    """Extract explicit filled/executed quantity across venue shapes without falling back to orig qty."""
+    for key in ("filled_qty", "executedQty", "executed_qty", "filledQuantity", "filledQty", "vol_exec", "cumQty"):
+        val = safe_float(oo.get(key), default=None)
+        if val is not None:
+            return abs(val)
+    filled_sub = oo.get("filled")
+    if isinstance(filled_sub, Mapping):
+        for key in ("totalSz", "sz", "qty", "filled_qty", "executedQty"):
+            val = safe_float(filled_sub.get(key), default=None)
+            if val is not None:
+                return abs(val)
+    if "origSz" in oo and "sz" in oo:
+        orig_sz = safe_pos_float(oo.get("origSz"), default=None)
+        rem_sz = safe_float(oo.get("sz"), default=None)
+        if orig_sz is not None and rem_sz is not None and rem_sz >= 0.0:
+            return round(max(0.0, orig_sz - rem_sz), 8)
+    return 0.0
+
+
 def _collect_open_order_attention(
     ps_map: Mapping[str, Any],
     prev_order_flags: Optional[Mapping[str, str]] = None,
@@ -331,7 +351,7 @@ def _collect_open_order_attention(
         if oid:
             open_order_ids.append(oid)
         st = str(oo.get("status") or "").strip().upper()
-        filled_q = safe_float(oo.get("filled_qty"), default=0.0) or 0.0
+        filled_q = _extract_open_order_filled_qty(oo)
         dist_pct = safe_float(oo.get("dist_from_spot_pct"), default=None)
         fill_prob = safe_float(oo.get("fill_prob_1h_pct"), default=None)
         fr_px = safe_pos_float(oo.get("recommended_front_run_px"), default=None)
@@ -514,12 +534,18 @@ def _compute_max_spot_move(
     best_breach_ratio = 0.0
     high_effort_breach = False
     common_count = 0
+    actionable_total = 0
+    actionable_common = 0
     for sym_u, cur_px in eval_prices.items():
+        is_ignored = _is_ignored_delta_gate_symbol(sym_u, ignored_syms)
+        if not is_ignored:
+            actionable_total += 1
         if sym_u not in prev_prices:
             continue
         common_count += 1
-        if _is_ignored_delta_gate_symbol(sym_u, ignored_syms):
+        if is_ignored:
             continue
+        actionable_common += 1
         base_px = prev_prices[sym_u]
         move_pct = abs(value_diff_to_percent(base_px, cur_px))
         atr_15m = safe_pos_float(atr_map.get(sym_u), default=None)
@@ -541,6 +567,7 @@ def _compute_max_spot_move(
                 breach_sym = sym_u
                 breach_move_pct = move_pct
                 breach_thresh_pct = sym_thresh
+    effective_common = actionable_common if actionable_total > 0 else common_count
     return (
         max_move_pct,
         max_move_sym,
@@ -548,7 +575,7 @@ def _compute_max_spot_move(
         breach_sym,
         breach_move_pct,
         breach_thresh_pct,
-        common_count,
+        effective_common,
         prev_prices,
         high_effort_breach,
     )

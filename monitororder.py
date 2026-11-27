@@ -148,6 +148,7 @@ _notified_expired_order_ids = OrderedIdSet()
 _derived_replacement_order_ids = OrderedIdSet()
 _reprice_refusal_cooldowns: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _SYMBOL_TICK_SIZE_CACHE: dict[str, float] = {}
+_warmup_pending_pairs: set[tuple[str, str]] = set()
 _monitororder_initialized = False
 
 _STRUCTURAL_REFUSAL_COOLDOWN_SEC = 900.0   # 15 min: quota, balance, exchange filter, or disabled execution
@@ -224,6 +225,7 @@ def reset_monitororder_state_for_test():
     _derived_replacement_order_ids.clear()
     _reprice_refusal_cooldowns.clear()
     _SYMBOL_TICK_SIZE_CACHE.clear()
+    _warmup_pending_pairs.clear()
     initial_sell_prices.clear()
     initial_buy_prices.clear()
     _monitororder_initialized = False
@@ -952,6 +954,11 @@ def monitor_open_orders_by_type(
 
     provider_name = _resolve_provider_name(symbol)
     orders = api.get_open_orders(order_type, symbol)
+    if isinstance(orders, dict):
+        pair_key = (clean_upper_scalar(symbol) or str(symbol).upper(), order_type)
+        if pair_key in _warmup_pending_pairs:
+            _seed_warmup_orders(orders)
+            _warmup_pending_pairs.discard(pair_key)
     has_orders = bool(orders and isinstance(orders, dict))
     current_price = safe_pos_float(api.get_current_price(symbol), default=None) if has_orders else None
     if not has_orders or current_price is None:
@@ -1137,20 +1144,30 @@ def _clear_initial_order_price(initial_prices: dict, order_id: object, oid_str: 
     initial_prices.pop(oid_str, None)
 
 
+def _seed_warmup_orders(orders: dict) -> None:
+    for oid in orders.keys():
+        clean_oid = clean_order_id_str(oid)
+        if clean_oid:
+            _notified_placed_order_ids.add(clean_oid)
+        _notified_placed_order_ids.add(str(oid))
+
+
 def warmup_open_orders():
     """Seed existing open orders into tracking sets to avoid notifying historical orders on startup."""
     global _monitororder_initialized
+    _warmup_pending_pairs.clear()
     for symbol in sym.monitored_order_symbols():
+        sym_key = clean_upper_scalar(symbol) or str(symbol).upper()
         for side in ("SELL", "BUY"):
+            pair_key = (sym_key, side)
             try:
                 orders = api.get_open_orders(side, symbol)
-                if orders and isinstance(orders, dict):
-                    for oid in orders.keys():
-                        clean_oid = clean_order_id_str(oid)
-                        if clean_oid:
-                            _notified_placed_order_ids.add(clean_oid)
-                        _notified_placed_order_ids.add(str(oid))
+                if isinstance(orders, dict):
+                    _seed_warmup_orders(orders)
+                else:
+                    _warmup_pending_pairs.add(pair_key)
             except Exception as exc:
+                _warmup_pending_pairs.add(pair_key)
                 print(f"[MONITORORDER] Warmup error for {symbol} {side}: {exc}")
     _monitororder_initialized = True
 
@@ -1167,6 +1184,7 @@ def monitor_orders():
     }
     monitored = sym.monitored_order_symbols()
     touch_module_heartbeat("monitororder", interval_sec=30.0, force=True, symbols=monitored, intervals=hb_intervals)
+    prev_had_error = False
 
     while not _parse_bool_flag(getattr(api, "stop", False), False):
         try:
@@ -1174,20 +1192,58 @@ def monitor_orders():
             currenttime = time.time()
             if currenttime < monitor_open_orders_lasttime:
                 monitor_open_orders_lasttime = currenttime - MONITOR_OPEN_ORDER_INTERVAL - TIME_SLEEP_ERROR
+            cycle_errors: list[str] = []
+            total_pairs = len(monitored) * 2
             if currenttime - monitor_open_orders_lasttime > MONITOR_OPEN_ORDER_INTERVAL:
                 cycle_maps: list[tuple[dict, dict]] = []
                 for symbol in monitored:
                     for side in ("SELL", "BUY"):
-                        monitor_open_orders_by_type(symbol, side, _cycle_maps=cycle_maps)
-                monitor_open_orders_lasttime = currenttime
+                        try:
+                            monitor_open_orders_by_type(symbol, side, _cycle_maps=cycle_maps)
+                        except Exception as exc:
+                            err_prefix = "Provider API error" if isinstance(exc, ProviderError) else "Error"
+                            err_detail = f"{symbol} {side} {type(exc).__name__}: {exc}"
+                            print(f"{err_prefix} ({symbol} {side}): {exc}")
+                            cycle_errors.append(err_detail)
+                if not cycle_errors:
+                    monitor_open_orders_lasttime = currenttime
 
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=monitored, intervals=hb_intervals)
-            time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
+            if cycle_errors:
+                hb_state = "error" if (total_pairs > 0 and len(cycle_errors) >= total_pairs) else "degraded"
+                touch_module_heartbeat(
+                    "monitororder",
+                    interval_sec=30.0,
+                    force=True,
+                    symbols=monitored,
+                    status={"status": hb_state, "errors": len(cycle_errors), "last_error": cycle_errors[-1]},
+                    intervals=hb_intervals,
+                )
+                prev_had_error = True
+                time.sleep(TIME_SLEEP_ERROR)
+            else:
+                touch_module_heartbeat(
+                    "monitororder",
+                    interval_sec=30.0,
+                    force=prev_had_error,
+                    symbols=monitored,
+                    status={"status": "ok"},
+                    intervals=hb_intervals,
+                )
+                prev_had_error = False
+                time.sleep(MONITOR_OPEN_ORDER_INTERVAL)
 
         except Exception as e:
             err_prefix = "Provider API error" if isinstance(e, ProviderError) else "Error"
             print(f"{err_prefix}: {e}")
-            touch_module_heartbeat("monitororder", interval_sec=30.0, symbols=sym.monitored_order_symbols(), intervals=hb_intervals)
+            touch_module_heartbeat(
+                "monitororder",
+                interval_sec=30.0,
+                force=True,
+                symbols=sym.monitored_order_symbols(),
+                status={"status": "error", "error": f"{type(e).__name__}: {e}"},
+                intervals=hb_intervals,
+            )
+            prev_had_error = True
             time.sleep(TIME_SLEEP_ERROR)
 
 

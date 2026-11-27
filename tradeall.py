@@ -1077,12 +1077,29 @@ class TrendCoordinator:
 
     # Main event-driven loop and heartbeat.
     def run(self):
+        hb_intervals = {"min_interval": self.min_interval, "max_interval": self.max_interval}
+        failed_symbols: dict[str, str] = {}
+        last_err = ""
+        last_hb_state = "ok"
+
+        def _hb_status() -> dict:
+            if not failed_symbols:
+                return {"status": "ok"}
+            state = "error" if (self.symbols and len(failed_symbols) >= len(self.symbols)) else "degraded"
+            return {
+                "status": state,
+                "errors": len(failed_symbols),
+                "failed_symbols": sorted(failed_symbols),
+                "last_error": last_err,
+            }
+
         touch_module_heartbeat(
             "tradeall",
             interval_sec=30.0,
             force=True,
             symbols=list(self.symbols),
-            intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
+            status={"status": "ok"},
+            intervals=hb_intervals,
         )
         while not self._stop.is_set():
             self._event.clear()
@@ -1091,20 +1108,29 @@ class TrendCoordinator:
             now = time.time()
             due = [s for s in self.symbols if self._is_due(s, now)]
             if due:
-                touch_module_heartbeat(
-                    "tradeall",
-                    interval_sec=30.0,
-                    symbols=list(self.symbols),
-                    intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
-                )
                 print("----------------------------------")
                 for symbol in due:
                     if self._stop.is_set():
                         break
                     try:
                         self.evaluate(symbol)
+                        failed_symbols.pop(symbol, None)
                     except Exception as e:
+                        last_err = f"{symbol}: {type(e).__name__}: {e}"
+                        failed_symbols[symbol] = last_err
                         print(f"[TrendCoordinator] Error while evaluating {symbol}: {e}")
+                if not self._stop.is_set():
+                    hb_status = _hb_status()
+                    state_changed = hb_status["status"] != last_hb_state
+                    last_hb_state = hb_status["status"]
+                    touch_module_heartbeat(
+                        "tradeall",
+                        interval_sec=30.0,
+                        force=state_changed,
+                        symbols=list(self.symbols),
+                        status=hb_status,
+                        intervals=hb_intervals,
+                    )
                 continue
             now_wait = time.time()
             wait_timeout = self.max_interval
@@ -1117,11 +1143,14 @@ class TrendCoordinator:
                     wait_timeout = min(wait_timeout, max(0.0, self.min_interval - elapsed))
             self._event.wait(timeout=wait_timeout)
             if not self._stop.is_set():
+                hb_status = _hb_status()
+                last_hb_state = hb_status["status"]
                 touch_module_heartbeat(
                     "tradeall",
                     interval_sec=30.0,
                     symbols=list(self.symbols),
-                    intervals={"min_interval": self.min_interval, "max_interval": self.max_interval},
+                    status=hb_status,
+                    intervals=hb_intervals,
                 )
 
     def stop(self):

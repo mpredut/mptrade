@@ -1304,6 +1304,67 @@ def test_hyperliquid_strategy_py__sanitize_state_and__clean_oid_kraken_xstock_wa
     assert kxw._bot_alive(float("nan")) is False
     assert kxw._bot_alive(["1234"]) is False
 
+
+def test_kraken_xstock_watch_archive_isolation_and_honest_error_heartbeat(tmp_path, monkeypatch):
+    """Invariant & cross-check: one failing archive pair does not starve siblings, and cycle errors report status=error."""
+    synced: list[str] = []
+
+    def _fake_sync_archive(_client, pair):
+        synced.append(pair)
+        if pair == "SPCXxUSD":
+            raise RuntimeError("corrupt archive write")
+        return 1
+
+    monkeypatch.setenv("XSTOCK_ARCHIVE_PAIRS", "SPCXxUSD,ANTxUSD")
+    monkeypatch.setattr(kxw, "sync_trade_archive", _fake_sync_archive)
+    kxw.sync_configured_archives(SimpleNamespace(), {"pair": None})
+    assert synced == ["SPCXxUSD", "ANTxUSD"]
+
+    # Cross-check main(): --once returns exit code 1 when cycle fails; loop mode emits honest error then ok heartbeats.
+    st_file = tmp_path / "xstock_watch_state.json"
+    monkeypatch.setenv("XSTOCK_STATE_FILE", str(st_file))
+    monkeypatch.setenv("XSTOCK_CHECK_MINUTES", "1")
+    monkeypatch.setenv("XSTOCK_REGEX", "")
+    monkeypatch.setenv("XSTOCK_QUOTE", "USD")
+    monkeypatch.setenv("XSTOCK_ALLOC_PRICE", "0")
+    monkeypatch.setenv("XSTOCK_TP_ALERT_PCT", "10")
+    monkeypatch.setenv("XSTOCK_SL_ALERT_PCT", "10")
+    monkeypatch.setattr(kxw, "load_env_stack", lambda _p: None)
+    monkeypatch.setattr(kxw, "single_instance", lambda _n: None)
+    monkeypatch.setattr(kxw, "build_kraken_client", lambda *_a, **_kw: SimpleNamespace())
+    monkeypatch.setattr(kxw, "sync_configured_archives", lambda *_a, **_kw: None)
+    monkeypatch.setattr(kxw.signal, "signal", lambda *_a, **_kw: None)
+
+    monkeypatch.setattr(kxw, "check_balance", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("dns down")))
+    monkeypatch.setattr(kxw.sys, "argv", ["kraken_xstock_watch.py", "--once"])
+    assert kxw.main() == 1
+
+    heartbeats: list[dict] = []
+    calls = {"n": 0}
+
+    def _flaky_balance(*_a, **_kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("kraken 502")
+
+    def _stop_after_two(_sec):
+        if calls["n"] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(kxw, "check_balance", _flaky_balance)
+    monkeypatch.setattr(kxw, "touch_module_heartbeat", lambda name, **kw: heartbeats.append({"name": name, **kw}))
+    monkeypatch.setattr(kxw.time, "sleep", _stop_after_two)
+    monkeypatch.setattr(kxw.sys, "argv", ["kraken_xstock_watch.py"])
+    assert kxw.main() == 0
+
+    loop_hbs = heartbeats[1:]
+    assert loop_hbs[0]["status"]["status"] == "error"
+    assert loop_hbs[0]["status"]["beats"] == 0
+    assert "kraken 502" in loop_hbs[0]["status"]["error"]
+    assert loop_hbs[0]["force"] is True
+    assert loop_hbs[1]["status"] == {"status": "ok", "beats": 1}
+    assert loop_hbs[1]["force"] is True
+
 def test_kraken_cachemanager_clean_order_id__normalize_and__load_initial_cache_iter147_s1(tmp_path):
     """[ITER147 #1] clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot."""
     # 1. clean_order_id, KrakenProvider.normalize_ws_trade, and CacheTradeManager.load_sanitized_trade_snapshot

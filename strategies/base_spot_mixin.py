@@ -1249,18 +1249,29 @@ class BaseSpotMixin:
             self._restore_reentry_state()
         return placed
 
-    def _touch_strategy_heartbeat(self, price: float | None, sleep_sec: float, *, force: bool = False) -> None:
+    def _touch_strategy_heartbeat(
+        self,
+        price: float | None,
+        sleep_sec: float,
+        *,
+        force: bool = False,
+        status_state: str = "ok",
+        error: str | None = None,
+    ) -> None:
         if _is_replay_mode(self):
             return
         venue_lbl = getattr(self, "venue_label", "")
         raw_sym = str(self._symbol_id or "").strip()
         sym = canonical_display_symbol(raw_sym, venue=venue_lbl) or raw_sym.upper()
         hb_name = MarketDataProvider.resolve_venue_strategy_heartbeat(venue_lbl, sym)
+        hb_status: dict[str, Any] = {"status": status_state, "price": price, "symbol": sym}
+        if error:
+            hb_status["error"] = error
         touch_module_heartbeat(
             hb_name,
             interval_sec=30.0,
             force=force,
-            status={"price": price, "symbol": sym},
+            status=hb_status,
             symbols=[sym] if sym else None,
             intervals={"check_sec": sleep_sec},
         )
@@ -1342,8 +1353,18 @@ class BaseSpotMixin:
             except (ValueError, OSError):
                 prev_sigterm = None
 
-        def _delay() -> None:
-            self._touch_strategy_heartbeat(last_price[0], sleep_sec)
+        prev_hb_state = ["ok"]
+
+        def _delay(*, state: str = "ok", error: str | None = None) -> None:
+            force_hb = state != prev_hb_state[0]
+            prev_hb_state[0] = state
+            self._touch_strategy_heartbeat(
+                last_price[0],
+                sleep_sec,
+                force=force_hb,
+                status_state=state,
+                error=error,
+            )
             if stop is not None:
                 stop.wait(sleep_sec)
             elif sleep_fn is time.sleep:
@@ -1353,15 +1374,22 @@ class BaseSpotMixin:
 
         try:
             while not ((stop is not None and stop.is_set()) or sigterm_ev.is_set()):
-                price = safe_pos_float(price_fn(), default=None)
+                try:
+                    raw_price = price_fn()
+                except Exception as e:  # noqa: BLE001 -- RESILIENCE: network/API down -> retry
+                    last_price[0] = None
+                    self._log_msg(f"  ! [STRAT] price fetch error ({e.__class__.__name__}: {e}) -- retrying")
+                    _delay(state="error", error=f"price_fetch:{e.__class__.__name__}: {e}")
+                    continue
+                price = safe_pos_float(raw_price, default=None)
                 last_price[0] = price
                 if price is None:
                     self._log_msg("  [STRAT] price unavailable -- retrying")
-                    _delay()
+                    _delay(state="degraded", error="price_unavailable")
                     continue
                 try:
                     if not self._recover_state_write_or_skip():
-                        _delay()
+                        _delay(state="error", error="state_write_failed")
                         continue
                     if (
                         _parse_bool_flag(reload_external, False)
@@ -1379,16 +1407,16 @@ class BaseSpotMixin:
                         except OSError:
                             pass
                     if self.reconcile(price) is False:
-                        _delay()
+                        _delay(state="degraded", error="reconcile_failed")
                         continue
                     self.step(price)
                     self._save()
                 except Exception as e:  # noqa: BLE001 -- RESILIENCE: network/API down -> retry
                     self._log_msg(f"  ! [STRAT] error ({e.__class__.__name__}: {e}) -- retrying")
-                    _delay()
+                    _delay(state="error", error=f"{e.__class__.__name__}: {e}")
                     continue
                 status_log_fn(price)
-                _delay()
+                _delay(state="ok")
             if _parse_bool_flag(getattr(self, "_state_write_failed", False), False):
                 self._save()
         except KeyboardInterrupt:

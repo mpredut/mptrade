@@ -1587,11 +1587,81 @@ def test_spot_engine_live_partial_tp_uses_remaining_vol_and_vol_dec2_dust():
     assert cancelled == []
     assert placed == []
     assert len(strat.s["orders"]) == 2
-
     # vol_dec=2 dust threshold is 0.02, NOT 0.2 -> 0.05 HYPE must NOT be zeroed by _finalize_cycle_if_flat
     strat.s["qty"] = 0.05
     strat.s["cost_usd"] = 2.5
     strat.s["orders"] = []
     strat._finalize_cycle_if_flat({"kind": "TP"}, 50.0)
     assert strat.s["qty"] == pytest.approx(0.05)
+
+
+def test_base_spot_mixin_loop_survives_price_fn_exception_and_reports_honest_heartbeats(monkeypatch):
+    """Invariant & cross-check: _run_strategy_loop survives price_fn exceptions and emits honest error/degraded/ok heartbeats."""
+    import threading
+    from types import SimpleNamespace
+    import strategies.base_spot_mixin as bsm
+
+    heartbeats: list[dict] = []
+    monkeypatch.setattr(bsm, "touch_module_heartbeat", lambda name, **kw: heartbeats.append({"name": name, **kw}))
+
+    class _LoopBot(bsm.BaseSpotMixin):
+        venue_label = "kraken"
+        replay_mode = False
+        pair = "ANTxUSD"
+
+        def __init__(self):
+            self.p = SimpleNamespace(check_minutes=1.0)
+            self.s = {}
+            self._state_write_failed = False
+            self.stop_ev = threading.Event()
+            self.tick = 0
+            self.stepped_prices: list[float] = []
+
+        def _log_msg(self, _msg: str) -> None:
+            return None
+
+        def _recover_state_write_or_skip(self) -> bool:
+            return True
+
+        def reconcile(self, _price: float):
+            return self.tick != 3
+
+        def step(self, price: float) -> None:
+            self.stepped_prices.append(price)
+            self.stop_ev.set()
+
+        def _save(self) -> bool:
+            return True
+
+    bot = _LoopBot()
+
+    def _price_fn():
+        bot.tick += 1
+        if bot.tick == 1:
+            raise RuntimeError("rpc down")
+        if bot.tick == 2:
+            return None
+        if bot.tick == 3:
+            return 100.0
+        return 101.5
+
+    monkeypatch.setattr(bot.stop_ev, "wait", lambda _s: bot.stop_ev.is_set())
+    bot._run_strategy_loop(price_fn=_price_fn, status_log_fn=lambda _p: None, stop=bot.stop_ev)
+
+    assert bot.stepped_prices == [101.5]
+    # Heartbeats: startup ok -> tick 1 price_fetch error -> tick 2 price_unavailable degraded
+    # -> tick 3 reconcile_failed degraded -> tick 4 recovered ok.
+    loop_hbs = heartbeats[1:]
+    assert loop_hbs[0]["status"]["status"] == "error"
+    assert "rpc down" in loop_hbs[0]["status"]["error"]
+    assert loop_hbs[0]["force"] is True
+    assert loop_hbs[1]["status"]["status"] == "degraded"
+    assert loop_hbs[1]["status"]["error"] == "price_unavailable"
+    assert loop_hbs[1]["force"] is True
+    assert loop_hbs[2]["status"]["status"] == "degraded"
+    assert loop_hbs[2]["status"]["error"] == "reconcile_failed"
+    assert loop_hbs[3]["status"]["status"] == "ok"
+    assert loop_hbs[3]["status"]["price"] == 101.5
+    assert loop_hbs[3]["force"] is True
+
 

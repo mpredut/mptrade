@@ -254,7 +254,10 @@ def sync_configured_archives(client: KrakenClient, st: dict) -> None:
         )
     )
     for pair in pairs:
-        sync_trade_archive(client, pair)
+        try:
+            sync_trade_archive(client, pair)
+        except Exception as exc:  # noqa: BLE001 -- resilience: one pair cannot starve sibling archives
+            log(f"  ! archive sync error ({pair}): {exc.__class__.__name__}: {exc}")
 
 
 def sync_target_regex(st: dict, rx: str) -> bool:
@@ -851,7 +854,9 @@ def main() -> int:
             pass
     if not args.once:
         touch_module_heartbeat("xStock-watch", interval_sec=30.0, force=True, intervals={"check_sec": sleep_sec})
+    prev_failed = False
     while not shutdown_flag["stop"]:
+        cycle_error: str | None = None
         try:
             check_balance(client, st, rx, args.desktop)
             if rx:
@@ -864,13 +869,31 @@ def main() -> int:
         except KeyboardInterrupt:
             return 0
         except Exception as e:  # noqa: BLE001 -- resilience: retry network/DNS failures
-            log(f"  ! cycle failed ({e.__class__.__name__}: {e}) \u2014 retrying on the next one")
+            cycle_error = f"{e.__class__.__name__}: {e}"
+            log(f"  ! cycle failed ({cycle_error}) \u2014 retrying on the next one")
         if args.once:
-            return 0
-        beats += 1                       # keep-alive pulse: one tail-visible dot per cycle
-        touch_module_heartbeat("xStock-watch", interval_sec=30.0, status={"beats": beats}, intervals={"check_sec": sleep_sec})
-        sys.stdout.write("." if beats % 60 else ".\n")
-        sys.stdout.flush()
+            return 1 if cycle_error else 0
+        if cycle_error:
+            touch_module_heartbeat(
+                "xStock-watch",
+                interval_sec=30.0,
+                force=True,
+                status={"status": "error", "beats": beats, "error": cycle_error},
+                intervals={"check_sec": sleep_sec},
+            )
+            prev_failed = True
+        else:
+            beats += 1                       # keep-alive pulse: one tail-visible dot per cycle
+            touch_module_heartbeat(
+                "xStock-watch",
+                interval_sec=30.0,
+                force=prev_failed,
+                status={"status": "ok", "beats": beats},
+                intervals={"check_sec": sleep_sec},
+            )
+            prev_failed = False
+            sys.stdout.write("." if beats % 60 else ".\n")
+            sys.stdout.flush()
         try:
             time.sleep(sleep_sec)
         except KeyboardInterrupt:

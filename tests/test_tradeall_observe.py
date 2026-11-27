@@ -687,3 +687,63 @@ class TestArchiverLifecycle(TempDirTestCase):
         )
 
 
+def test_trend_coordinator_run_reports_degraded_error_and_recovery_heartbeats(monkeypatch):
+    """Invariant & cross-check: TrendCoordinator.run exposes per-symbol eval failures across idle waits and recovers cleanly."""
+    dummy_instant = SimpleNamespace(
+        register_price_listener=lambda _cb: None,
+        add_listener=lambda _cb: None,
+    )
+    coord = tradeall.TrendCoordinator(
+        symbols=["BTCUSDC", "ETHUSDC"],
+        instant_mgr=dummy_instant,
+        current_price_mgr=SimpleNamespace(register_price_listener=lambda _cb: None),
+        cache24_managers={},
+        min_interval=0.01,
+        max_interval=0.05,
+    )
+    phase = {"n": 0}
+    heartbeats: list[dict] = []
+
+    def _fake_eval(symbol):
+        p = phase["n"]
+        coord._mark_evaluated(symbol)
+        if p == 0 and symbol == "BTCUSDC":
+            raise RuntimeError("btc calc boom")
+        if p == 1:
+            raise RuntimeError(f"{symbol} down")
+
+    def _fake_hb(name, **kw):
+        heartbeats.append({"name": name, **kw})
+
+    wait_calls = {"n": 0}
+
+    def _fake_wait(timeout=None):
+        wait_calls["n"] += 1
+        phase["n"] += 1
+        if phase["n"] >= 3:
+            coord.stop()
+            return True
+        # Force both symbols due again on next cycle
+        coord._last_eval.clear()
+        return True
+
+    coord._last_eval.clear()
+    monkeypatch.setattr(coord, "evaluate", _fake_eval)
+    monkeypatch.setattr(tradeall, "touch_module_heartbeat", _fake_hb)
+    monkeypatch.setattr(coord._event, "wait", _fake_wait)
+    monkeypatch.setattr(coord, "_is_due", lambda sym, now: sym not in coord._last_eval)
+
+    coord.run()
+
+    # Heartbeat sequence: startup ok -> cycle 0 degraded (BTCUSDC failed) -> idle wait still degraded
+    # -> cycle 1 error (all failed) -> idle wait still error -> cycle 2 ok (recovered).
+    statuses = [(h.get("status", {}).get("status"), h.get("force", False), h.get("status", {}).get("failed_symbols")) for h in heartbeats]
+    assert statuses[0] == ("ok", True, None)
+    assert statuses[1] == ("degraded", True, ["BTCUSDC"])
+    assert statuses[2][0] == "degraded" and statuses[2][2] == ["BTCUSDC"]
+    assert statuses[3] == ("error", True, ["BTCUSDC", "ETHUSDC"])
+    assert statuses[4][0] == "error" and statuses[4][2] == ["BTCUSDC", "ETHUSDC"]
+    assert statuses[5] == ("ok", True, None)
+
+
+

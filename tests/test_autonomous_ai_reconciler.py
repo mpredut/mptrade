@@ -11183,4 +11183,117 @@ def test_monotonic_peak_px_warmup_intraday_post_action_trigger_and_iter_header(t
     assert sec3_ff.index("ADAUSDC") < sec3_ff.index("BTCUSDC")
 
 
+def test_delta_gate_multi_venue_partial_fill_and_unactionable_baseline_invariant():
+    """Invariant & cross-check: Delta-Gate detects multi-venue partial fill keys and refuses unactionable baseline masking."""
+    from orchestratorOS.supervisor.crypto_executor_delta_gate import (
+        _extract_open_order_filled_qty,
+        evaluate_crypto_executor_delta_gate,
+    )
+
+    # Pure invariants on explicit executed-qty extraction across venue shapes (never falling back to orig qty).
+    assert _extract_open_order_filled_qty({"order_id": "1", "qty": 2.5, "origQty": "2.5"}) == 0.0
+    assert _extract_open_order_filled_qty({"order_id": "1", "executedQty": "0.25", "origQty": "1.0"}) == pytest.approx(0.25)
+    assert _extract_open_order_filled_qty({"order_id": "2", "vol_exec": "0.3", "vol": "1.0"}) == pytest.approx(0.3)
+    assert _extract_open_order_filled_qty({"order_id": "3", "filledQuantity": -0.4, "quantity": -1.0}) == pytest.approx(0.4)
+    assert _extract_open_order_filled_qty({"order_id": "4", "origSz": "10.0", "sz": "6.5"}) == pytest.approx(3.5)
+    assert _extract_open_order_filled_qty({"order_id": "5", "filled": {"totalSz": "0.75"}}) == pytest.approx(0.75)
+
+    t0 = 1796000000.0
+    prev_eval_open = {
+        "ts": t0,
+        "model_used": "gemini-4-neon-high",
+        "market_trading_decisions": [{"decision": "HOLD", "symbol": "BTCUSDC"}],
+        "delta_gate_meta": {
+            "eval_prices": {"BTCUSDC": 90000.0},
+            "open_order_ids": ["krk-1"],
+            "order_attention_flags": {},
+            "macro_ts": t0,
+            "macro_verdict": "NEUTRAL|LOW|HOLD|NEUTRAL",
+            "geo_ts": t0,
+            "geo_verdict": "NORMAL|NONE",
+            "latest_fill_ts": 0.0,
+        },
+    }
+
+    # Cross-check 1: Kraken-shaped open order carrying vol_exec (without filled_qty or PARTIALLY_FILLED status) wakes Delta-Gate.
+    s_partial_1 = SimpleNamespace(
+        prices_and_trends={"BTCUSDC": {"price": 90010.0}},
+        portfolio_summary={
+            "tradable_positions": [
+                {"venue": "binance", "symbol": "BTCUSDC", "price": 90010.0, "effective_max_buy_usd": 1000.0, "effective_max_sell_usd": 1000.0},
+            ],
+            "open_limit_orders": [
+                {"order_id": "krk-1", "venue": "kraken", "symbol": "BTCUSDC", "side": "BUY", "status": "OPEN", "vol": "1.0", "vol_exec": "0.25"},
+            ],
+            "recent_orders": {},
+        },
+        sentiment_advisor={"ts": t0, "market_bias": "NEUTRAL", "risk_level": "LOW", "recommended_action": "HOLD", "cross_asset_regime": "NEUTRAL"},
+        geopolitical_threat={"ts": t0, "threat_level": "NORMAL", "risk_score": 0.1},
+        source_timestamps={},
+    )
+    skip1, rsn1, _, meta1 = evaluate_crypto_executor_delta_gate(s_partial_1, prev_eval_open, now_ts=t0 + 180.0)
+    assert (skip1, rsn1) == (False, "open_order_partial_fill")
+    assert meta1["order_attention_flags"]["krk-1"] == "open_order_partial_fill:0.25"
+
+    # Incremental partial fill on the same orderId (0.25 -> 0.60) wakes again even with identical open_order_ids.
+    prev_after_p1 = {**prev_eval_open, "delta_gate_meta": meta1}
+    s_partial_2 = SimpleNamespace(
+        **{
+            **s_partial_1.__dict__,
+            "portfolio_summary": {
+                **s_partial_1.portfolio_summary,
+                "open_limit_orders": [
+                    {"order_id": "krk-1", "venue": "kraken", "symbol": "BTCUSDC", "side": "BUY", "status": "OPEN", "vol": "1.0", "vol_exec": "0.60"},
+                ],
+            },
+        }
+    )
+    skip2, rsn2, _, _ = evaluate_crypto_executor_delta_gate(s_partial_2, prev_after_p1, now_ts=t0 + 300.0)
+    assert (skip2, rsn2) == (False, "open_order_partial_fill")
+
+    # Cross-check 2: Unactionable sibling (ANTxUSD) present in prev_prices MUST NOT mask missing baseline on actionable BTCUSDC.
+    prev_only_unactionable = {
+        **prev_eval_open,
+        "delta_gate_meta": {
+            **prev_eval_open["delta_gate_meta"],
+            "eval_prices": {"ANTxUSD": 87.20},
+            "open_order_ids": [],
+        },
+    }
+    s_mixed_missing = SimpleNamespace(
+        **{
+            **s_partial_1.__dict__,
+            "prices_and_trends": {"BTCUSDC": {"price": 90010.0}, "ANTxUSD": {"price": 87.25}},
+            "portfolio_summary": {
+                "tradable_positions": [
+                    {"venue": "binance", "symbol": "BTCUSDC", "price": 90010.0, "effective_max_buy_usd": 1000.0, "effective_max_sell_usd": 1000.0},
+                    {"venue": "kraken", "symbol": "ANTxUSD", "price": 87.25, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+                ],
+                "open_limit_orders": [],
+                "recent_orders": {},
+            },
+        }
+    )
+    skip_m, rsn_m, _, _ = evaluate_crypto_executor_delta_gate(s_mixed_missing, prev_only_unactionable, now_ts=t0 + 180.0)
+    assert (skip_m, rsn_m) == (False, "no_price_baseline")
+
+    # Conversely, when ALL symbols are unactionable and overlap prev_prices, quiet_flat is preserved.
+    s_all_unactionable = SimpleNamespace(
+        **{
+            **s_partial_1.__dict__,
+            "prices_and_trends": {"ANTxUSD": {"price": 88.50}},
+            "portfolio_summary": {
+                "tradable_positions": [
+                    {"venue": "kraken", "symbol": "ANTxUSD", "price": 88.50, "effective_max_buy_usd": 0.0, "effective_max_sell_usd": 0.0},
+                ],
+                "open_limit_orders": [],
+                "recent_orders": {},
+            },
+        }
+    )
+    skip_u, rsn_u, _, _ = evaluate_crypto_executor_delta_gate(s_all_unactionable, prev_only_unactionable, now_ts=t0 + 180.0)
+    assert skip_u is True and "quiet_flat" in rsn_u
+
+
+
 

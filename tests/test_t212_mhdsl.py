@@ -1552,3 +1552,86 @@ class TestSlRebuyEndToEnd(_T212StateFileTestBase):
         s.step(92.0 * 1.02)
         self.assertIsNone(s.s.get("sl_rebuy"))
         self.assertEqual(len(client.placed), n_after_arm + 1)
+
+
+def test_t212_heartbeat_state_never_masks_dead_asset_threads():
+    """Invariant: dead asset threads are excluded from alive symbols and surface degraded/error status."""
+    class _FakeThread:
+        def __init__(self, name: str, alive: bool):
+            self.name = name
+            self._alive = alive
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+    alive_ok, dead_ok, st_ok = t212_bot._build_t212_heartbeat_state([_FakeThread("nvda", True), _FakeThread("spcx", True)])
+    assert alive_ok == ["nvda", "spcx"]
+    assert dead_ok == []
+    assert st_ok == {"status": "ok"}
+
+    alive_deg, dead_deg, st_deg = t212_bot._build_t212_heartbeat_state([_FakeThread("nvda", True), _FakeThread("spcx", False)])
+    assert alive_deg == ["nvda"]
+    assert dead_deg == ["spcx"]
+    assert st_deg == {"status": "degraded", "dead_assets": ["spcx"]}
+
+    alive_err, dead_err, st_err = t212_bot._build_t212_heartbeat_state([_FakeThread("nvda", False), _FakeThread("spcx", False)])
+    assert alive_err == []
+    assert dead_err == ["nvda", "spcx"]
+    assert st_err == {"status": "error", "dead_assets": ["nvda", "spcx"]}
+
+
+def test_t212_bot_main_reports_degraded_on_partial_thread_exit_and_error_on_total_exit(tmp_path, monkeypatch):
+    """Cross-check: t212_bot.main emits forced degraded heartbeat when one asset exits and returns 1 if all exit."""
+    nvda_env = tmp_path / "config.nvda.env"
+    spcx_env = tmp_path / "config.spcx.env"
+    nvda_env.write_text("T212_TICKER=NVDA_US_EQ\n", encoding="utf-8")
+    spcx_env.write_text("T212_TICKER=SPCX_US_EQ\n", encoding="utf-8")
+
+    heartbeats: list[dict] = []
+    release_nvda = t212_bot.threading.Event()
+    spcx_done = t212_bot.threading.Event()
+
+    def _fake_run_asset(name, _cfg, _client, _paper, _skip_wait):
+        if name == "spcx":
+            spcx_done.set()
+            return
+        release_nvda.wait(timeout=3.0)
+
+    def _fake_hb(name, **kw):
+        heartbeats.append({"name": name, **kw})
+        if kw.get("status", {}).get("status") == "degraded":
+            release_nvda.set()
+
+    orig_wait = t212_bot.STOP.wait
+
+    def _fast_wait(timeout=None):
+        if timeout == 0.5:
+            return False
+        spcx_done.wait(timeout=1.0)
+        return orig_wait(0.02)
+
+    monkeypatch.setattr(t212_bot, "parse_t212_cli_args", lambda _ap, _here: SimpleNamespace(
+        list=False, only=None, paper=True, skip_wait=True, env_file=str(tmp_path / ".env"),
+    ))
+    monkeypatch.setattr(t212_bot, "single_instance", lambda _name: None)
+    monkeypatch.setattr(t212_bot, "load_t212_environment", lambda _f: None)
+    monkeypatch.setattr(t212_bot, "discover_assets", lambda _d: [("nvda", str(nvda_env)), ("spcx", str(spcx_env))])
+    monkeypatch.setattr(t212_bot, "filter_enabled_assets", lambda assets, **_kw: (assets, []))
+    monkeypatch.setattr(t212_bot, "build_t212_client_from_env", lambda *_a, **_kw: SimpleNamespace(list_instruments=lambda: []))
+    monkeypatch.setattr(t212_bot, "run_asset", _fake_run_asset)
+    monkeypatch.setattr(t212_bot, "touch_module_heartbeat", _fake_hb)
+    monkeypatch.setattr(t212_bot.signal, "signal", lambda *_a, **_kw: None)
+    monkeypatch.setattr(t212_bot.STOP, "wait", _fast_wait)
+
+    rc = t212_bot.main()
+    assert rc == 1
+    degraded_hbs = [h for h in heartbeats if h.get("status", {}).get("status") == "degraded"]
+    error_hbs = [h for h in heartbeats if h.get("status", {}).get("status") == "error"]
+    assert degraded_hbs, f"expected degraded heartbeat, got: {heartbeats}"
+    assert degraded_hbs[0]["symbols"] == ["nvda"]
+    assert degraded_hbs[0]["status"]["dead_assets"] == ["spcx"]
+    assert error_hbs, f"expected terminal error heartbeat, got: {heartbeats}"
+    assert error_hbs[-1]["symbols"] == []
+    assert error_hbs[-1]["status"]["dead_assets"] == ["nvda", "spcx"]
+    assert error_hbs[-1]["force"] is True
+

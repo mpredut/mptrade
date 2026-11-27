@@ -134,6 +134,19 @@ def run_asset(name: str, cfg: dict, client: T212Client, force_paper: bool, skip_
     log(f"  \u23f9 [{label}] stopped")
 
 
+def _build_t212_heartbeat_state(threads: list[threading.Thread]) -> tuple[list[str], list[str], dict]:
+    """Return ``(alive_names, dead_names, status_dict)`` without masking dead asset threads behind alive siblings."""
+    alive_names = [t.name for t in threads if t.is_alive()]
+    dead_names = [t.name for t in threads if not t.is_alive()]
+    if dead_names and not alive_names:
+        status: dict = {"status": "error", "dead_assets": dead_names}
+    elif dead_names:
+        status = {"status": "degraded", "dead_assets": dead_names}
+    else:
+        status = {"status": "ok"}
+    return alive_names, dead_names, status
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Unified T212 bot: one process, multiple assets (config.*.env).")
     ap.add_argument("--only", metavar="NAME", help="Run only the asset with this name (config.NAME.env)")
@@ -191,19 +204,36 @@ def main() -> int:
         if STOP.wait(0.5):  # stagger startup to avoid simultaneous API calls
             break
 
-    asset_names = [name for name, _ in assets]
+    exit_code = 0
     try:
-        touch_module_heartbeat("T212-bot", interval_sec=30.0, force=True, symbols=asset_names)
+        alive_names, prev_dead_names, hb_status = _build_t212_heartbeat_state(threads)
+        touch_module_heartbeat("T212-bot", interval_sec=30.0, force=True, symbols=alive_names, status=hb_status)
         while not STOP.is_set() and any(t.is_alive() for t in threads):
-            touch_module_heartbeat("T212-bot", interval_sec=30.0, symbols=asset_names)
+            alive_names, dead_names, hb_status = _build_t212_heartbeat_state(threads)
+            dead_changed = dead_names != prev_dead_names
+            if dead_changed and dead_names:
+                log(f"  ! [t212_bot] asset thread(s) exited unexpectedly: {', '.join(dead_names)}")
+            touch_module_heartbeat(
+                "T212-bot",
+                interval_sec=30.0,
+                force=dead_changed,
+                symbols=alive_names,
+                status=hb_status,
+            )
+            prev_dead_names = dead_names
             STOP.wait(1.0)
+        if not STOP.is_set() and threads and not any(t.is_alive() for t in threads):
+            alive_names, dead_names, hb_status = _build_t212_heartbeat_state(threads)
+            log(f"  ! [t212_bot] all asset threads exited unexpectedly: {', '.join(dead_names)}")
+            touch_module_heartbeat("T212-bot", interval_sec=30.0, force=True, symbols=alive_names, status=hb_status)
+            exit_code = 1
     except KeyboardInterrupt:
         log("Shutdown requested (Ctrl+C)...")
         STOP.set()
     join_deadline = time.monotonic() + 2.5
     for t in threads:
         t.join(timeout=max(0.05, join_deadline - time.monotonic()))
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
