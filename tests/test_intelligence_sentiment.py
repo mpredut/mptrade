@@ -13969,7 +13969,7 @@ def test_stabilize_faza1_and_audit_bugfixes(tmp_path, monkeypatch):
     # Confirm read-only: cycle history file on disk was NOT modified
     assert json.loads(hist_path.read_text(encoding="utf-8")) == hist_orig
 
-    # 2. _normalize_macro_benchmarks_items preserves PRE/POST market_state when bar_age_s > 2700s while stripping stale intraday deltas
+    # 2. _normalize_macro_benchmarks_items coerces stale (>2700s) PRE/POST/REGULAR market_state to CLOSED while preserving fresh weekday PRE
     mb_norm = MacroAndNewsSensorsCollector._normalize_macro_benchmarks_items(
         {
             "ts": now_s,
@@ -13995,11 +13995,32 @@ def test_stabilize_faza1_and_audit_bugfixes(tmp_path, monkeypatch):
         cache_dir=str(cdir),
         now_ts=now_s,
     )
-    assert mb_norm["items"]["SPY"]["market_state"] == "PRE"
+    assert mb_norm["items"]["SPY"]["market_state"] == "CLOSED"
     assert "chg_15m_pct" not in mb_norm["items"]["SPY"]
     assert "chg_1h_pct" not in mb_norm["items"]["SPY"]
     assert mb_norm["items"]["US10Y"]["market_state"] == "CLOSED"
     assert "chg_15m_pct" not in mb_norm["items"]["US10Y"]
+
+    weekday_pre_ts = datetime(2026, 11, 25, 13, 30, tzinfo=timezone.utc).timestamp()
+    mb_fresh_pre = MacroAndNewsSensorsCollector._normalize_macro_benchmarks_items(
+        {
+            "ts": weekday_pre_ts,
+            "items": {
+                "SPY": {
+                    "price": 595.0,
+                    "chg_24h_pct": 0.45,
+                    "chg_1h_pct": 0.12,
+                    "chg_15m_pct": 0.05,
+                    "market_state": "PRE",
+                    "last_bar_ts": weekday_pre_ts - 300.0,
+                }
+            },
+        },
+        cache_dir=str(cdir),
+        now_ts=weekday_pre_ts,
+    )
+    assert mb_fresh_pre["items"]["SPY"]["market_state"] == "PRE"
+    assert mb_fresh_pre["items"]["SPY"]["chg_15m_pct"] == 0.05
 
     # 3. BinanceFuturesLiquidationCollector filters non-USDT/USDC symbols; OkxLiquidationCollector self-heals ctVal on tick
     bf_col = liq_mod.BinanceFuturesLiquidationCollector(symbols=["BTCUSDT"], start_sync=False)
