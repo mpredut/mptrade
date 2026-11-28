@@ -1,0 +1,15 @@
+# Optional Operator Strategic Note for MPTrade AI Trading Executors
+# - Delete the leading '#' on any non-comment line below to inject a strategic macro/regime note
+#   into Section 2 of the trading prompt.
+# - Auto-expires automatically after AI_OPERATOR_NOTE_TTL_DAYS (default 5 days) from file mtime.
+# - Optional first directive line overrides expiry:
+#     TTL: 7d
+#     EXPIRES: 2026-12-05
+# - When this file has only comments or is expired, it adds ZERO tokens to the prompt.
+#
+# Example:
+# Crypto is trading below the current year's open; treat rallies toward MA50 as resistance unless reclaimed on volume.
+
+TTL: 7d
+High-conviction support zone around $56,000 (Nov 21 low). Be aggressive on long entries near this level and tolerate normal drawdown/volatility without premature stop-outs, unless macro support breaks decisively on high volume.
+
