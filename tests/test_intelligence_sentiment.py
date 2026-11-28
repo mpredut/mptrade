@@ -19723,6 +19723,134 @@ def test_cycle35_post_close_boundary_equity_quotes_and_closed_kinematics(monkeyp
         assert k_kin not in entry_rgnt
 
 
+def test_cycle36_pretrade_closed_equity_parity_and_synthetic_whale_suppression(monkeypatch, tmp_path):
+    """Cycle 36 regression tests:
+    1. AssetTelemetryCapabilities.allow_taker_flow_display is the SSOT gating real perp/RTH flow vs synthetic neutral equity flow.
+    2. collect_pretrade_telemetry suppresses synthetic zero-OI Whale Positioning (50.0%) and zero-flow Whale Taker Flow (1.00)
+       on closed/zero-flow equities, while preserving real RTH flow (taker_buy_vol_usd > 0) and live Cboe OI (oi_usd > 0).
+    3. collect_pretrade_telemetry on >30m/8.9h-closed equities prunes elapsed 15m/30m/1h/3h/6h deltas, above_vah/below_val,
+       6h Intraday Bottom Structure, and 90s/5m kinematics in exact parity with Section 3.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import intelligence.sentiment.collectors.pretrade_telemetry_collector as ptc
+    import intelligence.sentiment.evaluators.price_series_evaluator as pse
+    from intelligence.sentiment.evaluators.asset_session_policy import resolve_asset_session_policy
+
+    # 1. SSOT AssetTelemetryCapabilities.allow_taker_flow_display across asset classes
+    cr_caps = resolve_asset_session_policy("BTCUSDC").telemetry_capabilities
+    tok_caps = resolve_asset_session_policy("SPCXxUSD").telemetry_capabilities
+    eq_caps = resolve_asset_session_policy("NVDA_US_EQ").telemetry_capabilities
+    assert cr_caps.allow_taker_flow_display({}) is True
+    assert tok_caps.allow_taker_flow_display({"taker_buy_vol_usd": 1000.0}) is False
+    assert eq_caps.allow_taker_flow_display({"taker_buy_vol_usd": 0.0, "taker_sell_vol_usd": 0.0}) is False
+    assert eq_caps.allow_taker_flow_display({"taker_buy_vol_usd": 5000.0, "taker_sell_vol_usd": 0.0}) is True
+    assert eq_caps.allow_taker_flow_display({"taker_buy_vol_usd": 0.0, "taker_sell_vol_usd": 0.0}, has_perp_cvd=True) is True
+
+    # 2 & 3. Closed equity (8.9h after Friday POST close) suppresses synthetic whale/flow & prunes elapsed intraday/bottom/va_hold
+    ny_tz = ZoneInfo("America/New_York")
+    ts_close = datetime(2026, 11, 27, 17, 0, 0, tzinfo=ny_tz).timestamp()
+    ts_sat_now = datetime(2026, 11, 28, 1, 54, 0, tzinfo=ny_tz).timestamp()  # 8.9h closed
+    monkeypatch.setattr(ptc, "is_symbol_market_open", lambda *_a, **_kw: False)
+    monkeypatch.setattr(pse, "is_symbol_market_open", lambda *_a, **_kw: False)
+
+    cdir = tmp_path / "cdir_eq_closed"
+    (cdir / "prices").mkdir(parents=True)
+    (cdir / "telemetry").mkdir(parents=True)
+    close_ms = int(ts_close * 1000)
+    # 24h series with clear 6h dip + breakout above VAH so without pruning, 30m/1h/3h/6h, above_vah, and bottom_6h all fire
+    ser_24 = [
+        [close_ms - 24 * 3600_000, 150.50, 10000.0],
+        [close_ms - 12 * 3600_000, 154.80, 10000.0],
+        [close_ms - 6 * 3600_000, 148.00, 20000.0],
+        [close_ms - 5 * 3600_000, 146.50, 50000.0],
+        [close_ms - 4 * 3600_000, 147.60, 80000.0],
+        [close_ms - 3 * 3600_000, 149.85, 10000.0],
+        [close_ms - 3600_000, 149.90, 5000.0],
+        [close_ms - 1800_000, 149.88, 5000.0],
+        [close_ms - 300_000, 149.82, 5000.0],
+        [close_ms, 149.80, 5000.0],
+    ]
+    (cdir / "prices" / "cache_24_price_NVDA_US_EQ.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": ser_24}}),
+        encoding="utf-8",
+    )
+    (cdir / "prices" / "cache_current_price.json").write_text(
+        json.dumps({"items": {"NVDA_US_EQ": [[close_ms, 149.80]]}}),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "orderbook_depth_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "NVDA_US_EQ",
+            "ts": ts_close,
+            "imbalance_ratio": 0.77,
+            "mid_price": 149.80,
+            "best_bid": 149.79,
+            "best_ask": 149.81,
+            "spread_bps": 2.0,
+            "bid_depth_usd": 1_500_000.0,
+            "ask_depth_usd": 450_000.0,
+            "largest_bid_wall_price": 149.16,
+            "largest_bid_wall_usd": 442_000.0,
+            "largest_ask_wall_price": 150.69,
+            "largest_ask_wall_usd": 360_000.0,
+        }),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "whale_snapshot_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "NVDA_US_EQ",
+            "ts": ts_close,
+            "top_traders_long_pct": 0.5,
+            "top_traders_long_ratio": 1.0,
+            "taker_buy_sell_ratio": 1.0,
+            "taker_buy_vol_usd": 0.0,
+            "taker_sell_vol_usd": 0.0,
+            "open_interest_usd": 0.0,
+        }),
+        encoding="utf-8",
+    )
+    pre_closed = ptc.collect_pretrade_telemetry(
+        "NVDA_US_EQ", cachedb_dir=str(cdir), allow_network=False, now_ts=ts_sat_now
+    )
+    assert "Whale Positioning" not in pre_closed
+    assert "Whale Taker Flow" not in pre_closed
+    assert "6h Intraday Bottom Structure" not in pre_closed
+    assert "Kinematic Velocity & Acceleration" not in pre_closed
+    evo = pre_closed.get("24h Multi-Horizon Price Evolution", "")
+    for bad_h in ("15m=", "30m=", "1h=", "3h=", "6h="):
+        assert bad_h not in evo, f"elapsed closed equity horizon leaked into pretrade: {evo}"
+    assert "12h=" in evo and "24h=" in evo
+    vp_line = pre_closed.get("24h Volume Profile (POC / Value Area)", "")
+    assert "above_vah=" not in vp_line and "below_val=" not in vp_line
+
+    # When live Cboe options OI & RTH volume are present, both Whale Positioning and Whale Taker Flow remain emitted
+    (cdir / "telemetry" / "derivatives_telemetry_NVDA_US_EQ.json").write_text(
+        json.dumps({"symbol": "NVDA_US_EQ", "ts": ts_close, "open_interest_usd": 5_000_000.0, "funding_rate": 0.0}),
+        encoding="utf-8",
+    )
+    (cdir / "telemetry" / "whale_snapshot_NVDA_US_EQ.json").write_text(
+        json.dumps({
+            "symbol": "NVDA_US_EQ",
+            "ts": ts_close,
+            "top_traders_long_pct": 0.62,
+            "top_traders_long_ratio": 1.63,
+            "taker_buy_sell_ratio": 1.45,
+            "taker_buy_vol_usd": 250_000.0,
+            "taker_sell_vol_usd": 172_000.0,
+            "open_interest_usd": 5_000_000.0,
+        }),
+        encoding="utf-8",
+    )
+    pre_live_oi = ptc.collect_pretrade_telemetry(
+        "NVDA_US_EQ", cachedb_dir=str(cdir), allow_network=False, now_ts=ts_sat_now
+    )
+    assert "62.0% Top Traders Long" in pre_live_oi.get("Whale Positioning", "")
+    assert "Buyer/Seller ratio: 1.45" in pre_live_oi.get("Whale Taker Flow", "")
+
+
+
 
 
 

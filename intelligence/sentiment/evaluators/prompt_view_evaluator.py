@@ -551,9 +551,7 @@ class MicrostructurePromptViewEvaluator(PromptViewEvaluatorBase):
             has_perp_cvd = minfo.get("cvd_15m_usd") is not None
             no_flow = bool(
                 caps.uses_cboe_options_oi
-                and not has_perp_cvd
-                and (safe_float(minfo.get("taker_buy_vol_usd"), 0.0) or 0.0) <= 0.0
-                and (safe_float(minfo.get("taker_sell_vol_usd"), 0.0) or 0.0) <= 0.0
+                and not caps.allow_taker_flow_display(minfo, has_perp_cvd=has_perp_cvd)
             )
             show_spot_cvd = bool(
                 not ob_is_frozen

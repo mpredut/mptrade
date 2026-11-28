@@ -76,6 +76,18 @@ class AssetTelemetryCapabilities:
         """Return whether ``whale_long_pct`` represents real positioning (crypto perp or CBOE OI)."""
         return self.has_crypto_perpetuals or self.has_live_options_oi(minfo)
 
+    def allow_taker_flow_display(self, minfo: Dict[str, Any], *, has_perp_cvd: bool = False) -> bool:
+        """Return whether taker flow represents real volume (crypto perp or equity with live RTH flow)."""
+        if self.has_crypto_perpetuals:
+            return True
+        if not self.uses_cboe_options_oi:
+            return False
+        return bool(
+            has_perp_cvd
+            or (safe_float(minfo.get("taker_buy_vol_usd"), 0.0) or 0.0) > 0.0
+            or (safe_float(minfo.get("taker_sell_vol_usd"), 0.0) or 0.0) > 0.0
+        )
+
     def allow_whale_long_delta_display(self, minfo: Dict[str, Any], *, has_flow: bool) -> bool:
         """Return whether ``d_whale_long`` in ``cycle_delta`` represents real positioning movement."""
         if self.has_crypto_perpetuals:
@@ -229,6 +241,7 @@ class AssetClassPolicyInterface(ABC):
         rth_fresh_override: Optional[bool] = None,
         include_kinematics: bool = False,
         has_series_tail: bool = True,
+        quote_age_min_override: Optional[float] = None,
     ) -> None:
         """Prune stale short-horizon slopes when session bars are no longer live."""
 
@@ -360,6 +373,7 @@ class Continuous24x7SessionPolicy(AssetSessionPolicy):
         rth_fresh_override: Optional[bool] = None,
         include_kinematics: bool = False,
         has_series_tail: bool = True,
+        quote_age_min_override: Optional[float] = None,
     ) -> None:
         return None
 
@@ -631,10 +645,14 @@ class EquityRthSessionPolicy(AssetSessionPolicy):
         rth_fresh_override: Optional[bool] = None,
         include_kinematics: bool = False,
         has_series_tail: bool = True,
+        quote_age_min_override: Optional[float] = None,
     ) -> None:
         if not isinstance(entry, dict):
             return
-        q_age_min = safe_nonneg_float(entry.get("quote_age_min"), default=None)
+        q_age_min = safe_nonneg_float(
+            quote_age_min_override if quote_age_min_override is not None else entry.get("quote_age_min"),
+            default=None,
+        )
         last_eq_pt = (
             parse_ts_px_row(matched_series_24h[-1])
             if (has_series_tail and matched_series_24h)

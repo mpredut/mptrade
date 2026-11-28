@@ -139,7 +139,9 @@ from intelligence.sentiment.evaluators.price_series_evaluator import (
     compute_short_slopes_from_series,
     LAST_7D_4H_BARS_BY_SYM,
     LAST_7D_SPAN_MS_BY_SYM,
+    CLOSED_EQUITY_QUOTE_AGE_MIN,
     STALE_SHORT_24H_KEYS,
+    prune_closed_equity_stale_metrics,
 )
 from instrument_registry import casefold_get, disabled_registry_symbols, is_equity_symbol, is_symbol_market_open, resolve_symbol_identity, venue_for_symbol
 from providers.base import MarketDataProvider
@@ -719,6 +721,7 @@ class PretradeEvaluationContext:
     rth_fresh_eq: bool = False
     eq_px_diverged_05pct: bool = False
     eq_chart_refreshed: bool = False
+    eq_quote_age_min: Optional[float] = None
     cur_m_info: Dict[str, Any] = field(default_factory=dict)
     ob_ts_est: float = 0.0
     btc_m24: Dict[str, Any] = field(default_factory=dict)
@@ -851,6 +854,7 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
         except Exception:
             pass
 
+        oi_f = 0.0
         try:
             f_snap = _fetch_pillar2_snapshot(
                 cachedb_dir, symbol, get_derivatives_collector, CACHE_DERIVATIVES_TELEMETRY_PREFIX, sym_variants, quote_variants, _rj, now_ts=ctx.now_ts
@@ -874,15 +878,24 @@ class Pillar2AndRegimeStage(PretradePillarCollectorBase):
                 cachedb_dir, symbol, get_whale_collector, CACHE_WHALE_SNAPSHOT_PREFIX, sym_variants, quote_variants, _rj, now_ts=ctx.now_ts
             )
             if w_snap is not None:
+                caps_p2 = ctx.session_policy.telemetry_capabilities
+                w_probe = {
+                    "oi_usd": oi_f or (safe_pos_float(obj_attr(w_snap, "open_interest_usd", None), 0.0) or 0.0),
+                    "taker_buy_vol_usd": safe_pos_float(obj_attr(w_snap, "taker_buy_vol_usd", None), 0.0) or 0.0,
+                    "taker_sell_vol_usd": safe_pos_float(obj_attr(w_snap, "taker_sell_vol_usd", None), 0.0) or 0.0,
+                    "cvd_15m_usd": obj_attr(w_snap, "cvd_15m_usd", None),
+                }
                 raw_lp = obj_attr(w_snap, "top_traders_long_pct", obj_attr(w_snap, "whale_long_pct", None))
                 lp_f = clean_scale(raw_lp, default=None, allow_percent=True)
                 lr_f = safe_float(obj_attr(w_snap, "top_traders_long_ratio", None), default=None)
                 if lp_f is not None and lr_f is None and 0.0 < lp_f < 1.0:
                     lr_f = lp_f / (1.0 - lp_f)
-                if lp_f is not None and lr_f is not None:
+                if lp_f is not None and lr_f is not None and caps_p2.allow_whale_long_display(w_probe):
                     telemetry["Whale Positioning"] = f"{lp_f * 100.0:.1f}% Top Traders Long (L/S ratio: {lr_f:.2f})"
                 tr_f = safe_float(obj_attr(w_snap, "taker_buy_sell_ratio", None), default=None)
-                if tr_f is not None:
+                if tr_f is not None and caps_p2.allow_taker_flow_display(
+                    w_probe, has_perp_cvd=(w_probe["cvd_15m_usd"] is not None)
+                ):
                     telemetry["Whale Taker Flow"] = f"Buyer/Seller ratio: {tr_f:.2f}"
         except Exception:
             pass
@@ -1094,6 +1107,27 @@ class PretradePriceSeries24hStage(PretradePillarCollectorBase):
                 m24.pop("chg_15m_pct", None)
             if rth_fresh_eq and m24 and cur_px_est > 0.0:
                 recalculate_live_price_geometry(m24, cur_px_est)
+            if not eq_rth_open:
+                eq_q_ts_s = (
+                    eff_live_px_ts
+                    if (eq_px_diverged_05pct and eff_live_px_ts > 0.0)
+                    else (
+                        max(last_alt_pt[0] / 1000.0, cp_ts_sec)
+                        if (
+                            last_alt_pt[0] > 1e11
+                            and cp_ts_sec > 0.0
+                            and live_cur_px > 0.0
+                            and abs(round(live_cur_px, 4) - round(cur_px_est, 4)) < 1e-4
+                        )
+                        else (last_alt_pt[0] / 1000.0 if last_alt_pt[0] > 1e11 else eff_live_px_ts)
+                    )
+                )
+                if eq_q_ts_s > 0.0:
+                    raw_eq_age_min = (eff_now - eq_q_ts_s) / 60.0
+                    if 0.0 <= raw_eq_age_min <= 14.0 * 1440.0:
+                        ctx.eq_quote_age_min = round(raw_eq_age_min, 1)
+                        if m24:
+                            prune_closed_equity_stale_metrics(m24, quote_age_min=ctx.eq_quote_age_min)
             if m24 and not any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")):
                 for k_stale_15m in ("recent_tape_15m", "low_15m", "high_15m", "pos_15m_pct", "span_15m_pct"):
                     m24.pop(k_stale_15m, None)
@@ -1744,9 +1778,15 @@ class PretradeShortSlopesKalmanStage(PretradePillarCollectorBase):
                 rth_fresh_override=rth_fresh_eq,
                 include_kinematics=True,
                 has_series_tail=(last_alt_pt is not None),
+                quote_age_min_override=ctx.eq_quote_age_min,
             )
             resolve_kalman_vel_z(t_entry, populate=True)
-            if alt_series_24h and len(alt_series_24h) >= 3:
+            eq_closed_gt30 = bool(
+                is_eq_sym
+                and ctx.eq_quote_age_min is not None
+                and ctx.eq_quote_age_min > CLOSED_EQUITY_QUOTE_AGE_MIN
+            )
+            if alt_series_24h and len(alt_series_24h) >= 3 and not eq_closed_gt30:
                 allow_90_kin = not is_eq_sym or eq_px_diverged_05pct or any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct"))
                 allow_5m_kin = not is_eq_sym or eq_px_diverged_05pct or (rth_fresh_eq and any(k in m24 for k in ("chg_1m_pct", "chg_3m_pct", "chg_5m_pct")))
                 for kk, kv_kin in compute_series_kinematics(alt_series_24h).items():
@@ -1792,9 +1832,14 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         is_eq_sym: bool,
         is_tok_xstock_pt: bool,
         symbol: str = "",
+        session_policy: Optional[AssetSessionPolicy] = None,
     ) -> None:
-        eq_no_oi_pt = is_eq_sym and (safe_pos_float(cur_m_info.get("oi_usd"), default=0.0) or 0.0) <= 0.0
-        if (
+        eff_policy = session_policy or resolve_asset_session_policy(symbol)
+        caps = eff_policy.telemetry_capabilities
+        eq_no_oi_pt = is_eq_sym and not caps.has_live_options_oi(cur_m_info)
+        if not caps.allow_whale_long_display(cur_m_info):
+            telemetry.pop("Whale Positioning", None)
+        elif (
             (wl_p := clean_scale(cur_m_info.get("whale_long_pct"), default=None, allow_percent=True)) is not None
             and 0.0 < wl_p < 1.0
             and (
@@ -1804,7 +1849,10 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
         ):
             wl_r = safe_pos_float(cur_m_info.get("whale_long_ratio"), default=None) or (wl_p / (1.0 - wl_p))
             telemetry["Whale Positioning"] = f"{wl_p * 100.0:.1f}% Top Traders Long (L/S ratio: {wl_r:.2f})"
-        if (
+        has_perp_cvd_pt = cur_m_info.get("cvd_15m_usd") is not None
+        if not caps.allow_taker_flow_display(cur_m_info, has_perp_cvd=has_perp_cvd_pt):
+            telemetry.pop("Whale Taker Flow", None)
+        elif (
             (tr_m := safe_pos_float(cur_m_info.get("taker_buy_sell_ratio"), default=None)) is not None
             and (
                 "Whale Taker Flow" not in telemetry
@@ -1993,6 +2041,7 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                 eff_now_ob,
                 post_rth_series_replaced=ctx.eq_px_diverged_05pct,
                 rth_fresh_override=(ctx.rth_fresh_eq if ctx.last_alt_pt is not None else True),
+                quote_age_min_override=ctx.eq_quote_age_min,
             )
         if cur_px_est and cur_px_est > 0:
             p_est["price"] = cur_px_est
@@ -2015,7 +2064,9 @@ class PretradeOrderbookCvdAndLiqStage(PretradePillarCollectorBase):
                     )
             except Exception:
                 pass
-        self._format_derivatives_and_whale_lines(telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt, symbol=symbol)
+        self._format_derivatives_and_whale_lines(
+            telemetry, cur_m_info, ctx.is_eq_sym, is_tok_xstock_pt, symbol=symbol, session_policy=ctx.session_policy
+        )
         no_perp_liq = not ctx.session_policy.has_liquidation_clusters
         if no_perp_liq:
             liq_c: Dict[str, Any] = {}
