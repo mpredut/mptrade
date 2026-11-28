@@ -3542,5 +3542,44 @@ def test_pass13_calendar_per_leg_freshness_and_headline_ts_invariants_and_crossc
     assert resolved_mon["upcoming_earnings"] == []
 
 
+def test_pass6_post_close_early_close_clearing_and_partisan_maga_off_topic():
+    """Pass 6 regressions:
+    1. resolve_macro_economic_calendar clears us_market_early_close once US extended close (>=17:00 ET) / weekend begins.
+    2. Pure partisan political op-eds ('MAGA', election gossip) without market/geopolitical context are off-topic,
+       while genuine policy/tariff/Treasury election headlines stay market-relevant.
+    """
+    from zoneinfo import ZoneInfo
+    from intelligence.macro.calendar_ssot import resolve_macro_economic_calendar
+    from intelligence.macro.lexicon_ssot import (
+        has_financial_or_geopolitical_context,
+        is_off_topic_general_news_title,
+    )
+
+    et = ZoneInfo("America/New_York")
+    ts_bf_open = datetime(2026, 11, 27, 11, 0, tzinfo=et).timestamp()
+    ts_bf_after_close = datetime(2026, 11, 27, 17, 30, tzinfo=et).timestamp()
+    cal_open = resolve_macro_economic_calendar(
+        now_ts=ts_bf_open, calendar_snapshot={"ts": ts_bf_open, "events_ok": True, "events": []}
+    )
+    cal_after = resolve_macro_economic_calendar(
+        now_ts=ts_bf_after_close, calendar_snapshot={"ts": ts_bf_after_close, "events_ok": True, "events": []}
+    )
+    assert cal_open["us_market_early_close"] == "Day After Thanksgiving"
+    assert cal_after["is_weekend"] is True
+    assert cal_after["us_market_early_close"] is None
+
+    op_ed = "Elon Musk can afford a little MAGA amnesia"
+    assert has_financial_or_geopolitical_context(op_ed) is False
+    assert is_off_topic_general_news_title(op_ed) is True
+    assert is_off_topic_general_news_title("Vance campaigns in Ohio ahead of primary vote") is True
+
+    for relevant in (
+        "Trump tariff proposals weigh on markets",
+        "US midterm elections rattle Treasury yields and stocks",
+    ):
+        assert has_financial_or_geopolitical_context(relevant) is True, relevant
+        assert is_off_topic_general_news_title(relevant) is False, relevant
+
+
 
 

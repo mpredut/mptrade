@@ -137,7 +137,19 @@ def _normalize_daily_bars(
             prev[3] = min(prev[3], l_f)
             prev[4] = c_v
             prev[5] = prev[5] + v_v
-    return [by_day[k] for k in sorted(by_day.keys())]
+    bars = [by_day[k] for k in sorted(by_day.keys())]
+    if len(bars) >= 3:
+        # Clamp isolated exchange listing-minute print spikes on bar 0 (e.g. TAOUSDC $999.90, ARBUSDC $2.8898)
+        b0 = bars[0]
+        body_hi, body_lo = max(b0[1], b0[4]), min(b0[1], b0[4])
+        follow = bars[1:6]
+        follow_hi = max(b[2] for b in follow)
+        follow_lo = min(b[3] for b in follow)
+        if b0[2] > body_hi * 1.40 and b0[2] > follow_hi * 1.25:
+            b0[2] = body_hi
+        if b0[3] < body_lo * 0.60 and b0[3] < follow_lo * 0.75:
+            b0[3] = body_lo
+    return bars
 
 
 def compute_zigzag_swings(

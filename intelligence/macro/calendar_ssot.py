@@ -986,7 +986,11 @@ def resolve_macro_economic_calendar(
     )
 
     us_holiday_today = us_market_holiday_name(dt_ny.date())
-    us_early_close_today = None if us_holiday_today else us_market_early_close_name(dt_ny.date())
+    us_early_close_today = (
+        None
+        if (us_holiday_today or session_ctx.is_weekend or dt_ny.hour >= 17)
+        else us_market_early_close_name(dt_ny.date())
+    )
     upcoming_us_holiday = (
         us_market_holiday_name(dt_ny.date() + timedelta(days=1))
         if (us_holiday_today is None and dt_ny.hour >= 16)

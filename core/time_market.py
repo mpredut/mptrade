@@ -612,13 +612,16 @@ def resolve_aligned_quote_pair(
     max_age_sec: float = 10.0,
     max_fallback_divergence: float = 0.01,
     max_pair_divergence: float = 0.10,
+    max_primary_drift: float | None = None,
 ) -> tuple[TimedQuote, TimedQuote] | None:
     """Select a temporally aligned quote pair across two sources without silently mixing stale fallbacks.
 
     Prefers ``(primary_a, primary_b)`` when temporally aligned and fresh; switches to
-    ``(fallback_a, fallback_b)`` when primaries are skewed/stale *and* both fallbacks agree
-    with their respective primaries within ``max_fallback_divergence``; finally guards the
-    selected pair against cross-venue price divergence exceeding ``max_pair_divergence``.
+    ``(fallback_a, fallback_b)`` when primaries are skewed/stale (or drifted past
+    ``max_primary_drift`` from fallbacks while fallbacks yield a tighter pair spread) *and*
+    both fallbacks agree with their respective primaries within ``max_fallback_divergence``;
+    finally guards the selected pair against cross-venue price divergence exceeding
+    ``max_pair_divergence``.
     """
     eff_now = normalize_epoch_sec(now_ts, default=None) if now_ts is not None else None
     pa_ts = primary_a.ts if primary_a is not None else None
@@ -634,11 +637,27 @@ def resolve_aligned_quote_pair(
             for t in (pa_ts, pb_ts)
         )
     )
+    primaries_drifted = (
+        max_primary_drift is not None
+        and max_primary_drift > 0.0
+        and primary_a is not None
+        and primary_b is not None
+        and fallback_a is not None
+        and fallback_b is not None
+        and (
+            abs(fallback_a.price - primary_a.price) / primary_a.price > max_primary_drift
+            or abs(fallback_b.price - primary_b.price) / primary_b.price > max_primary_drift
+        )
+        and (
+            abs(fallback_a.price - fallback_b.price) / min(fallback_a.price, fallback_b.price)
+            < abs(primary_a.price - primary_b.price) / min(primary_a.price, primary_b.price)
+        )
+    )
     fallback_consistent = (
         (primary_a is None or fallback_a is None or abs(fallback_a.price - primary_a.price) / primary_a.price <= max_fallback_divergence)
         and (primary_b is None or fallback_b is None or abs(fallback_b.price - primary_b.price) / primary_b.price <= max_fallback_divergence)
     )
-    if primaries_skewed and fallback_a is not None and fallback_b is not None and fallback_consistent:
+    if (primaries_skewed or primaries_drifted) and fallback_a is not None and fallback_b is not None and fallback_consistent:
         q_a, q_b = fallback_a, fallback_b
     else:
         q_a = primary_a or fallback_a

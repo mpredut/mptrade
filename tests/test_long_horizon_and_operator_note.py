@@ -1797,6 +1797,52 @@ def test_pass5_midyear_listing_ytd_suppression_and_closed_extended_macro_benchma
     assert "QQQ=$650.62 (+2.63% 24h, +0.00% 1h, post, delayed=12m)" in line
 
 
+def test_pass6_day1_listing_spike_sanitization() -> None:
+    """Pass 6 regression: isolated Day-1 listing print spikes are clamped without erasing genuine multi-day rallies."""
+    start = datetime(2024, 11, 22, tzinfo=timezone.utc)
+    # 1. Upward Day-1 print spike (TAOUSDC-like: O=461.6, H=999.9, L=461.6, C=511.3; real 3y peak later = 748.8)
+    tao_bars = [
+        [(start + timedelta(days=0)).timestamp() * 1000.0, 461.6, 999.9, 461.6, 511.3, 100.0],
+        [(start + timedelta(days=1)).timestamp() * 1000.0, 511.3, 560.0, 495.0, 540.0, 100.0],
+        [(start + timedelta(days=2)).timestamp() * 1000.0, 540.0, 594.0, 520.0, 575.0, 100.0],
+        [(start + timedelta(days=3)).timestamp() * 1000.0, 575.0, 590.0, 550.0, 560.0, 100.0],
+        [(start + timedelta(days=14)).timestamp() * 1000.0, 680.0, 748.8, 660.0, 720.0, 100.0],
+        [(start + timedelta(days=60)).timestamp() * 1000.0, 320.0, 340.0, 300.0, 310.0, 100.0],
+    ]
+    ev_tao = evaluate_symbol_long_horizon(
+        "TAOUSDC", tao_bars, months=36, now_ts=(start + timedelta(days=60)).timestamp()
+    )
+    assert ev_tao is not None
+    assert ev_tao["high_horizon"] == 748.8
+    assert all(p["px"] < 800.0 for p in ev_tao["swings"])
+    assert max(w[2] for w in ev_tao["weekly_bars"]) == 748.8
+
+    # 2. Symmetric downward Day-1 flash-wick (O=100, H=105, L=20, C=98; follow lows >= 88 -> clamp low to 98)
+    dn_bars = [
+        [(start + timedelta(days=0)).timestamp() * 1000.0, 100.0, 105.0, 20.0, 98.0, 100.0],
+        [(start + timedelta(days=1)).timestamp() * 1000.0, 98.0, 103.0, 91.0, 101.0, 100.0],
+        [(start + timedelta(days=2)).timestamp() * 1000.0, 101.0, 106.0, 88.0, 99.0, 100.0],
+        [(start + timedelta(days=3)).timestamp() * 1000.0, 99.0, 104.0, 92.0, 100.0, 100.0],
+    ]
+    ev_dn = evaluate_symbol_long_horizon(
+        "FLASHUSD", dn_bars, months=36, now_ts=(start + timedelta(days=3)).timestamp()
+    )
+    assert ev_dn is not None
+    assert ev_dn["low_horizon"] == 88.0
+
+    # 3. Genuine Day-1 volatility sustained on subsequent days (160 <= 150 * 1.25) is preserved
+    real_bars = [
+        [(start + timedelta(days=0)).timestamp() * 1000.0, 100.0, 160.0, 95.0, 110.0, 100.0],
+        [(start + timedelta(days=1)).timestamp() * 1000.0, 110.0, 150.0, 105.0, 140.0, 100.0],
+        [(start + timedelta(days=2)).timestamp() * 1000.0, 140.0, 148.0, 130.0, 135.0, 100.0],
+    ]
+    ev_real = evaluate_symbol_long_horizon(
+        "REALUSD", real_bars, months=36, now_ts=(start + timedelta(days=2)).timestamp()
+    )
+    assert ev_real is not None
+    assert ev_real["high_horizon"] == 160.0
+
+
 
 
 

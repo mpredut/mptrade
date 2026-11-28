@@ -66,7 +66,7 @@ _NON_CRISIS_ATTACK_CONTEXT_WORDS: frozenset[str] = frozenset({
 
 _PARTISAN_ELECTION_CONTEXT_WORDS: frozenset[str] = frozenset({
     "campaign", "congressional", "democrat", "democrats", "desantis", "election",
-    "elections", "gop", "midterm", "midterms", "poll", "polling", "polls",
+    "elections", "gop", "maga", "midterm", "midterms", "poll", "polling", "polls",
     "primary", "republican", "republicans", "vance", "voter", "voters",
 })
 
@@ -1521,7 +1521,13 @@ def is_off_topic_general_news_title(title: Any) -> bool:
     if not (words := _alpha_word_set_3(clean_low)):
         return False
     return _is_editorial_clickbait_or_advice_title(clean_low) or bool(
-        words & (_SPORTS_CONTEXT_WORDS | _NON_CRISIS_ATTACK_CONTEXT_WORDS | _OFF_TOPIC_TABLOID_WORDS)
+        words
+        & (
+            _SPORTS_CONTEXT_WORDS
+            | _NON_CRISIS_ATTACK_CONTEXT_WORDS
+            | _OFF_TOPIC_TABLOID_WORDS
+            | _PARTISAN_ELECTION_CONTEXT_WORDS
+        )
     )
 
 

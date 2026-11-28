@@ -889,6 +889,7 @@ def compute_cross_venue_arb_metrics(
             max_age_sec=ob_itv * 2.0,
             max_fallback_divergence=0.01,
             max_pair_divergence=0.10,
+            max_primary_drift=0.0005,
         )
         if aligned is not None:
             own_q, peer_q = aligned

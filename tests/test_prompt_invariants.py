@@ -202,6 +202,28 @@ def test_timed_quote_alignment_and_arb_consistency() -> None:
     compute_cross_venue_arb_metrics("HYPEUSD", micro["HYPEUSD"], pt["HYPEUSD"], micro, pt, now_ts=now_s)
     assert micro["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(-micro["HYPEUSD"]["cross_venue_arb_bps"], abs=0.2)
 
+    # Pass 6 regression: aged same-sweep OB mid drifted >5bps behind live spot with tighter spot spread switches to spot
+    micro_drift = {
+        "HYPEUSDC": {"venue": "hyperliquid", "ob_mid_price": 63.5375, "_ob_raw_ts": now_s - 21.4, "spread_bps": 0.4},
+        "HYPEUSD": {"venue": "kraken", "ob_mid_price": 63.585, "_ob_raw_ts": now_s - 18.8, "spread_bps": 1.6},
+    }
+    pt_drift = {"HYPEUSDC": {"price": 63.6155}, "HYPEUSD": {"price": 63.59}}
+    compute_cross_venue_arb_metrics("HYPEUSDC", micro_drift["HYPEUSDC"], pt_drift["HYPEUSDC"], micro_drift, pt_drift, now_ts=now_s)
+    compute_cross_venue_arb_metrics("HYPEUSD", micro_drift["HYPEUSD"], pt_drift["HYPEUSD"], micro_drift, pt_drift, now_ts=now_s)
+    assert micro_drift["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(4.0, abs=0.1)
+    assert micro_drift["HYPEUSD"]["cross_venue_arb_bps"] == pytest.approx(-4.0, abs=0.1)
+
+    # Guardrail: stale thin-venue last-trade spot (>5bps from tight L2 mids, wider spot spread) MUST NOT override L2 mids
+    micro_tight = {
+        "HYPEUSDC": {"venue": "hyperliquid", "ob_mid_price": 63.615, "_ob_raw_ts": now_s - 5.0, "spread_bps": 0.4},
+        "HYPEUSD": {"venue": "kraken", "ob_mid_price": 63.615, "_ob_raw_ts": now_s - 6.0, "spread_bps": 1.6},
+    }
+    pt_stale_trade = {"HYPEUSDC": {"price": 63.615}, "HYPEUSD": {"price": 63.550}}
+    compute_cross_venue_arb_metrics("HYPEUSDC", micro_tight["HYPEUSDC"], pt_stale_trade["HYPEUSDC"], micro_tight, pt_stale_trade, now_ts=now_s)
+    compute_cross_venue_arb_metrics("HYPEUSD", micro_tight["HYPEUSD"], pt_stale_trade["HYPEUSD"], micro_tight, pt_stale_trade, now_ts=now_s)
+    assert micro_tight["HYPEUSDC"]["cross_venue_arb_bps"] == pytest.approx(0.0, abs=0.1)
+    assert micro_tight["HYPEUSD"]["cross_venue_arb_bps"] == pytest.approx(0.0, abs=0.1)
+
 
 def test_single_path_portfolio_normalizer_filters_ghosts_and_reconciles_quote_breakdown(tmp_path) -> None:
     """derive_runtime_portfolio_view enforces registry ghost filtering and quote breakdown reconciliation uniformly."""
