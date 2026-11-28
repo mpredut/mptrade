@@ -3690,6 +3690,106 @@ def test_calibration_math_counts_100pct_filled_venue_without_denominator():
     assert ("PROMPT_CALIBRATION_MATH", "Calibration.offset_vs_venue_tca") in bad_codes
 
 
+def test_ssot_macro_benchmark_weekend_and_postclose_closed_state():
+    """SSOT helper coerces NY weekend DXY/ES=F/NQ=F and post-close SPY/QQQ/IBIT to closed across all consumers."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
+        enrich_macro_benchmarks_live_state,
+        format_macro_benchmarks_summary_line,
+        resolve_effective_macro_benchmark_market_state,
+    )
+
+    et = ZoneInfo("America/New_York")
+    # Black Friday 2026-11-27 17:45 EST (45m after 17:00 ET FX/equity extended close)
+    ts_fri_post = datetime(2026, 11, 27, 17, 45, tzinfo=et).timestamp()
+    # Friday 17:20 EST (20m after 17:00 ET close: <30m PRE/POST threshold, >=10m session-closed threshold)
+    ts_fri_20m = datetime(2026, 11, 27, 17, 20, tzinfo=et).timestamp()
+
+    assert resolve_effective_macro_benchmark_market_state("DXY", "", bar_age_min=36.0, now_ts=ts_fri_post) == "CLOSED"
+    assert resolve_effective_macro_benchmark_market_state("SPY", "POST", bar_age_min=15.0, now_ts=ts_fri_20m) == "CLOSED"
+    assert resolve_effective_macro_benchmark_market_state("DXY", "", bar_age_min=None, now_ts=ts_fri_post) == ""
+    assert resolve_effective_macro_benchmark_market_state("DXY", "", bar_age_min=5.0, now_ts=ts_fri_20m) == ""
+
+    raw_mb = {
+        "ts": ts_fri_20m,
+        "items": {
+            "SPY": {"price": 731.30, "chg_24h_pct": 2.04, "chg_1h_pct": 0.04, "market_state": "POST", "last_bar_ts": ts_fri_20m - 1200.0},
+            "DXY": {"price": 104.01, "chg_24h_pct": 0.34, "unit": "index", "last_bar_ts": ts_fri_20m - 1200.0},
+        },
+    }
+    enriched = enrich_macro_benchmarks_live_state(raw_mb, update_summary_line=True)
+    summary = enriched["summary_line"]
+    assert "SPY=$731.30 (+2.04% 24h, closed, bar_age=20m)" in summary
+    assert "DXY=104.01 (+0.34% 24h, closed, bar_age=20m)" in summary
+    assert "delayed=" not in summary
+    assert "+0.04% 1h" not in summary
+    assert format_macro_benchmarks_summary_line(raw_mb) == summary
+
+
+def test_active_trade_plans_annotate_prior_breach_and_prior_touch_symmetrically():
+    """Frozen INVALIDATED/TARGET_HIT plans whose live spot retracted back inside the band annotate prior_breach/prior_touch."""
+    from orchestratorOS.supervisor.prompt_sections import _format_portfolio_section
+
+    ps = {
+        "active_ai_trade_plans": [
+            {
+                "venue": "binance",
+                "symbol": "TAOUSDC",
+                "side": "SELL",
+                "order_state": "FILLED",
+                "status": "INVALIDATED",
+                "dist_anchor": "spot",
+                "entry_px": 185.3,
+                "spot_px": 185.3,
+                "target_px": 183.4,
+                "target_dist_pct": -1.03,
+                "invalidation_px": 187.2,
+                "invalidation_dist_pct": 1.03,
+                "age_h": 9.1,
+            },
+            {
+                "venue": "binance",
+                "symbol": "BTCUSDC",
+                "side": "SELL",
+                "order_state": "FILLED",
+                "status": "INVALIDATED",
+                "dist_anchor": "spot",
+                "entry_px": 59165.0,
+                "spot_px": 60350.0,
+                "target_px": 58050.0,
+                "target_dist_pct": -3.81,
+                "invalidation_px": 60200.0,
+                "invalidation_dist_pct": -0.25,
+                "age_h": 4.0,
+            },
+            {
+                "venue": "hyperliquid",
+                "symbol": "HYPEUSDC",
+                "side": "BUY",
+                "order_state": "FILLED",
+                "status": "TARGET_HIT",
+                "dist_anchor": "spot",
+                "entry_px": 63.0,
+                "spot_px": 64.2,
+                "target_px": 65.0,
+                "target_dist_pct": 1.25,
+                "invalidation_px": 62.0,
+                "invalidation_dist_pct": -3.43,
+                "age_h": 2.0,
+            },
+        ],
+    }
+    rendered = "\n".join(_format_portfolio_section(ps, asset_scope="crypto"))
+    tao_ln = next(ln for ln in rendered.splitlines() if "TAOUSDC SELL@185.3" in ln)
+    btc_ln = next(ln for ln in rendered.splitlines() if "BTCUSDC SELL@59165.0" in ln)
+    hype_ln = next(ln for ln in rendered.splitlines() if "HYPEUSDC BUY@63.0" in ln)
+    assert "prior_breach [INVALIDATED]" in tao_ln
+    assert "prior_breach" not in btc_ln and "[INVALIDATED]" in btc_ln
+    assert "prior_touch [TARGET_HIT]" in hype_ln
+
+
+
 
 
 

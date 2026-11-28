@@ -98,6 +98,7 @@ from providers.ai_survival_guard import (
 )
 from providers.intent_telemetry import (
     compute_order_plan_rr,
+    evaluate_trade_plan_status,
     match_open_order_resting_plan,
 )
 from orchestratorOS.supervisor.crypto_executor_delta_gate import _extract_open_order_filled_qty
@@ -2687,6 +2688,17 @@ def _format_portfolio_section(
                 rr_lbl = "RR@limit" if is_lim_anc else "RR@spot"
                 if (rr_u := compute_order_plan_rr(anc_px, pl.get("side"), pl.get("target_px"), pl.get("invalidation_px"))) is not None:
                     p_parts.append(f"{rr_lbl}={rr_u:.2f}x")
+            elif not is_lim_anc and pl_st in ("INVALIDATED", "TARGET_HIT") and pl.get("spot_px") is not None:
+                if (
+                    evaluate_trade_plan_status(
+                        pl.get("side"),
+                        pl.get("spot_px"),
+                        pl.get("invalidation_px"),
+                        pl.get("target_px"),
+                    )
+                    != pl_st
+                ):
+                    p_parts.append("prior_breach" if pl_st == "INVALIDATED" else "prior_touch")
             entry_s = f"@{pl['entry_px']}" if pl.get("entry_px") is not None else ""
             meta_p = [ord_st]
             if not is_lim_anc and pl.get("spot_px") is not None:

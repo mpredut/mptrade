@@ -26,6 +26,7 @@ from botcore import (
     first_pos_float,
     fmt_signed,
     normalize_epoch_sec,
+    resolve_us_equity_session_state,
     safe_float,
     safe_int,
     safe_nonneg_float,
@@ -38,6 +39,7 @@ from intelligence.macro_sentiment_ssot import (
     get_deribit_options_currencies,
     get_macro_benchmark_specs,
     is_macro_benchmark_feed_delayed,
+    resolve_secondary_ny_datetime,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import extract_bbo_and_mid
 from intelligence.sentiment.evaluators.price_series_evaluator import (
@@ -1147,6 +1149,46 @@ def resolve_futures_since_cash_close_pct(
     return round(scc, 2) + 0.0
 
 
+_US_EQUITY_BENCHMARK_SYMBOLS: frozenset[str] = frozenset({"SPY", "QQQ", "IBIT"})
+_WEEKEND_FX_FUTURES_BENCHMARK_SYMBOLS: frozenset[str] = frozenset({"DXY", "ES=F", "NQ=F"})
+
+
+def resolve_effective_macro_benchmark_market_state(
+    symbol: str,
+    raw_market_state: Any,
+    *,
+    bar_age_min: Optional[float] = None,
+    now_ts: Optional[float] = None,
+    has_live_extended_price: bool = False,
+) -> str:
+    """Resolve effective benchmark session state, coercing stale/post-close and NY weekend FX/CME quotes to CLOSED."""
+    m_state = str(raw_market_state or "").strip().upper()
+    if bar_age_min is None or m_state in ("CLOSED", "OVERNIGHT"):
+        return m_state
+    if (not m_state and bar_age_min > 45.0) or (
+        m_state in ("PRE", "PREPRE", "POST", "POSTPOST") and bar_age_min > 30.0 and not has_live_extended_price
+    ):
+        return "CLOSED"
+    if bar_age_min < 10.0 or now_ts is None or now_ts <= 0.0:
+        return m_state
+    sym_u = str(symbol or "").strip().upper()
+    if sym_u in _US_EQUITY_BENCHMARK_SYMBOLS and resolve_us_equity_session_state(now_ts) == "CLOSED":
+        return "CLOSED"
+    if sym_u in _WEEKEND_FX_FUTURES_BENCHMARK_SYMBOLS:
+        try:
+            dt_ny = resolve_secondary_ny_datetime(now_ts)
+            mins_ny = dt_ny.hour * 60 + dt_ny.minute
+            if (
+                (dt_ny.weekday() == 4 and mins_ny >= 1020)
+                or dt_ny.weekday() == 5
+                or (dt_ny.weekday() == 6 and mins_ny < 1020)
+            ):
+                return "CLOSED"
+        except Exception:
+            pass
+    return m_state
+
+
 def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = True) -> str:
     """Format a compact 1-line synthetic macro benchmark index (SPY / QQQ / ES=F / NQ=F / VIX / DXY / US10Y / IBIT / Coinbase Premium / DVOL & Options Surface)."""
     if not isinstance(data, dict):
@@ -1195,12 +1237,12 @@ def format_macro_benchmarks_summary_line(data: Any, *, include_crypto: bool = Tr
             and b_ts <= data_ts + 60.0
         ):
             bar_age_min = round(max(0.0, data_ts - b_ts) / 60.0, 1)
-        m_state = str(entry.get("market_state") or "").strip().upper()
-        if bar_age_min is not None and (
-            (not m_state and bar_age_min > 45.0)
-            or (m_state in ("PRE", "PREPRE", "POST", "POSTPOST") and bar_age_min > 30.0)
-        ):
-            m_state = "CLOSED"
+        m_state = resolve_effective_macro_benchmark_market_state(
+            sym,
+            entry.get("market_state"),
+            bar_age_min=bar_age_min,
+            now_ts=data_ts,
+        )
         is_delayed_feed = is_macro_benchmark_feed_delayed(m_state, bar_age_min)
         horizons = (
             (("24h", "chg_24h_pct"),)
@@ -1693,5 +1735,6 @@ __all__ = [
     "format_pretrade_etf_flows_line",
     "parse_farside_etf_flows_html",
     "reconcile_live_venue_equity_summary",
+    "resolve_effective_macro_benchmark_market_state",
     "resolve_futures_since_cash_close_pct",
 ]

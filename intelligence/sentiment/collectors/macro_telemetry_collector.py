@@ -27,7 +27,6 @@ from botcore import (
     resolve_now_ts,
     resolve_patched_attr,
     resolve_remaining_timeout_sec,
-    resolve_us_equity_session_state,
     safe_float,
     safe_nonneg_float,
     safe_pos_float,
@@ -127,6 +126,7 @@ from intelligence.sentiment.evaluators.macro_telemetry_evaluator import (
     MACRO_BENCHMARK_SPECS,
     parse_farside_etf_flows_html,
     reconcile_live_venue_equity_summary,
+    resolve_effective_macro_benchmark_market_state,
 )
 from intelligence.sentiment.evaluators.microstructure_evaluator import (
     enrich_cross_venue_trends,
@@ -489,8 +489,18 @@ class MacroBenchmarksSnapshotCollector(MacroTelemetryCollectorBase):
                     bar_age_s = max(0.0, eff_now - eff_quote_ts) if eff_now > 0.0 else 0.0
                     if eff_now > 0.0:
                         item_entry["bar_age_min"] = round(bar_age_s / 60.0, 1)
-                    if not mkt_state and eff_now > 0.0 and bar_age_s > 2700.0:
-                        mkt_state = "CLOSED"
+                    has_live_ext = bool(
+                        px_is_extended
+                        and safe_pos_float(meta.get("fulldayPrice"), default=None) is not None
+                        and mkt_state in ("PRE", "PREPRE", "POST", "POSTPOST")
+                    )
+                    mkt_state = resolve_effective_macro_benchmark_market_state(
+                        label,
+                        mkt_state,
+                        bar_age_min=item_entry.get("bar_age_min"),
+                        now_ts=eff_now if eff_now > 0.0 else None,
+                        has_live_extended_price=has_live_ext,
+                    )
                     if mkt_state != "CLOSED" and (eff_now <= 0.0 or chart_bar_age_s <= 2700.0):
                         prior_pts = pts[:-1]
                         for target_sec, key_name in ((3600.0, "chg_1h_pct"), (900.0, "chg_15m_pct")):
@@ -1075,38 +1085,23 @@ class MacroAndNewsSensorsCollector(MacroTelemetryCollectorBase):
                     if bar_ts_v is not None and now_ts > 0.0:
                         bar_age_s = max(0.0, now_ts - bar_ts_v)
                         mb_copy["bar_age_min"] = round(bar_age_s / 60.0, 1)
-                        if bar_age_s > 2700.0:
-                            cur_ms = str(mb_copy.get("market_state") or "").strip().upper()
-                            if cur_ms in ("", "REGULAR", "PRE", "POST", "PREPRE", "POSTPOST"):
-                                mb_copy["market_state"] = "CLOSED"
-                                stripped_stale_intraday = True
+                        cur_ms = str(mb_copy.get("market_state") or "").strip().upper()
+                        eff_ms = resolve_effective_macro_benchmark_market_state(
+                            mb_k,
+                            cur_ms,
+                            bar_age_min=mb_copy["bar_age_min"],
+                            now_ts=now_ts,
+                        )
+                        if bar_age_s > 2700.0 and eff_ms == "REGULAR":
+                            eff_ms = "CLOSED"
+                        if eff_ms and eff_ms != cur_ms:
+                            mb_copy["market_state"] = eff_ms
+                            stripped_stale_intraday = True
+                        if bar_age_s > 2700.0 or eff_ms == "CLOSED":
                             for stale_k in ("chg_1h_pct", "chg_15m_pct"):
                                 if stale_k in mb_copy:
                                     mb_copy.pop(stale_k, None)
                                     stripped_stale_intraday = True
-                    if mb_k in ("SPY", "QQQ", "IBIT") and now_ts > 0.0 and bar_age_s is not None and bar_age_s >= 600.0:
-                        if resolve_us_equity_session_state(now_ts) == "CLOSED":
-                            if str(mb_copy.get("market_state") or "").strip().upper() != "CLOSED":
-                                mb_copy["market_state"] = "CLOSED"
-                                stripped_stale_intraday = True
-                    elif mb_k in ("DXY", "ES=F", "NQ=F") and now_ts > 0.0 and bar_age_s is not None and bar_age_s >= 600.0:
-                        try:
-                            dt_ny = _mss.resolve_secondary_ny_datetime(now_ts)
-                            mins_ny = dt_ny.hour * 60 + dt_ny.minute
-                            if (
-                                (dt_ny.weekday() == 4 and mins_ny >= 1020)
-                                or dt_ny.weekday() == 5
-                                or (dt_ny.weekday() == 6 and mins_ny < 1020)
-                            ):
-                                if str(mb_copy.get("market_state") or "").strip().upper() != "CLOSED":
-                                    mb_copy["market_state"] = "CLOSED"
-                                    stripped_stale_intraday = True
-                                for stale_k in ("chg_1h_pct", "chg_15m_pct"):
-                                    if stale_k in mb_copy:
-                                        mb_copy.pop(stale_k, None)
-                                        stripped_stale_intraday = True
-                        except Exception:
-                            pass
                     if mb_k in ("SPY", "QQQ", "IBIT", "US10Y", "VIX"):
                         is_stale_us_bar = str(mb_copy.get("market_state") or "").strip().upper() == "CLOSED"
                         if bar_ts_v is None and not mb_copy.get("market_state") and now_ts > 0.0:
