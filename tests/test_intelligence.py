@@ -5697,7 +5697,7 @@ def test_iter89_geopolitical_subset_deescalation_news_first_seen_post_rth_slopes
         }
     )
     joined_3a = "\n".join(lines_3a)
-    assert "POC=400.0[+2.50%]" in joined_3a
+    assert "POC=400.0[-2.44%]" in joined_3a
     assert "va_pos=133.3%" in joined_3a
 
 

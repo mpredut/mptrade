@@ -235,11 +235,163 @@ def _load_topic_entry(
     return resolved, reg, entry if isinstance(entry, dict) else None
 
 
+_HISTORY_TRADE_FIELD_RE = re.compile(r"(?:^|;\s*)trade=([^;]+)")
+_HISTORY_SUMMARY_FIELD_RE = re.compile(r"(?:^|;\s*)(?:summary|reason)=(.+)$")
+_HISTORY_TRADE_ITEM_RE = re.compile(r"^\s*([A-Z_]+)(?:\([^)]*\))?:([^@,\s]*)")
+_HISTORY_HOLD_BOILERPLATE_RE = re.compile(
+    r"^(?:(?:defensive|disciplined|patient|cautious|prudent|tactical|neutral|routine)\s+)*"
+    r"HOLD\b"
+    r"(?:\s+(?:at|with|preserving|maintaining)\s+(?:\d+(?:\.\d+)?%\s+(?:free\s+)?cash(?:\s*\(\$[\d,]+(?:\.\d+)?\))?|\$[\d,]+(?:\.\d+)?\s+(?:free\s+)?cash(?:\s*\(\d+(?:\.\d+)?%\))?))*"
+    r"(?:\s*\([^)]*(?:cash|\$[\d,]+)[^)]*\))?"
+    r"\s*(?:[:;,\-\u2014]\s*|\bon\s+(?:the\s+)?|\bin\s+)?",
+    re.IGNORECASE,
+)
+_HISTORY_WORD_RE = re.compile(r"[a-z0-9]{3,}")
+_HISTORY_STOPWORDS = frozenset({
+    "the", "and", "with", "for", "from", "that", "this", "while", "below", "above",
+    "hold", "cash", "free", "thin", "still", "lack", "lacks", "into", "over", "near",
+    "without", "under", "across", "board", "active", "recent", "confirm", "confirmed",
+})
+
+
+def _parse_pure_hold_entry(summary: str) -> tuple[bool, list[str]]:
+    """Return ``(is_pure_hold, symbols)`` for a condensed rolling_history entry."""
+    text = str(summary or "").strip()
+    if not text:
+        return False, []
+    m_trade = _HISTORY_TRADE_FIELD_RE.search(text)
+    if m_trade is not None:
+        raw_items = [tok.strip() for tok in m_trade.group(1).split(",") if tok.strip()]
+        if not raw_items:
+            return False, []
+        syms: list[str] = []
+        for tok in raw_items:
+            m_it = _HISTORY_TRADE_ITEM_RE.match(tok)
+            if m_it is None or m_it.group(1).upper() != "HOLD":
+                return False, []
+            sym = m_it.group(2).strip()
+            if sym and sym not in syms:
+                syms.append(sym)
+        return True, syms
+    if re.search(r"(?:^|;\s*)decision=HOLD(?:$|;)", text, re.IGNORECASE) and not re.search(
+        r"\b(?:BUY|SELL|CANCEL)\b", text
+    ):
+        return True, []
+    return False, []
+
+
+def _extract_hold_rationale(summary: str) -> str:
+    """Extract the substantive rationale of a HOLD entry, stripping repeated HOLD/cash boilerplate."""
+    text = str(summary or "").strip()
+    m_sum = _HISTORY_SUMMARY_FIELD_RE.search(text)
+    body = m_sum.group(1).strip() if m_sum is not None else text
+    cleaned = _HISTORY_HOLD_BOILERPLATE_RE.sub("", body).strip(" ;:,.-")
+    return cleaned or body
+
+
+def _truncate_rationale(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+    cut = text[: max_len - 3].rstrip()
+    for sep in ("; ", ". ", ", ", " "):
+        idx = cut.rfind(sep)
+        if idx >= max_len // 2:
+            cut = cut[:idx].rstrip(" ;:,.-")
+            break
+    return cut + "..."
+
+
+def _rationale_token_set(text: str) -> set[str]:
+    return {w for w in _HISTORY_WORD_RE.findall(text.lower()) if w not in _HISTORY_STOPWORDS}
+
+
+def _format_utc_span(start_utc: str, end_utc: str) -> str:
+    s = str(start_utc or "").strip()
+    e = str(end_utc or "").strip()
+    if not s or not e or s == e:
+        return s or e
+    m_s = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s*(UTC)?$", s)
+    m_e = re.match(r"^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s*(UTC)?$", e)
+    if m_s and m_e:
+        tz_sfx = " UTC" if (m_s.group(3) or m_e.group(3)) else ""
+        if m_s.group(1) == m_e.group(1):
+            return f"{m_s.group(1)} {m_s.group(2)}..{m_e.group(2)}{tz_sfx}"
+        return f"{m_s.group(1)} {m_s.group(2)}..{m_e.group(1)} {m_e.group(2)}{tz_sfx}"
+    return f"{s}..{e}"
+
+
+def _short_utc_stamp(utc: str) -> str:
+    s = str(utc or "").strip()
+    m = re.match(r"^\d{4}-\d{2}-\d{2}\s+(\d{2}:\d{2})\s*(?:UTC)?$", s)
+    return m.group(1) if m else s
+
+
+def _compress_hold_streak(
+    streak: list[tuple[Dict[str, Any], list[str]]],
+    *,
+    max_distinct_reasons: int = 4,
+) -> list[str]:
+    """Collapse >=2 consecutive pure-HOLD decisions into one compact block preserving distinct rationales."""
+    if len(streak) < 2:
+        return [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h, _ in streak]
+    span = _format_utc_span(str(streak[0][0].get("utc") or ""), str(streak[-1][0].get("utc") or ""))
+    all_syms: list[str] = []
+    for _, syms in streak:
+        for sym in syms:
+            if sym not in all_syms:
+                all_syms.append(sym)
+    syms_part = f" ({', '.join(all_syms)})" if all_syms else ""
+    header = (
+        f"- [{span}] {len(streak)}x consecutive HOLD{syms_part} "
+        "(portfolio balance in Section 1; distinct reasons):"
+    )
+    # Keep the latest HOLD rationale plus the most recent distinct earlier rationales.
+    selected: list[tuple[int, str, str, bool]] = []
+    kept_tokens: list[set[str]] = []
+    for idx in range(len(streak) - 1, -1, -1):
+        entry = streak[idx][0]
+        is_latest = idx == len(streak) - 1
+        rationale = _extract_hold_rationale(str(entry.get("summary") or ""))
+        if not rationale:
+            continue
+        toks = _rationale_token_set(rationale)
+        is_dup = False
+        if not is_latest and toks:
+            for prev_toks in kept_tokens:
+                if not prev_toks:
+                    continue
+                inter = len(toks & prev_toks)
+                union = len(toks | prev_toks)
+                if union > 0 and (inter / union) >= 0.50:
+                    is_dup = True
+                    break
+        elif not is_latest and any(rationale.lower() == prev_r.lower() for _, _, prev_r, _ in selected):
+            is_dup = True
+        if is_dup:
+            continue
+        kept_tokens.append(toks)
+        selected.append((idx, _short_utc_stamp(str(entry.get("utc") or "")), rationale, is_latest))
+        if len(selected) >= max_distinct_reasons:
+            break
+    selected.sort(key=lambda item: item[0])
+    out = [header]
+    for _, stamp, rationale, is_latest in selected:
+        tag = f"{stamp} latest" if (is_latest and stamp) else (stamp or ("latest" if is_latest else ""))
+        pfx = f"[{tag}] " if tag else ""
+        lim = 190 if is_latest else 140
+        out.append(f"  * {pfx}{_truncate_rationale(rationale, lim)}")
+    return out
+
+
 def format_topic_history_prefix(
     topic_key: str,
     registry_path: Optional[str] = None,
 ) -> str:
-    """Format the rolling decision memory for a topic as a prompt prefix."""
+    """Format the rolling decision memory for a topic as a prompt prefix.
+
+    Actionable turns (BUY/SELL/CANCEL or non-HOLD topics) stay verbatim while streaks of
+    >=2 consecutive pure-HOLD turns are compressed into a single block preserving distinct rationales.
+    """
     _, _, entry = _load_topic_entry(topic_key, registry_path)
     if entry is None:
         return ""
@@ -247,7 +399,18 @@ def format_topic_history_prefix(
     if not history:
         return ""
     lines = ["[TOPIC MEMORY \u2014 PRIOR DECISIONS IN THIS TOPIC]:"]
-    lines += [f"- [{h.get('utc', '')}] {h.get('summary', '')}" for h in history]
+    hold_streak: list[tuple[Dict[str, Any], list[str]]] = []
+    for h in history:
+        is_hold, syms = _parse_pure_hold_entry(str(h.get("summary") or ""))
+        if is_hold:
+            hold_streak.append((h, syms))
+        else:
+            if hold_streak:
+                lines.extend(_compress_hold_streak(hold_streak))
+                hold_streak.clear()
+            lines.append(f"- [{h.get('utc', '')}] {h.get('summary', '')}")
+    if hold_streak:
+        lines.extend(_compress_hold_streak(hold_streak))
     return "\n".join(lines) + "\n\n"
 
 

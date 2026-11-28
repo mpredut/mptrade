@@ -102,14 +102,17 @@ def range_position_pct(cur_px: float, low_px: float, high_px: float, decimals: i
 
 
 def build_vp_position_dict(cur_px: float, poc_px: float, val_px: float, vah_px: float) -> Dict[str, Any]:
-    """Compute symmetric % distances from POC/VAL/VAH, Value Area position %, and VA regime."""
+    """Compute signed % distances from current price to POC/VAL/VAH (`(level / cur_px - 1) * 100`), Value Area position %, and VA regime.
+
+    Levels below ``cur_px`` are negative; levels above ``cur_px`` are positive.
+    """
     if min(cur_px, poc_px, val_px, vah_px) <= 0.0:
         return {}
     va_pos = max(-100.0, min(200.0, range_position_pct(cur_px, val_px, vah_px)))
     return {
-        "poc_dist_pct": pct_delta(cur_px, poc_px),
-        "vah_dist_pct": pct_delta(cur_px, vah_px),
-        "val_dist_pct": pct_delta(cur_px, val_px),
+        "poc_dist_pct": pct_delta(poc_px, cur_px),
+        "vah_dist_pct": pct_delta(vah_px, cur_px),
+        "val_dist_pct": pct_delta(val_px, cur_px),
         "va_pos_pct": va_pos,
         "va_regime": (
             "ABOVE_VAH" if cur_px > vah_px

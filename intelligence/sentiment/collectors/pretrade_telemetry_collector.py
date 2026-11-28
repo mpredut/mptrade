@@ -122,6 +122,7 @@ from intelligence.sentiment.evaluators.asset_session_policy import (
 from intelligence.sentiment.evaluators.price_series_evaluator import (
     apply_live_24trend_windows,
     apply_short_trend_item,
+    build_vp_position_dict,
     compute_24h_price_metrics,
     compute_7d_range_metrics,
     compute_cross_btc_metrics,
@@ -1316,14 +1317,27 @@ class Pretrade24hAndBtcFormatStage(PretradePillarCollectorBase):
         telemetry["24h Multi-Horizon Price Evolution"] = f"{', '.join(h_parts)}, {rng_str}" if h_parts else rng_str
 
         if m24.get("poc_px") is not None:
+            vp_live = (
+                build_vp_position_dict(
+                    ctx.cur_px_est,
+                    safe_float(m24.get("poc_px"), 0.0),
+                    safe_float(m24.get("val_px"), 0.0),
+                    safe_float(m24.get("vah_px"), 0.0),
+                )
+                if ctx.cur_px_est > 0.0 and m24.get("val_px") is not None and m24.get("vah_px") is not None
+                else {}
+            )
+            poc_d_pt = vp_live["poc_dist_pct"] if vp_live.get("poc_dist_pct") is not None else m24.get("poc_dist_pct")
+            val_d_pt = vp_live["val_dist_pct"] if vp_live.get("val_dist_pct") is not None else m24.get("val_dist_pct")
+            vah_d_pt = vp_live["vah_dist_pct"] if vp_live.get("vah_dist_pct") is not None else m24.get("vah_dist_pct")
             sec_poc_val = m24.get("sec_poc_px") if m24.get("sec_poc_px") is not None else m24.get("hvn2_px")
             sec_poc_s = f", sec_POC=${sec_poc_val}" if sec_poc_val is not None else ""
             lvn_s = f", LVN=${m24['lvn_px']}" if m24.get("lvn_px") is not None else ""
             vp_src_s = f", vp_source={m24['vp_source']}" if m24.get("vp_source") else ""
             telemetry["24h Volume Profile (POC / Value Area)"] = (
-                f"POC=${m24.get('poc_px')} ({fmt_signed(m24.get('poc_dist_pct'))}%){sec_poc_s}{lvn_s}, "
-                f"VAL=${m24.get('val_px')} ({fmt_signed(m24.get('val_dist_pct'))}%), "
-                f"VAH=${m24.get('vah_px')} ({fmt_signed(m24.get('vah_dist_pct'))}%), "
+                f"POC=${m24.get('poc_px')} ({fmt_signed(poc_d_pt)}%){sec_poc_s}{lvn_s}, "
+                f"VAL=${m24.get('val_px')} ({fmt_signed(val_d_pt)}%), "
+                f"VAH=${m24.get('vah_px')} ({fmt_signed(vah_d_pt)}%), "
                 f"va_pos={m24.get('va_pos_pct')}%{format_va_hold_suffix(m24)}{vp_src_s}"
             )
 

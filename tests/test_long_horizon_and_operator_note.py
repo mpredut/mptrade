@@ -1843,6 +1843,80 @@ def test_pass6_day1_listing_spike_sanitization() -> None:
     assert ev_real["high_horizon"] == 160.0
 
 
+def test_operator_note_promoted_next_to_trigger_without_section2_duplication() -> None:
+    """When wake_reason is operator_note_updated (or SHOW_NEW on warm delta), render the note once right beside Trigger in Section 0."""
+    t0 = datetime(2026, 11, 28, 10, 0, 0, tzinfo=ZoneInfo("Europe/Bucharest")).timestamp()
+    note_txt = "BTC high-conviction support zone around $56,000; invalidate on high-volume breakdown."
+    op_note = parse_operator_regime_note_text(note_txt, mtime_ts=t0 - 120.0, now_ts=t0, default_ttl_days=7.0)
+    sensors = TelemetrySensorSnapshot(
+        evaluated_at_ts=t0,
+        prices_and_trends={"BTCUSDC": {"price": 59790.0, "chg_24h_pct": -1.5}},
+        operator_regime_note=op_note,
+    )
+    logs = LogEventSummary(0, 0, 0)
+    spec = topic_spec("auto_cryptotrade_executor")
+
+    # 1. Triggered by operator_note_updated on cold startup -> appears immediately under Trigger in Section 0, ONCE total
+    p_cold = evaluate_prompt_delta_plan(sensors, asset_scope="crypto", now_ts=t0, is_warm_resume=False, conversation_id="op-1")
+    cold_triggered = build_supervisor_prompt(
+        sensors,
+        logs,
+        spec=spec,
+        compact_rules=False,
+        delta_plan=p_cold,
+        wake_reason="operator_note_updated",
+    )
+    assert cold_triggered.count("- Operator Strategic Note (updated=") == 1
+    sec0_idx = cold_triggered.index("- Trigger: operator_note_updated")
+    note_idx = cold_triggered.index("- Operator Strategic Note (updated=")
+    sec2_idx = cold_triggered.index("### 2. MACRO, REGIME & CROSS-MARKET:")
+    assert sec0_idx < note_idx < sec2_idx
+    assert note_txt in cold_triggered
+    assert audit_rendered_prompt_text(cold_triggered) == []
+
+    # 2. Subsequent warm turn with edited note (SHOW_NEW) -> also appears once right under Trigger in Section 0 with [NEW]
+    t1 = t0 + 360.0
+    note_txt_v2 = "BTC support tightened to $56,500; invalidate below $55,200."
+    sensors_v2 = TelemetrySensorSnapshot(
+        evaluated_at_ts=t1,
+        prices_and_trends={"BTCUSDC": {"price": 59500.0, "chg_24h_pct": -2.0}},
+        operator_regime_note=parse_operator_regime_note_text(note_txt_v2, mtime_ts=t1 - 10.0, now_ts=t1, default_ttl_days=7.0),
+    )
+    p_warm_new = evaluate_prompt_delta_plan(
+        sensors_v2,
+        asset_scope="crypto",
+        now_ts=t1,
+        is_warm_resume=True,
+        prev_state=p_cold.next_state,
+        conversation_id="op-1",
+    )
+    warm_triggered = build_supervisor_prompt(
+        sensors_v2,
+        logs,
+        spec=spec,
+        compact_rules=True,
+        delta_plan=p_warm_new,
+        wake_reason="operator_note_updated",
+    )
+    assert warm_triggered.count("- Operator Strategic Note (updated=") == 1
+    assert warm_triggered.index("- Trigger: operator_note_updated") < warm_triggered.index("- Operator Strategic Note (updated=") < warm_triggered.index("### 2. MACRO, REGIME & CROSS-MARKET:")
+    assert "[NEW]:" in warm_triggered
+    assert audit_rendered_prompt_text(warm_triggered) == []
+
+    # 3. Normal non-triggered cold keyframe (no operator_note_updated wake) keeps the note in Section 2 once
+    cold_normal = build_supervisor_prompt(
+        sensors,
+        logs,
+        spec=spec,
+        compact_rules=False,
+        delta_plan=p_cold,
+        wake_reason="max_idle_elapsed(1080s>=1080s)",
+    )
+    assert cold_normal.count("- Operator Strategic Note (updated=") == 1
+    assert cold_normal.index("### 2. MACRO, REGIME & CROSS-MARKET:") < cold_normal.index("- Operator Strategic Note (updated=")
+
+
+
 
 
 

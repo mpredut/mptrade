@@ -47,6 +47,7 @@ from orchestratorOS.supervisor.prompt_sections import (
     _format_macro_and_news_section,
     _format_market_prices_section,
     _format_microstructure_section,
+    _format_operator_regime_note_line,
     _format_portfolio_section,
     _format_sre_and_fleet_section,
     _format_unified_markets_and_bellwethers_sections,
@@ -80,6 +81,38 @@ _LIVE_DOMAIN_AGE_KEYS = frozenset({
     "venue_balances",
 })
 _TRIGGER_SYM_TOKEN_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9_]{2,18}\b")
+
+# SSOT breakout & maker-LIMIT execution policy clauses shared by cold (FULL_KEYFRAME) and warm (WARM_DELTA) prompts.
+_CRYPTO_BREAKOUT_CONFIRM_CONDITIONS = (
+    "`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls"
+)
+_CRYPTO_BREAKOUT_EXEC_CLAUSE = (
+    'enter near-BBO post-only maker `LIMIT` (explicit near-BBO `limit_price`, `urgency:"NORMAL"`, '
+    "positive-EV `target_px`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if wall-capped/distributing"
+)
+_CRYPTO_POST_ONLY_LIMIT_EXEC_SPEC = (
+    'post-only `"order_type": "LIMIT"` (never MARKET; gateway re-checks live price & steps 1 tick onto maker book)'
+)
+_CRYPTO_POST_ONLY_LIMIT_COMPACT_SPEC = "post-only spot maker-LIMIT (never MARKET; 1-tick maker step)"
+
+
+def _format_crypto_entry_playbook_clauses(
+    half_max_usd: float,
+    full_max_usd: float,
+    *,
+    compact: bool,
+) -> str:
+    """Render crypto deep-dip and confirmed-breakout entry rules from one SSOT definition for cold and warm prompts."""
+    if compact:
+        return (
+            f"- Entry playbook: (1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when cash is ample; "
+            f"(2) Confirmed breakouts ({_CRYPTO_BREAKOUT_CONFIRM_CONDITIONS}): {_CRYPTO_BREAKOUT_EXEC_CLAUSE}.\n"
+        )
+    return (
+        f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when cash is ample (no timid $500 tickets). "
+        f"2) Confirmed breakouts ({_CRYPTO_BREAKOUT_CONFIRM_CONDITIONS}): {_CRYPTO_BREAKOUT_EXEC_CLAUSE}. "
+        "3) De-risk on negative velocity + unabsorbed selling.\n"
+    )
 
 
 def _build_section0_trigger_context(
@@ -450,6 +483,7 @@ def build_supervisor_prompt(
     portfolio_summary = getattr(sensors, "portfolio_summary", None) or {}
     trigger_syms: set[str] = set()
     gw_th = _resolve_gateway_survival_prompt_thresholds()
+    op_note_rendered_in_s0 = False
     if not is_pure_sre:
         known_syms = set(prices_and_trends.keys()) | set(microstructure.keys())
         trigger_line, trigger_syms = _build_section0_trigger_context(
@@ -462,6 +496,19 @@ def build_supervisor_prompt(
         )
         if trigger_line:
             context_items.append(trigger_line)
+        wake_is_op_note_upd = bool(wake_reason and "operator_note_updated" in str(wake_reason).lower())
+        delta_op_note_new = bool(
+            delta_plan is not None and delta_plan.action_for("operator_regime_note") == "SHOW_NEW"
+        )
+        if wake_is_op_note_upd or delta_op_note_new:
+            op_note_s0_line = _format_operator_regime_note_line(
+                sensors,
+                delta_plan=delta_plan,
+                force_show=wake_is_op_note_upd,
+            )
+            if op_note_s0_line:
+                context_items.append(op_note_s0_line)
+                op_note_rendered_in_s0 = True
     domain_ages = getattr(sensors, "source_ages_sec", None)
     spec_scope_norm = str(getattr(spec, "asset_scope", "all") or "all").strip().lower()
     skip_domain_keys = (
@@ -531,6 +578,7 @@ def build_supervisor_prompt(
                 now_ts=eval_now_ts,
                 delta_plan=delta_plan,
                 include_cross_market=True,
+                suppress_operator_note=op_note_rendered_in_s0,
             )
         )
     if not is_pure_sre and (prices_and_trends or microstructure):
@@ -640,10 +688,7 @@ def build_supervisor_prompt(
             else (
                 "   - CONTRARIAN DIP ACCUMULATION (SCALE-IN), BREAKOUT MOMENTUM & KINEMATICS: Weigh `kinematics(vel_90s/5m, acc_90s/5m, kalman_z)`, `kalman_vel`, "
                 "`bottom_6h`, `vs_btc`, `cvd_5m/15m`, `spot_cvd_15m` (`[real_spot]` vs `[est:ob+15m]`, never double-count with `ob_imbalance` `[0..1, 0.5=neutral]`), `rvol`, `taker_ratio`, L2 walls. "
-                f"1) Deep dips (deceleration+absorption): size decisively at ${half_max_usd:g}\u2013${full_max_usd:g} when cash is ample (no timid $500 tickets). "
-                "2) Confirmed breakouts (`vel_90s>0`, `vel_5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
-                "enter near-BBO maker `LIMIT` (explicit `limit_price` near `best_bid`/spot, `urgency:\"NORMAL\"`, positive-EV `target_px`, tight `invalidation_px`) even at high `pos_15m` (80\u2013100%); skip if wall-capped or distributing. "
-                "3) De-risk on negative velocity + unabsorbed selling.\n"
+                + _format_crypto_entry_playbook_clauses(half_max_usd, full_max_usd, compact=False)
             )
         )
         limit_exec_rule = (
@@ -654,7 +699,7 @@ def build_supervisor_prompt(
             "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
             if is_equities
             else (
-                "   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: Submit post-only `\"order_type\": \"LIMIT\"` (never MARKET; gateway re-checks live price & steps 1 tick onto maker book) to capture spread and cut fees: "
+                f"   - SPOT MAKER 'LIMIT' EXECUTION IN THE ORDERBOOK: Submit {_CRYPTO_POST_ONLY_LIMIT_EXEC_SPEC} to capture spread and cut fees: "
                 "passive `limit_price` at bid/ask walls for swings; explicit BBO `limit_price` (`urgency:\"NORMAL\"`) for breakouts; `limit_price: null` (`urgency:\"HIGH\"`) only for urgent defensive exits/reversals. "
                 "Audit `open_limit_orders` (`Dist`, `Fill1h`, `Note`; watch `[ob_stale]` when `ob_age > 30s`), `last_cycle_execution_status`, and `arr_bps`/`slip_bps`/`unfilled_off_bps`/`fill_by_offset`: "
                 "re-anchor stale/far (`Fill1h<=5%` or `|Dist|>4%`) or wall-trapped (`front_run=` / `Note` wall flags) orders via `replace_open_orders: true` -- always re-evaluate R:R from the new `limit_price` (`\"CANCEL\"`+`cancel_order_ids` or `HOLD` instead of chasing into poor R:R); `'HOLD'` keeps resting orders.\n"
@@ -754,7 +799,7 @@ def build_supervisor_prompt(
         compact_exec_desc = (
             "spot LIMIT execution, active open-order management"
             if is_equities
-            else "spot maker-LIMIT execution, active orderbook management"
+            else f"{_CRYPTO_POST_ONLY_LIMIT_COMPACT_SPEC}, active orderbook management"
         )
         surv_bits: List[str] = []
         if ev_fee_mult > 0:
@@ -771,11 +816,7 @@ def build_supervisor_prompt(
         compact_entry_bullet = (
             ""
             if is_equities
-            else (
-                f"- Entry playbook: (1) Deep dips (deceleration+absorption): size decisively at ${compact_half_usd:g}\u2013${compact_full_usd:g} when cash is ample; "
-                "(2) Confirmed breakouts (`vel_90s/5m>0`, `acc_90s>=0`, `rvol>=1.2x`, supportive `cvd`/`taker_ratio`, clear runway below ask walls): "
-                "enter near-BBO maker `LIMIT` (explicit near-BBO `limit_price`, `urgency:\"NORMAL\"`, tight `invalidation_px`) even at high `pos_15m`.\n"
-            )
+            else _format_crypto_entry_playbook_clauses(compact_half_usd, compact_full_usd, compact=True)
         )
         compact_prefix = (
             "CONTINUATION TURN (ACTIVE THREAD POLICY APPLIES):\n"

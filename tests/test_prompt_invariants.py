@@ -1450,7 +1450,7 @@ def test_cross_section_prompt_invariants_and_live_evaluator() -> None:
         "  * Macro Sentiment Advisor (conf=0.75): Neutral | live_btc_flow_delta=(BTC=$60,000.00(POC=$59,500.00), taker_ratio=1.20)\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=60500.0[-0.83%], va_pos=66.7%)\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[-0.83%], VAL=59000.0[-1.67%], VAH=60500.0[+0.83%], va_pos=66.7%)\n"
         "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), depth_1pct=(bid=$60.0K/ask=$50.0K), "
         "bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
         "    - Flow: taker_ratio=1.20 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+3.333 BTC (+$200.0K)\n"
@@ -1488,7 +1488,7 @@ def test_cross_section_prompt_invariants_and_live_evaluator() -> None:
         "  * Macro Sentiment Advisor (conf=0.75): Neutral | live_btc_flow_delta=(BTC=$62,500.00(POC=$58,000.00), taker_ratio=0.75)\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=60500.0[-0.83%], va_pos=66.7%)\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[-0.83%], VAL=59000.0[-1.67%], VAH=60500.0[+0.83%], va_pos=66.7%)\n"
         "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), depth_1pct=(bid=$150.0K/ask=$150.0K), "
         "bid_wall=59700.0 ($50.0K, dist=-0.50%), ask_wall=60300.0 ($50.0K, dist=+0.50%), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0\n"
         "    - Flow: taker_ratio=2.50 (buy_v=$1.20M/sell_v=$1.00M), cvd_15m=+1.00 BTC (-$500.0K)\n"
@@ -1763,7 +1763,7 @@ def test_cycle15_fill_lifecycle_pruning_lot_harvested_and_four_new_invariants() 
         "    | BTCUSDC | -31.5% | -25.8% | -23.0% | [$55.0K..$95.0K] (12.5%) | [$40.0K..$120.0K] (25.0%) | -19.8% | -16.8% | 23-11:40.0K->25-10:120.0K->now:60.0K |\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=50.0%, vp_source=REAL_VOL)\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[-0.83%], VAL=59000.0[-1.67%], VAH=61000.0[+1.67%], va_pos=50.0%, vp_source=REAL_VOL)\n"
         "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0, "
         "liq_clusters(long_liq=$58800.0[$10.0M, -2.00%], short_liq=$61200.0[$10.0M, +2.00%], src=model_est)\n"
     )
@@ -1789,7 +1789,7 @@ def test_cycle15_fill_lifecycle_pruning_lot_harvested_and_four_new_invariants() 
         "    | BTCUSDC | -31.5% | -25.8% | -23.0% | [$55.0K..$95.0K] (45.0%) | [$40.0K..$120.0K] (70.0%) | -19.8% | -16.8% | 23-11:40.0K->25-10:120.0K->now:62.0K |\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[+0.84%], VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=12.0%, vp_source=REAL_VOL)\n"
+        "    - Trend: 24h=+1.00% | vol_profile(POC=59500.0[-0.83%], VAL=59000.0[-1.67%], VAH=61000.0[+1.67%], va_pos=12.0%, vp_source=REAL_VOL)\n"
         "    - Book: ob_imbalance=0.500 (bid_depth=$100.0K, ask_depth=$100.0K), spread=0.33bps (bid=59999.0/ask=60001.0), ob_mid=60000.0, "
         "liq_clusters(long_liq=$58800.0[$10.0M, -5.50%], short_liq=$61200.0[$10.0M, +2.00%], src=model_est)\n"
         "  * HYPEUSDC: Price=$59.48\n"
@@ -2088,7 +2088,7 @@ def test_cycle18_section1_parity_scorecard_and_structure_options_invariants() ->
         "    | SPY | +5.1% | -6.9% | -6.8% | [$629.28..$781.62] (57.4%) | [$453.34..$781.62] (80.2%) | -5.4% | -2.2% | 23-11:453.3->now:716.7 |\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: vol_profile(POC=59500.0[+0.84%], sec_POC=60800.0, LVN=60100.0, VAL=59000.0[+1.69%], VAH=61000.0[-1.64%], va_pos=50.0%) | "
+        "    - Trend: vol_profile(POC=59500.0[-0.83%], sec_POC=60800.0, LVN=60100.0, VAL=59000.0[-1.67%], VAH=61000.0[+1.67%], va_pos=50.0%) | "
         "kalman_vel=+0.00767 | kinematics(vel_90s=+0.0500%/m, kalman_z=+0.21)\n"
         "  * HYPEUSDC (sibling venue: HYPEUSD=$60.47 [+0.05%]): Price=$60.4425\n"
         "    - Trend: kalman_vel=-0.02638 | kinematics(vel_5m=-0.0178%/m, kalman_z=-0.37)\n"
@@ -2398,7 +2398,7 @@ def test_cycle20_wave3_per_venue_nav_spot_flow_va_hold_weibull_atr_and_cross_par
         "    | SPCX_US_EQ | $128.95 | +2.15% | -10.08% | 98.6% | +1.31% | $127.28 | yahoo_ext_cached (900m) |\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * BTCUSDC: Price=$60,000.00\n"
-        "    - Trend: vol_profile(POC=58500.0[+2.56%], VAL=58000.0[+3.45%], VAH=59500.0[+0.84%], va_pos=133.3%, above_vah=45m, vp_source=REAL_VOL) | "
+        "    - Trend: vol_profile(POC=58500.0[-2.50%], VAL=58000.0[-3.33%], VAH=59500.0[-0.83%], va_pos=133.3%, above_vah=45m, vp_source=REAL_VOL) | "
         "atr(15m=0.35%, 1h=0.75%, 4h=1.80%) | long_trend=UP(40.0h, est_rem=20.0h, med_d=3.0d/p90=6.5d)\n"
         "    - Flow: whale_long_pct=65.0%, spot_cvd_15m=+$40.0K[real_spot], agg_spot_cvd_15m=+$120.0K[usdc+usdt, vol=$500.0K], spot_vol_15m=$150.0K, spot_vol_1h=$600.0K\n"
         "### 4. MARKET BELLWETHERS (OBSERVE-ONLY):\n"
@@ -3167,9 +3167,9 @@ def test_pass12_va_pos_clamp_alignment_invariant_and_crosscheck() -> None:
         "LIVE TELEMETRY SNAPSHOT:\n"
         "### 3. TRADABLE MARKETS:\n"
         "  * SPCXxUSD: Price=$130.98\n"
-        "    - Trend: 24h=+1.50% | vol_profile(POC=129.35[+1.26%], VAL=128.84[+1.66%], VAH=129.85[+0.87%], va_pos=200.0%, above_vah=12m, vp_source=REAL_VOL)\n"
+        "    - Trend: 24h=+1.50% | vol_profile(POC=129.35[-1.24%], VAL=128.84[-1.63%], VAH=129.85[-0.86%], va_pos=200.0%, above_vah=12m, vp_source=REAL_VOL)\n"
         "  * ANTxUSD: Price=$95.00\n"
-        "    - Trend: 24h=-4.00% | vol_profile(POC=101.00[-5.94%], VAL=100.00[-5.00%], VAH=102.00[-6.86%], va_pos=-100.0%, below_val=20m, vp_source=REAL_VOL)\n"
+        "    - Trend: 24h=-4.00% | vol_profile(POC=101.00[+6.32%], VAL=100.00[+5.26%], VAH=102.00[+7.37%], va_pos=-100.0%, below_val=20m, vp_source=REAL_VOL)\n"
     )
     assert [v for v in audit_rendered_prompt_text(clamped_prompt) if v.code == "PROMPT_VA_POS_AND_LIQ_MATH"] == []
 
@@ -3787,6 +3787,84 @@ def test_active_trade_plans_annotate_prior_breach_and_prior_touch_symmetrically(
     assert "prior_breach [INVALIDATED]" in tao_ln
     assert "prior_breach" not in btc_ln and "[INVALIDATED]" in btc_ln
     assert "prior_touch [TARGET_HIT]" in hype_ln
+
+
+def test_p0_breakout_rules_cold_warm_ssot_and_vp_distance_sign_convention() -> None:
+    """P0 regression: cold/warm prompts share SSOT breakout/execution rules and VP distances use (level / cur_px - 1) * 100."""
+    from botcore import topic_spec
+    from intelligence.macro_sentiment_ssot import TelemetrySensorSnapshot
+    from intelligence.sentiment.evaluators.price_series_evaluator import build_vp_position_dict
+    from orchestratorOS.lib.technical_repair_ssot import LogEventSummary
+    from orchestratorOS.supervisor.prompt_formatters import (
+        _CRYPTO_BREAKOUT_CONFIRM_CONDITIONS,
+        _CRYPTO_BREAKOUT_EXEC_CLAUSE,
+        _CRYPTO_POST_ONLY_LIMIT_COMPACT_SPEC,
+        _CRYPTO_POST_ONLY_LIMIT_EXEC_SPEC,
+        build_supervisor_prompt,
+    )
+
+    # 1. P0-2 pure math invariants on build_vp_position_dict: below < 0, equal == 0, above > 0
+    vp_spcx = build_vp_position_dict(131.93, 131.65, 130.60, 132.67)
+    assert vp_spcx["val_dist_pct"] == pytest.approx(-1.01)
+    assert vp_spcx["poc_dist_pct"] == pytest.approx(-0.21)
+    assert vp_spcx["vah_dist_pct"] == pytest.approx(0.56)
+
+    vp_eq = build_vp_position_dict(130.60, 130.60, 129.00, 132.00)
+    assert vp_eq["poc_dist_pct"] == pytest.approx(0.0)
+    assert vp_eq["val_dist_pct"] < 0.0
+    assert vp_eq["vah_dist_pct"] > 0.0
+
+    # 2. P0-1 & P0-2 end-to-end across BOTH cold (compact_rules=False) and warm (compact_rules=True) prompts,
+    #    including stale cached inverted dist values in pinfo being recomputed cleanly from live price.
+    sensors = TelemetrySensorSnapshot(
+        evaluated_at_ts=1_795_852_800.0,
+        prices_and_trends={
+            "SPCXxUSD": {
+                "price": 131.93,
+                "chg_24h_pct": -0.86,
+                "poc_px": 131.65,
+                "val_px": 130.6,
+                "vah_px": 132.67,
+                # Deliberately inject legacy inverted signs to ensure renderer recomputes from live price.
+                "poc_dist_pct": 0.21,
+                "val_dist_pct": 1.02,
+                "vah_dist_pct": -0.56,
+                "vp_source": "REAL_VOL",
+            },
+            "BTCUSDC": {
+                "price": 60000.0,
+                "chg_24h_pct": 0.5,
+                "poc_px": 60000.0,
+                "val_px": 59400.0,
+                "vah_px": 60600.0,
+                "vp_source": "REAL_VOL",
+            },
+        },
+    )
+    spec = topic_spec("auto_cryptotrade_executor")
+    logs = LogEventSummary(0, 0, 0)
+    cold = build_supervisor_prompt(sensors, logs, spec=spec, compact_rules=False)
+    warm = build_supervisor_prompt(sensors, logs, spec=spec, compact_rules=True)
+
+    for label, prompt_txt in (("cold", cold), ("warm", warm)):
+        assert _CRYPTO_BREAKOUT_CONFIRM_CONDITIONS in prompt_txt, f"Missing SSOT breakout conditions in {label}"
+        assert _CRYPTO_BREAKOUT_EXEC_CLAUSE in prompt_txt, f"Missing SSOT breakout execution clause in {label}"
+        exp_exec = _CRYPTO_POST_ONLY_LIMIT_EXEC_SPEC if label == "cold" else _CRYPTO_POST_ONLY_LIMIT_COMPACT_SPEC
+        assert exp_exec in prompt_txt, f"Missing SSOT post-only LIMIT spec in {label}"
+        assert "never MARKET" in prompt_txt and "post-only" in prompt_txt
+        assert "VAL=130.6[-1.01%]" in prompt_txt, f"Expected VAL=-1.01% in {label}"
+        assert "POC=131.65[-0.21%]" in prompt_txt, f"Expected POC=-0.21% in {label}"
+        assert "VAH=132.67[+0.56%]" in prompt_txt, f"Expected VAH=+0.56% in {label}"
+        assert "POC=60000.0[+0.00%]" in prompt_txt, f"Expected equal POC=+0.00% in {label}"
+        assert "VAL=59400.0[-1.00%]" in prompt_txt, f"Expected VAL=-1.00% in {label}"
+        assert "VAH=60600.0[+1.00%]" in prompt_txt, f"Expected VAH=+1.00% in {label}"
+        assert audit_rendered_prompt_text(prompt_txt) == []
+
+    # 3. Negative invariant: legacy inverted sign (+1.02% for VAL=130.6 below px=131.93) is caught by auditor
+    inverted = cold.replace("VAL=130.6[-1.01%]", "VAL=130.6[+1.02%]")
+    viols = [v for v in audit_rendered_prompt_text(inverted) if v.code == "PROMPT_VOL_PROFILE_DELTA"]
+    assert any(v.subject == "SPCXxUSD:VAL" for v in viols)
+
 
 
 

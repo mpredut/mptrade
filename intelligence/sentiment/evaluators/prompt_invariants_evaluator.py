@@ -2318,7 +2318,7 @@ def audit_rendered_prompt_text(
                     )
                 for vp_lbl, lv, rep_d in (("POC", poc, poc_d), ("VAL", val, val_d), ("VAH", vah, vah_d)):
                     if rep_d is not None:
-                        exp_d = ((px - lv) / lv) * 100.0
+                        exp_d = ((lv - px) / px) * 100.0
                         if abs(exp_d - rep_d) > 0.15:
                             violations.append(
                                 InvariantViolation(

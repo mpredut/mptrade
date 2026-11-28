@@ -440,6 +440,26 @@ def _resolve_macro_sensor(
     return val if isinstance(val, dict) else {}
 
 
+def _format_operator_regime_note_line(
+    sensors: Any,
+    *,
+    delta_plan: Optional[Any] = None,
+    force_show: bool = False,
+) -> Optional[str]:
+    """Format the active Operator Strategic Note line once (shared between Section 0 trigger promotion and Section 2)."""
+    macro = getattr(sensors, "macro_and_sentiment", None) or {}
+    op_note = _resolve_macro_sensor(sensors, macro, "operator_regime_note")
+    if not (isinstance(op_note, dict) and str(op_note.get("text") or "").strip()):
+        return None
+    if not force_show and delta_plan is not None and not delta_plan.should_show("operator_regime_note"):
+        return None
+    op_tag = delta_plan.tag_for("operator_regime_note") if delta_plan is not None else ""
+    op_upd = op_note.get("updated_date") or "-"
+    op_exp = safe_float(op_note.get("expires_in_days"), None)
+    exp_s = f", expires_in={op_exp:.1f}d" if op_exp is not None else ""
+    return f"- Operator Strategic Note (updated={op_upd}{exp_s}){op_tag}: {str(op_note['text']).strip()}"
+
+
 def _format_macro_and_news_section(
     sensors: Any,
     asset_scope: Any = "all",
@@ -447,6 +467,7 @@ def _format_macro_and_news_section(
     now_ts: Optional[float] = None,
     delta_plan: Optional[Any] = None,
     include_cross_market: bool = False,
+    suppress_operator_note: bool = False,
 ) -> List[str]:
     """Format Section 2 (Macro, Regime, Cross-Market & Live Breaking News) for the AI prompt."""
     scope_spec = resolve_scope_presentation(asset_scope)
@@ -726,17 +747,10 @@ def _format_macro_and_news_section(
         lines = [
             "\n### 2. MACRO, REGIME & CROSS-MARKET:",
         ]
-    op_note = _resolve_macro_sensor(sensors, macro, "operator_regime_note")
-    if isinstance(op_note, dict) and str(op_note.get("text") or "").strip() and (
-        delta_plan is None or delta_plan.should_show("operator_regime_note")
+    if not suppress_operator_note and (
+        op_note_line := _format_operator_regime_note_line(sensors, delta_plan=delta_plan)
     ):
-        op_tag = delta_plan.tag_for("operator_regime_note") if delta_plan is not None else ""
-        op_upd = op_note.get("updated_date") or "-"
-        op_exp = safe_float(op_note.get("expires_in_days"), None)
-        exp_s = f", expires_in={op_exp:.1f}d" if op_exp is not None else ""
-        lines.append(
-            f"- Operator Strategic Note (updated={op_upd}{exp_s}){op_tag}: {str(op_note['text']).strip()}"
-        )
+        lines.append(op_note_line)
     if is_equities_scope:
         lines.extend([
             f"- US Equity & Macro Regime: {eq_reg_line}{_age_sfx(mb_bench, parens=True, now_ts=ref_now) if isinstance(mb_bench, dict) else ''}",
@@ -1150,7 +1164,7 @@ def _build_market_price_symbol_record(
             safe_float(pinfo.get("vah_px"), 0.0),
         )
         poc_d, val_d, vah_d = (
-            safe_float(pinfo[k] if pinfo.get(k) is not None else fb_vp.get(k), 0.0)
+            safe_float(fb_vp[k] if fb_vp.get(k) is not None else pinfo.get(k), 0.0)
             for k in ("poc_dist_pct", "val_dist_pct", "vah_dist_pct")
         )
         va_pos_raw = pinfo["va_pos_pct"] if pinfo.get("va_pos_pct") is not None else fb_vp.get("va_pos_pct")

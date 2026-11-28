@@ -13886,7 +13886,7 @@ def test_root_cause_normalizations_ohlc_rth_anchors_and_model_cache_isolation():
         atr_src={"atr_15m_pct": 0.45, "atr_1h_pct": 0.85, "atr_4h_pct": 1.75},
         live_px=103.0,
     )
-    assert m24_mut["poc_px"] == 100.0 and m24_mut["poc_dist_pct"] == pytest.approx(3.0)
+    assert m24_mut["poc_px"] == 100.0 and m24_mut["poc_dist_pct"] == pytest.approx(-2.91)
     assert m24_mut["session_vwap_px"] == 100.0 and m24_mut["dist_vs_session_vwap_pct"] == pytest.approx(3.0)
     assert m24_mut["session_vwap_z"] == pytest.approx(3.0)
     assert m24_mut["atr_15m_pct"] == 0.45 and m24_mut["atr_4h_pct"] == 1.75

@@ -1074,4 +1074,81 @@ def test_pass28_ui_mirror_does_not_propagate_far_future_mtime(tmp_path):
     assert os.stat(bot_conv).st_mtime <= time.time() + 60.0
 
 
+def test_format_topic_history_prefix_compresses_consecutive_holds_and_keeps_actions(tmp_path):
+    """Consecutive HOLD streaks compress into one block stripping cash/HOLD boilerplate while keeping actionable trades verbatim."""
+    from orchestratorOS.agy.topics import format_topic_history_prefix
+
+    reg_path = str(tmp_path / "reg.json")
+    registry = {
+        "auto_cryptotrade_executor": {
+            "topic_key": "auto_cryptotrade_executor",
+            "rolling_history": [
+                {
+                    "utc": "2026-11-27 21:07 UTC",
+                    "summary": "trade=BUY(LIMIT@187.4):TAOUSDC@0.89; summary=Re-anchor Binance TAOUSDC BUY LIMIT #730434798.",
+                },
+                {
+                    "utc": "2026-11-27 22:19 UTC",
+                    "summary": "trade=SELL:TAOUSDC@0.9; summary=Defensive maker SELL LIMIT full exit on invalidated TAOUSDC.",
+                },
+                {
+                    "utc": "2026-11-28 06:30 UTC",
+                    "summary": "trade=HOLD:HYPEUSDC@0.92; summary=Defensive HOLD at 90.5% free cash ($15,260.15) on thin Saturday liquidity; HYPEUSDC bounce decelerating beneath $1.49M ask wall at $63.80.",
+                },
+                {
+                    "utc": "2026-11-28 06:54 UTC",
+                    "summary": "trade=HOLD:BTCUSDC@0.94; summary=Defensive HOLD at 90.5% free cash ($15,260.15) after final ETF flows printed heavily negative (BTC -$389M, ETH -$69.4M); rejecting resistance.",
+                },
+                {
+                    "utc": "2026-11-28 07:09 UTC",
+                    "summary": "trade=HOLD:BTCUSDC@0.94; summary=Disciplined HOLD at 90.5% free cash ($15,260.15) on the BTCUSDC tactical escalation; BTC broke Asia low with $3.25M long liquidations and no bid wall until $58,500.",
+                },
+                {
+                    "utc": "2026-11-28 07:14 UTC",
+                    "summary": "trade=HOLD:ADAUSDC@0.91; summary=Disciplined HOLD at 90.5% free cash ($15,260.15) on the ADAUSDC and TAOUSDC tactical escalation; post-flush snapback lacks spot confirmation.",
+                },
+                {
+                    "utc": "2026-11-28 07:30 UTC",
+                    "summary": "trade=HOLD:BTCUSDC@0.92; summary=Defensive HOLD at 90.5% free cash ($15,260.15); despite +$76.97M 15m perp CVD surge, price is flat beneath VWAP/POC as spot sells -$1.21M.",
+                },
+                {
+                    "utc": "2026-11-28 07:49 UTC",
+                    "summary": "trade=HOLD:ARBUSDC@0.94; summary=Disciplined HOLD at 90.5% free cash ($15,260.15) on the ARBUSDC tactical escalation; ARBUSDC trading on near-zero volume (rvol=0.13x).",
+                },
+                {
+                    "utc": "2026-11-28 08:00 UTC",
+                    "summary": "trade=HOLD:BTCUSDC@0.93; summary=Defensive HOLD at 90.5% free cash ($15,260.15) on thin Saturday liquidity; BTC stalls below POC ($59,840), well above $56,000 support zone.",
+                },
+            ],
+        },
+        "macro_sentiment": {
+            "topic_key": "macro_sentiment",
+            "rolling_history": [
+                {"utc": "2026-11-28 07:00 UTC", "summary": "market_bias=NEUTRAL; summary=Rangebound weekend flow."},
+                {"utc": "2026-11-28 08:00 UTC", "summary": "market_bias=NEUTRAL; summary=Slightly softer spot CVD."},
+            ],
+        },
+    }
+    save_topic_registry(registry, reg_path)
+
+    prefix = format_topic_history_prefix("auto_cryptotrade_executor", reg_path)
+    assert prefix.startswith("[TOPIC MEMORY — PRIOR DECISIONS IN THIS TOPIC]:\n")
+    # Actionable BUY & SELL entries stay verbatim
+    assert "- [2026-11-27 21:07 UTC] trade=BUY(LIMIT@187.4):TAOUSDC@0.89;" in prefix
+    assert "- [2026-11-27 22:19 UTC] trade=SELL:TAOUSDC@0.9;" in prefix
+    # Consecutive 7-HOLD streak collapses into one compact block without repeating cash/HOLD boilerplate
+    assert "7x consecutive HOLD (HYPEUSDC, BTCUSDC, ADAUSDC, ARBUSDC)" in prefix
+    assert "2026-11-28 06:30..08:00 UTC" in prefix
+    assert "$15,260.15" not in prefix
+    assert "Defensive HOLD" not in prefix
+    assert "Disciplined HOLD" not in prefix
+    assert "[08:00 latest]" in prefix and "$56,000 support zone" in prefix
+
+    # Non-trading / non-HOLD topic entries remain verbatim
+    macro_prefix = format_topic_history_prefix("macro_sentiment", reg_path)
+    assert "- [2026-11-28 07:00 UTC] market_bias=NEUTRAL; summary=Rangebound weekend flow." in macro_prefix
+    assert "- [2026-11-28 08:00 UTC] market_bias=NEUTRAL; summary=Slightly softer spot CVD." in macro_prefix
+
+
+
 

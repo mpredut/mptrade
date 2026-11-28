@@ -2835,7 +2835,7 @@ def test_volume_profile_liquidation_clusters_and_venue_fee_limits_telemetry(tmp_
     assert vp["val_px"] <= vp["poc_px"] <= vp["vah_px"]
     assert 80_200.0 <= vp["poc_px"] <= 80_800.0
     assert vp["va_regime"] in ("ABOVE_VAH", "INSIDE_VA_UPPER")
-    assert vp["poc_dist_pct"] > 0.0
+    assert vp["poc_dist_pct"] < 0.0
 
     # 2. Symmetric Liquidation Clusters (LONG downside & SHORT upside)
     pinfo_btc = {
@@ -4141,7 +4141,7 @@ def test_iteration19_sibling_diverged_micro_px_and_lazy_prompt_vp_liq_formatting
         {"SOLUSDC": {"price": 155.0, "poc_px": 150.0, "val_px": 145.0, "vah_px": 153.0}}
     )
     joined_3a = "\n".join(lines_3a)
-    assert "vol_profile(POC=150.0[+3.33%], VAL=145.0[+6.90%], VAH=153.0[+1.31%], va_pos=125.0%)" in joined_3a
+    assert "vol_profile(POC=150.0[-3.23%], VAL=145.0[-6.45%], VAH=153.0[-1.29%], va_pos=125.0%)" in joined_3a
 
     lines_3b = _format_microstructure_section(
         {"XBTUSD": {"ob_imbalance": 0.55, "oi_usd": 200_000_000.0, "whale_long_pct": 0.60, "funding_rate": 0.0001}},
