@@ -19,7 +19,7 @@ import time
 import weakref
 from abc import ABC
 from datetime import date
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pricewindow as pw
 from botcore import (
@@ -273,10 +273,7 @@ class CacheLongTrendManager(CacheTrendManagerBase):
     def _next_sync_wait_sec(self) -> float:
         base_wait = safe_nonneg_float(self.sync_ts, default=0.0) or 0.0
         with self.lock:
-            has_missing = any(
-                not self.cache.get(s) or self.cache.get(s) == [None]
-                for s in self.symbols
-            )
+            has_missing = any(not self.cache.get(s) for s in self.symbols)
         if has_missing and base_wait > 15.0:
             return 15.0
         return base_wait
@@ -482,12 +479,44 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         storage_sym = (resolve_symbol_identity(safe_sym).storage_key or safe_sym) if safe_sym else ""
         return os.path.join(self.trend_dir, f"{self.LIVE_FILE_PREFIX}{storage_sym}.{self.LIVE_FILE_EXT}")
 
+    _TREND_BUFFER_MIN_ROWS_FOR_TRIM = 4096
+    _TREND_BUFFER_TRIM_HYSTERESIS_MS = 300_000
+    _TREND_BUFFER_EXTRA_SEC = 3600.0
+
     def _get_trend_buffer(self, symbol: str):
         buf = self._trend_buffers.get(symbol)
         if buf is None:
             buf = pw.IncrementalTrendBuffer()
             self._trend_buffers[symbol] = buf
         return buf
+
+    def _trend_buffer_retention_ms(self) -> int:
+        max_sec = safe_pos_float(
+            _cm_attr("CM_DYNAMIC_WINDOW_MAX_SEC", CM_DYNAMIC_WINDOW_MAX_SEC),
+            default=CM_DYNAMIC_WINDOW_MAX_SEC,
+        ) or CM_DYNAMIC_WINDOW_MAX_SEC
+        horizon_sec = (
+            max(max_sec, safe_pos_float(self.window_big_sec, default=0.0) or 0.0)
+            + self._TREND_BUFFER_EXTRA_SEC
+        )
+        return math.trunc(horizon_sec * 1000.0)
+
+    def _trim_trend_buffer_locked(self, buf, *, immediate: bool = False) -> None:
+        ts_list = buf.timestamps
+        n = len(ts_list)
+        if n <= self._TREND_BUFFER_MIN_ROWS_FOR_TRIM:
+            return
+        retention_ms = self._trend_buffer_retention_ms()
+        hysteresis = 0 if immediate else self._TREND_BUFFER_TRIM_HYSTERESIS_MS
+        newest_ts = ts_list[-1]
+        if (newest_ts - ts_list[0]) <= (retention_ms + hysteresis):
+            return
+        trim_idx = bisect.bisect_left(ts_list, newest_ts - retention_ms)
+        max_trim = n - self._TREND_BUFFER_MIN_ROWS_FOR_TRIM
+        if trim_idx > max_trim:
+            trim_idx = max_trim
+        if trim_idx > 0:
+            buf.trim_front(trim_idx)
 
     def _build_threshold_fn(self, thresholds):
         """Normalize ``thresholds`` to a ``(symbol, seconds) -> percentage`` function."""
@@ -575,9 +604,31 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 c24 = cache24_managers[s]
                 current_price_mgr.subscribe_price(c24)          # CurrentPrice -> Cache24
                 with getattr(c24, "lock", threading.RLock()):
-                    raw_entries = list(getattr(c24, "cache", {}).get(s, []))
+                    bucket_c24 = getattr(c24, "cache", {}).get(s, ())
+                    if (
+                        hasattr(bucket_c24, "bisect_left_ts")
+                        and len(bucket_c24) > self._TREND_BUFFER_MIN_ROWS_FOR_TRIM
+                    ):
+                        cutoff_ms = (
+                            bucket_c24.max_timestamp_ms()
+                            - self._trend_buffer_retention_ms()
+                        )
+                        start_idx = min(
+                            bucket_c24.bisect_left_ts(cutoff_ms),
+                            len(bucket_c24) - self._TREND_BUFFER_MIN_ROWS_FOR_TRIM,
+                        )
+                        raw_entries = (
+                            bucket_c24[start_idx:]
+                            if start_idx > 0
+                            else bucket_c24.copy()
+                        )
+                    else:
+                        raw_entries = list(bucket_c24)
                 if raw_entries:
-                    self._get_trend_buffer(s).sync_entries(raw_entries)
+                    with self._lock:
+                        tbuf = self._get_trend_buffer(s)
+                        tbuf.sync_entries(raw_entries)
+                        self._trim_trend_buffer_locked(tbuf, immediate=True)
                 self.windows[s]   = {}
                 self.analyzers[s] = {}
                 parts = []
@@ -630,6 +681,56 @@ class CacheShortTrendManager(CacheTrendManagerBase):
             pass
         return kin_extra
 
+    def _sample_1m_tail_locked(
+        self, symbol: str, *, min_step_ms: int = 55_000, max_points: int = 60
+    ) -> List[Tuple[float, float]]:
+        """Collect up to ``max_points`` monotonic ~1-minute tail points from ``_trend_buffers`` in O(max_points * log N)."""
+        tbuf = self._get_trend_buffer(symbol)
+        ts_list = tbuf.timestamps
+        px_list = tbuf.prices
+        n = len(ts_list)
+        if n < 20 or n != len(px_list):
+            return []
+        rev: List[Tuple[float, float]] = []
+        idx = n - 1
+        while idx >= 0 and len(rev) < max_points:
+            t_cur = ts_list[idx]
+            p_cur = px_list[idx]
+            if (
+                type(t_cur) in (int, float)
+                and type(p_cur) in (int, float)
+                and math.isfinite(t_cur)
+                and math.isfinite(p_cur)
+                and p_cur > 0.0
+            ):
+                rev.append((t_cur * 1.0, p_cur * 1.0))
+                if len(rev) >= max_points:
+                    break
+                next_idx = bisect.bisect_right(ts_list, t_cur - min_step_ms, 0, idx) - 1
+                idx = next_idx if next_idx < idx else idx - 1
+            else:
+                idx -= 1
+        rev.reverse()
+        return rev
+
+    @staticmethod
+    def _mean_active_dt_sec_locked(
+        ts_list: Sequence[Any], start_idx: int, end_idx: int, max_intra_dt_ms: float
+    ) -> Optional[float]:
+        if end_idx - start_idx < 2:
+            return None
+        dt_sum = 0.0
+        dt_cnt = 0
+        prev_t = ts_list[start_idx]
+        for idx_t in range(start_idx + 1, end_idx):
+            cur_t = ts_list[idx_t]
+            dt_ms = cur_t - prev_t
+            prev_t = cur_t
+            if 0 < dt_ms <= max_intra_dt_ms:
+                dt_sum += dt_ms
+                dt_cnt += 1
+        return ((dt_sum / dt_cnt) / 1000.0) if dt_cnt > 0 else None
+
     def _compute_realized_vol_1h(self, symbol: str, w_big) -> Optional[float]:
         if w_big is None:
             return None
@@ -639,45 +740,58 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 n_big = len(w_big.prices)
                 v1h_prices = w_big.prices
                 if n_big >= 20:
+                    max_intra_dt = max(
+                        1800.0,
+                        min(7200.0, safe_pos_float(getattr(w_big, "window_seconds", 9000.0), default=9000.0) or 9000.0),
+                    )
+                    max_intra_dt_ms = max_intra_dt * 1000.0
+                    has_ts_tail = False
+                    active_dt_checked = False
                     with self._lock:
                         tbuf_v = self._get_trend_buffer(symbol)
-                        ts_tail = list(tbuf_v.timestamps[-n_big:]) if len(tbuf_v.timestamps) >= n_big else []
-                    if len(ts_tail) >= 20:
-                        max_intra_dt = max(
-                            1800.0,
-                            min(7200.0, safe_pos_float(getattr(w_big, "window_seconds", 9000.0), default=9000.0) or 9000.0),
-                        )
-                        active_dts = [
-                            (ts_tail[i] - ts_tail[i - 1]) / 1000.0
-                            for i in range(1, len(ts_tail))
-                            if 0.0 < (ts_tail[i] - ts_tail[i - 1]) / 1000.0 <= max_intra_dt
-                        ]
-                        if active_dts:
-                            eff_v1h_sr = max(eff_v1h_sr, sum(active_dts) / len(active_dts))
-                        nz_big = sum(
-                            1 for i in range(1, len(w_big.prices)) if abs(w_big.prices[i] - w_big.prices[i - 1]) > 1e-12
-                        )
-                        if nz_big < 10 or eff_v1h_sr < 30.0:
+                        tlen = len(tbuf_v.timestamps)
+                        if tlen >= n_big:
+                            has_ts_tail = True
+                            ts_start = tlen - n_big
+                            span_ms = tbuf_v.timestamps[-1] - tbuf_v.timestamps[ts_start]
+                            if span_ms > 0 and (span_ms / (1000.0 * (n_big - 1))) >= 30.0:
+                                active_sr = self._mean_active_dt_sec_locked(
+                                    tbuf_v.timestamps, ts_start, tlen, max_intra_dt_ms
+                                )
+                                active_dt_checked = True
+                                if active_sr is not None:
+                                    eff_v1h_sr = max(eff_v1h_sr, active_sr)
+                    if has_ts_tail:
+                        need_1m = eff_v1h_sr < 30.0
+                        if not need_1m:
+                            nz_cnt = 0
+                            prev_p = w_big.prices[0]
+                            for idx_p in range(1, n_big):
+                                cur_p = w_big.prices[idx_p]
+                                if abs(cur_p - prev_p) > 1e-12:
+                                    nz_cnt += 1
+                                    if nz_cnt >= 10:
+                                        break
+                                prev_p = cur_p
+                            need_1m = nz_cnt < 10
+                        if need_1m:
                             with self._lock:
-                                tbuf_v = self._get_trend_buffer(symbol)
-                                all_tbuf_ts = list(tbuf_v.timestamps)
-                                all_tbuf_px = list(tbuf_v.prices)
-                            if len(all_tbuf_ts) >= 20 and len(all_tbuf_ts) == len(all_tbuf_px):
-                                sub_1m: List[Tuple[float, float]] = []
-                                last_t_ms = -1e18
-                                for t_ms, px_v in zip(all_tbuf_ts, all_tbuf_px):
-                                    t_ms_f = safe_float(t_ms, default=None)
-                                    px_v_f = safe_pos_float(px_v, default=None)
-                                    if t_ms_f is not None and px_v_f is not None and (t_ms_f - last_t_ms) >= 55000.0:
-                                        sub_1m.append((t_ms_f, px_v_f))
-                                        last_t_ms = t_ms_f
-                                if len(sub_1m) >= 20:
-                                    tail_1m = sub_1m[-60:]
-                                    eff_v1h_sr = max(
-                                        60.0,
-                                        (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
-                                    )
-                                    v1h_prices = [r[1] for r in tail_1m]
+                                tail_1m = self._sample_1m_tail_locked(symbol)
+                                if len(tail_1m) < 20 and not active_dt_checked:
+                                    tbuf_v = self._get_trend_buffer(symbol)
+                                    tlen = len(tbuf_v.timestamps)
+                                    if tlen >= n_big:
+                                        active_sr = self._mean_active_dt_sec_locked(
+                                            tbuf_v.timestamps, tlen - n_big, tlen, max_intra_dt_ms
+                                        )
+                                        if active_sr is not None:
+                                            eff_v1h_sr = max(eff_v1h_sr, active_sr)
+                            if len(tail_1m) >= 20:
+                                eff_v1h_sr = max(
+                                    60.0,
+                                    (tail_1m[-1][0] - tail_1m[0][0]) / (1000.0 * max(1, len(tail_1m) - 1)),
+                                )
+                                v1h_prices = [r[1] for r in tail_1m]
                 return pw.calculate_volatility_1h(v1h_prices, eff_v1h_sr)
         except Exception:
             return None
@@ -892,6 +1006,7 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                 ts_int == buf.timestamps[-1] and price_f == buf.prices[-1]
             ):
                 buf.append(price_f, ts_int)
+                self._trim_trend_buffer_locked(buf)
         win = self.get_window(symbol)   # Primary window.
         if win is None:
             return
@@ -947,19 +1062,54 @@ class CacheShortTrendManager(CacheTrendManagerBase):
         """Evaluate slice [a, b] of entries using the symbol's IncrementalTrendBuffer."""
         sub_entries = entries[a : b + 1]
         sample_rate = pw.PriceWindow._sample_rate_from_entries(sub_entries)
+        ts_arr = getattr(entries, "_ts", None)
+        px_arr = getattr(entries, "_px", None)
+        is_compact = (
+            ts_arr is not None
+            and px_arr is not None
+            and hasattr(entries, "bisect_left_ts")
+            and len(ts_arr) == len(entries)
+        )
         with self._lock:
             buf = self._get_trend_buffer(symbol)
             if is_partial_slice:
                 if buf.timestamps and entries:
                     last_buf_ts = buf.timestamps[-1]
-                    for e in entries:
-                        if isinstance(e, (list, tuple)) and len(e) >= 2:
-                            ets = safe_int(e[0], default=None)
-                            if ets is not None and ets > last_buf_ts:
-                                buf.append(e[1], ets)
-                                last_buf_ts = ets
-                    a_ts = safe_int(entries[a][0], default=None) if 0 <= a < len(entries) else None
-                    b_ts = safe_int(entries[b][0], default=None) if 0 <= b < len(entries) else None
+                    if is_compact:
+                        if ts_arr[-1] > last_buf_ts:
+                            start_i = bisect.bisect_right(ts_arr, last_buf_ts)
+                            for idx_e in range(start_i, len(ts_arr)):
+                                ets = ts_arr[idx_e]
+                                if ets > last_buf_ts:
+                                    buf.append(px_arr[idx_e], ets)
+                                    last_buf_ts = ets
+                            self._trim_trend_buffer_locked(buf)
+                        a_ts = ts_arr[a] if 0 <= a < len(ts_arr) else None
+                        b_ts = ts_arr[b] if 0 <= b < len(ts_arr) else None
+                    else:
+                        last_e = entries[-1]
+                        last_e_ts = (
+                            safe_int(last_e[0], default=None)
+                            if isinstance(last_e, (list, tuple)) and len(last_e) >= 2
+                            else None
+                        )
+                        if last_e_ts is None or last_e_ts > last_buf_ts:
+                            start_i = (
+                                bisect.bisect_right(
+                                    entries, last_buf_ts, key=self._c24_entry_ts_ms
+                                )
+                                if last_e_ts is not None
+                                else 0
+                            )
+                            for e in entries[start_i:]:
+                                if isinstance(e, (list, tuple)) and len(e) >= 2:
+                                    ets = safe_int(e[0], default=None)
+                                    if ets is not None and ets > last_buf_ts:
+                                        buf.append(e[1], ets)
+                                        last_buf_ts = ets
+                            self._trim_trend_buffer_locked(buf)
+                        a_ts = safe_int(entries[a][0], default=None) if 0 <= a < len(entries) else None
+                        b_ts = safe_int(entries[b][0], default=None) if 0 <= b < len(entries) else None
                     if a_ts is not None and b_ts is not None:
                         buf_a = bisect.bisect_left(buf.timestamps, a_ts)
                         buf_b = bisect.bisect_right(buf.timestamps, b_ts) - 1
@@ -1303,12 +1453,19 @@ class CacheShortTrendManager(CacheTrendManagerBase):
                             else:
                                 slice_offset = min(a for a, _, _, _ in pending)
                                 all_entries = (
-                                    list(raw_entries)
-                                    if slice_offset == 0
+                                    raw_entries.copy()
+                                    if has_fast_bisect
+                                    and slice_offset == 0
+                                    and hasattr(raw_entries, "copy")
                                     else (
                                         raw_entries[slice_offset:]
-                                        if isinstance(raw_entries, list)
-                                        else list(raw_entries[slice_offset:])
+                                        if slice_offset > 0
+                                        and (has_fast_bisect or isinstance(raw_entries, list))
+                                        else (
+                                            list(raw_entries)
+                                            if slice_offset == 0
+                                            else list(raw_entries[slice_offset:])
+                                        )
                                     )
                                 )
             for a, b, clamped, w_key in pending:

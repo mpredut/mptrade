@@ -920,6 +920,20 @@ class CacheManagerInterface(ABC):
     _SNAPSHOT_COMPACT_JSON: bool = False
     _SNAPSHOT_FSYNC: bool = True
     _HIGH_FREQ_LOG_INTERVAL_SEC: float = 30.0
+    _EMPTY_REMOTE_LOG_INTERVAL_SEC: float = 1800.0
+
+    def _should_emit_empty_remote_log(self, symbol: str) -> bool:
+        ts_map = getattr(self, "_last_empty_remote_log_ts", None)
+        if not isinstance(ts_map, dict):
+            ts_map = {}
+            self._last_empty_remote_log_ts = ts_map
+        return check_cooldown_gate(
+            ts_map,
+            symbol,
+            _monotonic_time(),
+            cooldown_sec=self._EMPTY_REMOTE_LOG_INTERVAL_SEC,
+            max_entries=1024,
+        )
 
     def _should_emit_throttled_info_log(self, symbol: Optional[str] = None) -> bool:
         now_mono = _monotonic_time()
@@ -1593,9 +1607,10 @@ class CacheManagerInterface(ABC):
                 f"{self.cls_name} returned no synchronization result for {symbol}"
             )
         if not new_items:
-            print(
-                f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
-            )
+            if self._should_emit_empty_remote_log(symbol):
+                print(
+                    f"[{self.cls_name}][Info] {symbol}:  No remote items starting with {timestampToTime(startTime)} "
+                )
         else:
             self._persist_items(symbol, new_items)
         return new_items

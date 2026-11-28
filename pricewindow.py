@@ -802,7 +802,10 @@ class IncrementalTrendBuffer:
                 if isinstance(e, (list, tuple)) and len(e) >= 2:
                     self.append(e[1], e[0])
 
-        if not self.timestamps or not isinstance(entries, (list, tuple, deque)):
+        if not self.timestamps or not (
+            isinstance(entries, (list, tuple, deque))
+            or hasattr(entries, "bisect_left_ts")
+        ):
             _rebuild()
             return
         e0 = entries[0]
@@ -1018,11 +1021,35 @@ class PriceWindow:
         """Return the median sampling gap in seconds for [ts_ms, price] entries."""
         if not entries or isinstance(entries, (bool, str, bytes)) or not isinstance(entries, Iterable):
             return DEFAULT_SAMPLE_RATE_SEC
+        ts_arr = getattr(entries, "_ts", None)
+        if (
+            ts_arr is not None
+            and hasattr(entries, "bisect_left_ts")
+            and getattr(ts_arr, "typecode", None) == "q"
+            and np is not None
+            and len(ts_arr) >= 2
+        ):
+            raw_ts = np.frombuffer(ts_arr, dtype=np.int64)
+            diffs = np.diff(raw_ts)
+            pos = diffs[diffs > 0]
+            if pos.size == 0:
+                return DEFAULT_SAMPLE_RATE_SEC
+            med = safe_pos_float(np.median(pos), default=None)
+            if med is None:
+                return DEFAULT_SAMPLE_RATE_SEC
+            scale = 1.0 if 1e9 <= raw_ts[-1] <= 1e11 else 0.001
+            return safe_pos_float(med * scale, default=DEFAULT_SAMPLE_RATE_SEC)
         timestamps_sec = []
         for e in entries:
             if not isinstance(e, (list, tuple)) or len(e) < 1:
                 continue
-            ts_f = safe_float(e[0], default=None)
+            raw_t = e[0]
+            if type(raw_t) is int:
+                ts_f = raw_t * 1.0
+            elif type(raw_t) is float and math.isfinite(raw_t):
+                ts_f = raw_t
+            else:
+                ts_f = safe_float(raw_t, default=None)
             if ts_f is not None:
                 timestamps_sec.append(ts_f if 1e9 <= ts_f <= 1e11 else ts_f / 1000.0)
         if len(timestamps_sec) < 2:

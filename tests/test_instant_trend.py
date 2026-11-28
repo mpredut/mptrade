@@ -2418,4 +2418,82 @@ class TestWsBridgeIntegration(TempDirTestCase):
         self.assertIsNotNone(live_900)
         self.assertAlmostEqual(live_900["current_price"], 60123.0)
 
+    def test_short_trend_vol_1h_fast_path_buffer_trim_long_trend_cadence_and_empty_log_throttle(self):
+        import math
+        import pricewindow as pw
+        from cacheprice import CompactPriceSeries
+        import cacheInterface
+
+        trend_file = os.path.join(self.tmp, "cache_short_trend_perf.json")
+        mgr = cm.CacheShortTrendManager(["BTCUSDC"], trend_file, data_sync_mode="producer")
+        self.addCleanup(mgr.shutdown)
+
+        # 1. CompactPriceSeries fast path in _sample_rate_from_entries and _evaluate_dynamic_windows
+        now_sec = 1_795_850_000.0
+        n_rows = 30_000  # > 7h retention & > 4096 trim threshold at 1s spacing
+        base_ms = int((now_sec - (n_rows - 1)) * 1000)
+        cps = CompactPriceSeries()
+        for i in range(n_rows):
+            cps.append_pair(base_ms + i * 1000, 60000.0 + 15.0 * math.sin(i * 0.01))
+        self.assertAlmostEqual(pw.PriceWindow._sample_rate_from_entries(cps), 1.0, places=6)
+
+        c24 = MagicMock()
+        c24.lock = cm.threading.RLock()
+        c24.cache = {"BTCUSDC": cps}
+        c24.get_recent_entries.side_effect = (
+            lambda _s, last_seconds=222.0: list(cps[cps.bisect_left_ts(int((now_sec - last_seconds) * 1000)) :])
+        )
+        cpm = MagicMock()
+        cpm.get_cached_price_observation.return_value = (now_sec, cps[-1][1])
+        mgr.start_computation({"BTCUSDC": c24}, cpm, run_full_eval=False)
+
+        # Startup trimmed _trend_buffers to retention horizon (CM_DYNAMIC_WINDOW_MAX_SEC + 3600s) instead of full 30k
+        buf = mgr._get_trend_buffer("BTCUSDC")
+        retention_sec = cm.CM_DYNAMIC_WINDOW_MAX_SEC + mgr._TREND_BUFFER_EXTRA_SEC
+        self.assertLessEqual(buf.timestamps[-1] - buf.timestamps[0], int((retention_sec + 10.0) * 1000))
+        self.assertGreaterEqual(len(buf.timestamps), int(cm.CM_DYNAMIC_WINDOW_MAX_SEC))
+
+        # Advancing ticks past hysteresis trims front cleanly without unbounded growth
+        initial_first_ts = buf.timestamps[0]
+        last_ts = buf.timestamps[-1]
+        for step in range(1, 360):
+            mgr.on_price_update("BTCUSDC", last_ts + step * 1000, 60010.0 + (step % 5) * 0.5)
+        self.assertGreater(buf.timestamps[0], initial_first_ts)
+        self.assertLessEqual(
+            buf.timestamps[-1] - buf.timestamps[0],
+            int(retention_sec * 1000) + mgr._TREND_BUFFER_TRIM_HYSTERESIS_MS,
+        )
+
+        # 2. _compute_realized_vol_1h O(log N) 1-minute tail subsampling returns positive finite volatility
+        v1h = mgr._compute_realized_vol_1h("BTCUSDC", mgr.windows["BTCUSDC"][mgr.window_big_sec])
+        self.assertIsNotNone(v1h)
+        self.assertGreater(v1h, 0.0)
+        dyn = mgr._published_dynamic_windows("BTCUSDC", now=now_sec)
+        self.assertIn("900", dyn)
+        self.assertIn("9000", dyn)
+
+        # 3. CacheLongTrendManager._next_sync_wait_sec honors explicit [None] neutral snapshots
+        lt_file = os.path.join(self.tmp, "cache_long_trend_cadence.json")
+        lt = cm.CacheLongTrendManager(600, ["BTCUSDC", "TAOUSDC"], lt_file, read_only=True)
+        self.assertEqual(lt._next_sync_wait_sec(), 15.0)
+        lt.cache = {"BTCUSDC": [None], "TAOUSDC": [{"timestamp": int(now_sec), "direction": "up"}]}
+        self.assertEqual(lt._next_sync_wait_sec(), 600.0)
+        lt.cache["TAOUSDC"] = []
+        self.assertEqual(lt._next_sync_wait_sec(), 15.0)
+
+        # 4. CacheManagerInterface._apply_remote_items throttles repeated empty-poll info logs per symbol
+        clock = [100.0]
+        printed: list[str] = []
+        with patch.object(cacheInterface, "_monotonic_time", side_effect=lambda: clock[0]), patch(
+            "builtins.print", side_effect=lambda *a, **k: printed.append(" ".join(str(x) for x in a))
+        ):
+            lt._apply_remote_items("BTCUSDC", int(now_sec * 1000), [])
+            lt._apply_remote_items("BTCUSDC", int(now_sec * 1000), [])
+            lt._apply_remote_items("TAOUSDC", int(now_sec * 1000), [])
+            clock[0] += lt._EMPTY_REMOTE_LOG_INTERVAL_SEC + 1.0
+            lt._apply_remote_items("BTCUSDC", int(now_sec * 1000), [])
+        no_remote_lines = [line for line in printed if "No remote items starting with" in line]
+        self.assertEqual(len(no_remote_lines), 3)
+
+
 
