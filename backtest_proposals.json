@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "ts": "2026-11-28T13:02:45+00:00",
+    "full_key": "BINANCE_ARB.trailing.pct",
+    "section": "BINANCE_ARB",
+    "key": "trailing.pct",
+    "symbol": "ARBUSDC",
+    "current_on_dev": 28.0,
+    "winner_value": 20.0,
+    "margin_vs_current": {
+      "half1": 3.25,
+      "half2": 5.76
+    },
+    "dev_commit": "4840b545"
+  }
+]
